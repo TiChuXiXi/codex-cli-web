@@ -1,0 +1,18 @@
+import {test,expect} from '@playwright/test'
+test('IP allowlist opens the workbench without login, cookies or a logout control',async({page})=>{
+  await page.goto('http://127.0.0.1:18788/')
+  await expect(page.locator('.dsh-codex-root')).toBeVisible()
+  await expect(page.getByLabel('访问凭证',{exact:true})).toHaveCount(0)
+  await expect(page.getByRole('button',{name:'退出 Web 登录',exact:true})).toHaveCount(0)
+  const cookies=await page.context().cookies()
+  expect(cookies.some(cookie=>cookie.name==='codex_web_session')).toBe(false)
+  await page.locator('.dsh-codex-tree-project').first().click()
+  await page.getByText('验收会话',{exact:true}).first().click()
+  const input=page.locator('textarea').first()
+  await input.fill('免登录访问验证')
+  await input.press('Enter')
+  await expect(page.getByText('已收到：免登录访问验证',{exact:false}).last()).toBeVisible()
+  await page.reload()
+  await expect(page.locator('.dsh-codex-root')).toBeVisible()
+  await expect(page.getByLabel('访问凭证',{exact:true})).toHaveCount(0)
+})

@@ -1,0 +1,2 @@
+npm run test:package
+PASS: isolated production-only npm install, executable CLI, frontend, authentication, native PTY and graceful SIGTERM

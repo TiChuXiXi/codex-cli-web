@@ -1,0 +1,211 @@
+[
+  {
+    "id": "codex-cli-web@0.1.0",
+    "name": "codex-cli-web",
+    "version": "0.1.0",
+    "size": 1396815,
+    "unpackedSize": 5023547,
+    "shasum": "a9e4efd1b1204cd49bd7ec448f4a12edfb305757",
+    "integrity": "sha512-sCeB8epdZOUerLUIvomm8xXcRxqcp8KUuWJrq49vh46sbIrTIW7Uz7rdcFxSRoLjUrfaifrXQ41/4B1SEK55tw==",
+    "filename": "codex-cli-web-0.1.0.tgz",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size": 1066,
+        "mode": 420
+      },
+      {
+        "path": "README.md",
+        "size": 5318,
+        "mode": 420
+      },
+      {
+        "path": "THIRD_PARTY_NOTICES.md",
+        "size": 19420,
+        "mode": 420
+      },
+      {
+        "path": "bin/codex-web-ui.mjs",
+        "size": 1262,
+        "mode": 493
+      },
+      {
+        "path": "dist/web/assets/main.css",
+        "size": 23142,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/assets/main.js",
+        "size": 4726183,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/build.json",
+        "size": 31,
+        "mode": 420
+      },
+      {
+        "path": "dist/web/index.html",
+        "size": 382,
+        "mode": 420
+      },
+      {
+        "path": "docs/REFERENCE_BASELINE.md",
+        "size": 998,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 1643,
+        "mode": 420
+      },
+      {
+        "path": "server/api/routes.js",
+        "size": 16059,
+        "mode": 420
+      },
+      {
+        "path": "server/auth.js",
+        "size": 5404,
+        "mode": 420
+      },
+      {
+        "path": "server/bootstrap.js",
+        "size": 4377,
+        "mode": 420
+      },
+      {
+        "path": "server/codex/config.js",
+        "size": 2935,
+        "mode": 420
+      },
+      {
+        "path": "server/codex/hub.js",
+        "size": 48613,
+        "mode": 420
+      },
+      {
+        "path": "server/codex/jsonrpc.js",
+        "size": 6798,
+        "mode": 420
+      },
+      {
+        "path": "server/codex/transport/daemon.js",
+        "size": 3895,
+        "mode": 420
+      },
+      {
+        "path": "server/codex/transport/index.js",
+        "size": 4767,
+        "mode": 420
+      },
+      {
+        "path": "server/codex/transport/stdio.js",
+        "size": 4543,
+        "mode": 420
+      },
+      {
+        "path": "server/config.js",
+        "size": 3857,
+        "mode": 420
+      },
+      {
+        "path": "server/logger.js",
+        "size": 739,
+        "mode": 420
+      },
+      {
+        "path": "server/runtime.js",
+        "size": 640,
+        "mode": 420
+      },
+      {
+        "path": "server/services/context-usage.js",
+        "size": 1675,
+        "mode": 420
+      },
+      {
+        "path": "server/services/events.js",
+        "size": 3547,
+        "mode": 420
+      },
+      {
+        "path": "server/services/followups.js",
+        "size": 9287,
+        "mode": 420
+      },
+      {
+        "path": "server/services/fs.js",
+        "size": 8391,
+        "mode": 420
+      },
+      {
+        "path": "server/services/git.js",
+        "size": 66339,
+        "mode": 420
+      },
+      {
+        "path": "server/services/images.js",
+        "size": 1426,
+        "mode": 420
+      },
+      {
+        "path": "server/services/skills.js",
+        "size": 1386,
+        "mode": 420
+      },
+      {
+        "path": "server/services/terminal.js",
+        "size": 5501,
+        "mode": 420
+      },
+      {
+        "path": "server/services/thread-titles.js",
+        "size": 10166,
+        "mode": 420
+      },
+      {
+        "path": "server/services/uploads.js",
+        "size": 2721,
+        "mode": 420
+      },
+      {
+        "path": "server/services/versions.js",
+        "size": 13284,
+        "mode": 420
+      },
+      {
+        "path": "server/services/workspace.js",
+        "size": 13550,
+        "mode": 420
+      },
+      {
+        "path": "server/static.js",
+        "size": 1742,
+        "mode": 420
+      },
+      {
+        "path": "shared/contracts.ts",
+        "size": 427,
+        "mode": 420
+      },
+      {
+        "path": "shared/limits.js",
+        "size": 133,
+        "mode": 420
+      },
+      {
+        "path": "vendor/dsh-dockkit/LICENSE",
+        "size": 1065,
+        "mode": 420
+      },
+      {
+        "path": "vendor/dsh-dockkit/PROVENANCE.md",
+        "size": 835,
+        "mode": 420
+      }
+    ],
+    "entryCount": 39,
+    "bundled": []
+  }
+]

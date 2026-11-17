@@ -1,0 +1,8 @@
+{
+  "date": "2026-11-17T09:13:55.923Z",
+  "cli": "codex-cli 0.169.0",
+  "transport": "stdio",
+  "handshake": "passed",
+  "modelRound": "not-run",
+  "isolatedHome": true
+}

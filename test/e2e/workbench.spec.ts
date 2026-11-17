@@ -1,0 +1,127 @@
+import { test, expect } from '@playwright/test'
+async function login(page:any) {
+  await page.goto('/')
+  await page.getByLabel('访问凭证',{exact:true}).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button',{name:'登录工作台',exact:true}).click()
+  await expect(page.locator('.dsh-codex-root')).toBeVisible()
+}
+async function selectThread(page:any) {
+  const project=page.locator('.dsh-codex-tree-project').first()
+  await expect(project).toBeVisible()
+  if(await project.getAttribute('aria-expanded')!=='true')await project.click()
+  await page.getByText('验收会话',{exact:true}).first().click()
+  await expect(page.locator('textarea').first()).toBeVisible()
+}
+test('login, conversation streaming, queue, refresh and logout',async({page})=>{
+  const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message))
+  await login(page)
+  await selectThread(page)
+  const input=page.locator('textarea').first()
+  await input.fill('你好，独立工作台');await input.press('Enter')
+  await expect(page.getByText('已收到：你好，独立工作台',{exact:false}).last()).toBeVisible()
+  await input.fill('慢速消息');await input.press('Enter')
+  await input.fill('排队消息');await input.press('Enter')
+  await expect(page.getByText('已收到：排队消息',{exact:false}).last()).toBeVisible({timeout:15000})
+  await page.reload()
+  await expect(page.getByText('已收到：排队消息',{exact:false}).last()).toBeVisible()
+  await page.getByRole('button',{name:'退出 Web 登录'}).click()
+  await expect(page.getByLabel('访问凭证',{exact:true})).toBeVisible()
+  expect(errors).toEqual([])
+})
+test('command approval round trip',async({page})=>{
+  await login(page);await selectThread(page)
+  await page.locator('textarea').first().fill('请触发审批')
+  await page.locator('textarea').first().press('Enter')
+  await expect(page.getByText('夹具审批',{exact:false})).toBeVisible()
+  await page.getByRole('button',{name:'允许',exact:true}).click()
+  await expect(page.getByText('审批已处理。',{exact:false})).toBeVisible()
+})
+test('themes, responsive navigation and file workbench',async({page})=>{
+  await login(page);await selectThread(page)
+  await page.getByRole('button',{name:'切换深色模式',exact:true}).click()
+  await expect(page.locator('.dsh-codex-root')).toHaveAttribute('data-codex-theme','dark')
+  await page.getByRole('button',{name:'切换浅色模式',exact:true}).click()
+  await expect(page.locator('.dsh-codex-root')).toHaveAttribute('data-codex-theme','light')
+  await page.getByRole('button',{name:'右侧面板',exact:true}).click()
+  await expect(page.locator('.codex-sidebar')).toBeVisible()
+})
+test('responsive evidence in both themes',async({page},testInfo)=>{
+  test.skip(!process.env.VISUAL,'Run with npm run test:visual')
+  await login(page);await selectThread(page)
+  for(const [width,height]of [[1440,900],[1280,800],[768,1024],[390,844]]) {
+    await page.setViewportSize({width,height})
+    for(const theme of ['light','dark']) {
+      await page.evaluate(t=>localStorage.setItem('dsh-codex-theme',t),theme)
+      await page.reload()
+      // Toggle through the real control when the stored key differs from baseline.
+      const root=page.locator('.dsh-codex-root')
+      if(await root.getAttribute('data-codex-theme')!==theme)await page.getByRole('button',{name:theme==='dark'?'切换深色模式':'切换浅色模式',exact:true}).click()
+      await expect(root).toHaveAttribute('data-codex-theme',theme)
+      await page.screenshot({path:testInfo.outputPath(width+'-'+theme+'.png'),animations:'disabled'})
+      const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)
+      expect(overflow).toBe(false)
+    }
+  }
+})
+
+test('login connection failure has a working retry and clears only the connection error',async({page},testInfo)=>{
+  let unavailable=true
+  await page.route('**/auth/session',route=>unavailable?route.abort():route.continue())
+  await page.goto('/')
+  await expect(page.getByRole('alert')).toHaveText('无法连接服务，请检查服务状态后重试。')
+  await expect(page.getByRole('button',{name:'重试连接',exact:true})).toBeVisible()
+  await page.screenshot({path:testInfo.outputPath('login-error.png')})
+  unavailable=false
+  await page.getByRole('button',{name:'重试连接',exact:true}).click()
+  await expect(page.getByRole('button',{name:'重试连接',exact:true})).toHaveCount(0)
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await page.getByLabel('访问凭证',{exact:true}).fill('incorrect-token')
+  await page.getByRole('button',{name:'登录工作台',exact:true}).click()
+  await expect(page.getByRole('alert')).toHaveText('访问凭证不正确')
+  await page.screenshot({path:testInfo.outputPath('login-credential-error.png')})
+  await page.reload()
+  await expect(page.getByLabel('访问凭证',{exact:true})).toBeVisible()
+  await page.screenshot({path:testInfo.outputPath('login-desktop.png')})
+  await page.setViewportSize({width:390,height:844})
+  await page.screenshot({path:testInfo.outputPath('login-mobile.png')})
+})
+
+test('file preview, HTML sandbox, terminal retention and Git workbench',async({page},testInfo)=>{
+  await login(page);await selectThread(page)
+  await page.getByRole('button',{name:'右侧面板',exact:true}).click()
+  const sidebar=page.locator('.codex-sidebar')
+  await expect(sidebar).toBeVisible()
+  await sidebar.getByText('示例.md',{exact:true}).first().dblclick()
+  await expect(sidebar.getByRole('heading',{name:'验收文档',exact:true})).toBeVisible()
+  await page.screenshot({path:testInfo.outputPath('document.png')})
+  await sidebar.getByRole('tab',{name:/工作区文件/}).click()
+  await sidebar.getByText('preview.html',{exact:true}).first().click()
+  const frame=sidebar.locator('iframe')
+  await expect(frame).toHaveAttribute('sandbox','allow-scripts allow-forms')
+  await expect(sidebar.frameLocator('iframe').getByRole('heading',{name:'HTML fixture'})).toBeVisible()
+  await sidebar.getByRole('button',{name:'新建标签页',exact:true}).click()
+  const terminalOpened=page.waitForResponse(response=>response.url().endsWith('/terminal/open'))
+  await sidebar.getByRole('button',{name:/运行命令/}).click()
+  const terminal=(await (await terminalOpened).json()).result.value
+  const request=async(method:string,payload:any={})=>{
+    const response=await page.request.post('/codex-cli/'+method,{headers:{'x-codex-request':'1'},data:{type:'client-request',rpcId:'browser-check',method,payload}})
+    return (await response.json()).result.value
+  }
+  const shell=sidebar.locator('.xterm-helper-textarea').first()
+  await shell.focus()
+  await shell.pressSequentially("export E2E_KEEP=retained; printf 'E2E_TERMINAL_OK\\n'")
+  await shell.press('Enter')
+  await expect.poll(async()=>String((await request('terminal/read',{sessionId:terminal.sessionId,cursor:0})).data)).toContain('E2E_TERMINAL_OK')
+  await sidebar.getByRole('button',{name:'收起右侧面板',exact:true}).click()
+  await page.getByRole('button',{name:'右侧面板',exact:true}).click()
+  expect((await request('status')).runtime.terminalSessionCount).toBe(1)
+  await sidebar.getByRole('button',{name:'新建标签页',exact:true}).click()
+  await sidebar.getByRole('button',{name:/查看分支与变更/}).click()
+  await expect(sidebar.getByRole('tab',{name:'历史',exact:true})).toBeVisible()
+  await page.screenshot({path:testInfo.outputPath('git.png')})
+  await sidebar.getByRole('tab',{name:/终端/}).first().click()
+  expect((await request('status')).runtime.terminalSessionCount).toBe(1)
+  await shell.focus();await shell.pressSequentially('echo $E2E_KEEP');await shell.press('Enter')
+  await expect.poll(async()=>String((await request('terminal/read',{sessionId:terminal.sessionId,cursor:0})).data)).toMatch(/retained\r?\n/)
+  await page.screenshot({path:testInfo.outputPath('terminal.png')})
+})

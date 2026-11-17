@@ -1,0 +1,12 @@
+
+> codex-cli-web@0.1.0 test:parity
+> node scripts/test-parity.mjs
+
+1440 light: 0 changed pixels (0.000%)
+1440 dark: 0 changed pixels (0.000%)
+1280 light: 0 changed pixels (0.000%)
+1280 dark: 0 changed pixels (0.000%)
+768 light: 0 changed pixels (0.000%)
+768 dark: 0 changed pixels (0.000%)
+390 light: 0 changed pixels (0.000%)
+390 dark: 0 changed pixels (0.000%)

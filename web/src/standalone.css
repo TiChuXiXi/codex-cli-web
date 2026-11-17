@@ -1,0 +1,21 @@
+html,body,#root {margin:0;min-height:100%;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+body {background:#fff;color:#1a1a1a}
+.codex-login {min-height:100dvh;display:grid;place-items:center;padding:24px;box-sizing:border-box;background:#f7f8fa;color:#1a1a1a}
+.codex-login-form {width:min(360px,100%);display:flex;flex-direction:column;gap:12px}
+.codex-login-form>svg {width:36px;height:36px}
+.codex-login h1 {font-size:26px;line-height:1.2;margin:12px 0 0;font-weight:600}
+.codex-login p {font-size:14px;line-height:1.6;margin:0 0 12px;color:#5b6069}
+.codex-login label {font-size:13px;font-weight:600}
+.codex-login input {min-width:0;padding:12px;border:1px solid #b7bdc7;border-radius:8px;font:inherit;background:#fff;color:inherit}
+.codex-login button {padding:12px;border:0;border-radius:8px;background:#3264cd;color:#fff;font:inherit;cursor:pointer}
+.codex-login button:hover:not(:disabled) {background:#2854b5}
+.codex-login button:disabled {opacity:.55;cursor:default}
+.codex-login :focus-visible {outline:2px solid #4176e6;outline-offset:3px}
+.codex-login .codex-login-error {color:#b02e2e;margin:0}
+.codex-login .codex-login-help {font-size:12px;margin-top:12px}
+@media(prefers-color-scheme:dark) {
+ .codex-login {background:#111318;color:#e6e8ec}
+ .codex-login p {color:#a7adb8}
+ .codex-login input {background:#1b1e25;border-color:#626a78}
+ .codex-login .codex-login-error {color:#ff9c9c}
+}

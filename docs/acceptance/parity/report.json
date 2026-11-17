@@ -1,0 +1,64 @@
+{
+  "baseline": "48590b624d011d8036d412c31c8f5f319410eecb",
+  "threshold": 0.1,
+  "allowedRatio": 0.001,
+  "mask": "host exit control only",
+  "scenarios": [
+    {
+      "width": 1440,
+      "height": 900,
+      "theme": "light",
+      "pixels": 0,
+      "ratio": 0
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "theme": "dark",
+      "pixels": 0,
+      "ratio": 0
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "theme": "light",
+      "pixels": 0,
+      "ratio": 0
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "theme": "dark",
+      "pixels": 0,
+      "ratio": 0
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "theme": "light",
+      "pixels": 0,
+      "ratio": 0
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "theme": "dark",
+      "pixels": 0,
+      "ratio": 0
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "theme": "light",
+      "pixels": 0,
+      "ratio": 0
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "theme": "dark",
+      "pixels": 0,
+      "ratio": 0
+    }
+  ]
+}
