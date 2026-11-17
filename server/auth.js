@@ -31,7 +31,8 @@ async function readLogin(request) {
 export function createAuth(config,token) {
   const sessions=new Map(),attempts=new Map()
   const networkMode=config.authMode==='network'
-  const clientAllowed=createClientFilter(config.allowedClients ?? [])
+  let clientAllowed=createClientFilter(config.allowedClients ?? [])
+  const networkResponses=new Map()
   const hash=digest(token)
   let origin=''
   function revoke(id) {
@@ -63,9 +64,18 @@ export function createAuth(config,token) {
   }
   return {
     setOrigin(value){origin=value},
+    setAllowedClients(entries, savingResponse) {
+      clientAllowed=createClientFilter(entries)
+      for(const [response,ip]of networkResponses)if(response!==savingResponse && !clientAllowed(ip))response.destroy()
+    },
     originRejection,
     requestRejection(request){return originRejection(request) ?? (networkMode || sessionOf(request)?undefined:401)},
     attach(request,response) {
+      if(networkMode) {
+        networkResponses.set(response,request.socket.remoteAddress)
+        response.once('close',()=>networkResponses.delete(response))
+        return
+      }
       const session=sessionOf(request)
       if(!session)return
       session.responses.add(response)
@@ -109,6 +119,6 @@ export function createAuth(config,token) {
       }
       return json(response,404,{error:'认证接口不存在'})
     },
-    dispose(){clearInterval(timer);for(const id of sessions.keys())revoke(id);attempts.clear()},
+    dispose(){for(const response of networkResponses.keys())response.destroy();networkResponses.clear();clearInterval(timer);for(const id of sessions.keys())revoke(id);attempts.clear()},
   }
 }

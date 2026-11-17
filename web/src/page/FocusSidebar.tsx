@@ -40,7 +40,7 @@ export interface FocusSidebarProps {
   onLoadMore: () => void
   onNew: () => void
   onNewProject: () => void
-  onVersions: () => void
+  onSettings: () => void
   onRefresh: () => void
   onExit?: () => void
   onThreadRenamed: (id: string, name: string) => void
@@ -72,7 +72,7 @@ export function FocusSidebar({
   onLoadMore,
   onNew,
   onNewProject,
-  onVersions,
+  onSettings,
   onRefresh,
   onExit,
   onThreadRenamed,
@@ -177,8 +177,8 @@ export function FocusSidebar({
         <button type="button" className="dsh-codex-button primary" onClick={onNew}>
           <Icon name="plus" size={17}/>{t('newThread.open')}
         </button>
-        <button type="button" className="dsh-codex-button" title={t('versions.open')} onClick={onVersions}>
-          {t('versions.open')}
+        <button type="button" className="dsh-codex-button" title="设置" onClick={onSettings}>
+          设置
         </button>
         <IconButton icon="refresh" label={t('status.refresh')} onClick={onRefresh}/>
       </div>
@@ -341,7 +341,7 @@ export function FocusSidebar({
       </div>
 
       <div className="dsh-codex-focus-footer">
-        <div className="dsh-codex-sidebar-health"><span className={'dsh-codex-dot '+phaseClass}/><span>{t(`status.${phase}`)}</span><IconButton icon="settings" label="版本与连接" onClick={onVersions}/></div>
+        <div className="dsh-codex-sidebar-health"><span className={'dsh-codex-dot '+phaseClass}/><span>{t(`status.${phase}`)}</span><IconButton icon="settings" label="设置" onClick={onSettings}/></div>
         <QuotaPopover quota={quota} loading={quotaLoading} now={now} t={t} />
         {onExit && <button type="button" className="dsh-codex-sidebar-exit" onClick={onExit}><Icon name="arrowLeft" size={16}/>退出 Web 登录</button>}
       </div>

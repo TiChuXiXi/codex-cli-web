@@ -31,6 +31,16 @@ export async function loadConfig(cli={}, env=process.env) {
   const fromEnv={}
   for(const [key,name] of Object.entries(fields)) if(env['CODEX_WEB_'+name]!==undefined) fromEnv[key]=env['CODEX_WEB_'+name]
   const config={authMode:'token',allowedClients:[],host:'127.0.0.1',port:8787,stateDir:join(env.XDG_STATE_HOME || join(homedir(),'.local/state'),'codex-cli-web'),logLevel:'info',sessionTtlMs:12*60*60*1000,...file,...fromEnv,...cli}
+  config.stateDir=resolve(config.stateDir)
+  config.configFile=configFile?resolve(configFile):undefined
+  config.allowedClientsLocked=cli.allowedClients!==undefined || fromEnv.allowedClients!==undefined
+  if(!configFile) {
+    try {
+      const persisted=JSON.parse(await readFile(join(config.stateDir,'settings.json'),'utf8'))
+      if(!persisted || Array.isArray(persisted) || typeof persisted!=='object')throw new Error('invalid settings')
+      if(!config.allowedClientsLocked && persisted.allowedClients!==undefined)config.allowedClients=persisted.allowedClients
+    } catch(error) {if(error.code!=='ENOENT')throw new Error('无法读取持久化白名单设置')}
+  }
   config.port=Number(config.port)
   if(!Number.isInteger(config.port)||config.port<0||config.port>65535) throw new Error('端口必须是 0–65535 的整数')
   if(typeof config.host!=='string'||!config.host.trim()||/[\s/]/.test(config.host)) throw new Error('无效监听地址')

@@ -44,9 +44,9 @@ npm start -- --config config.lan.json
 }
 ```
 
-修改 allowedClients 后重启服务即可生效。可以填写多个精确 IP，或明确网段，例如 `["192.168.1.80", "192.168.1.81"]`、`["192.168.1.0/24"]`；这些仅是配置示例，当前实际只允许 .80。防火墙规则也需要与允许范围匹配。
+在工作台点击“设置 → 访问白名单”，可添加或移除 IP，保存后立即生效并持久化。当前部署已启用 settingsFirewall 同步，保存也会同步 firewalld 的运行时和永久规则。直接编辑配置文件时仍需重启服务。可以填写多个精确 IP，或明确网段，例如 `["192.168.1.80", "192.168.1.81"]`、`["192.168.1.0/24"]`；这些仅是配置示例，当前实际只允许 .80。未启用 settingsFirewall 的部署仍需自行同步外部防火墙。
 
-network 模式不需要访问凭证或会话 Cookie，界面不显示登录和退出入口；白名单同时保护页面、RPC、SSE、上传、下载和终端。来源 IP 使用 TCP 连接的实际对端，不信任 X-Forwarded-For/Forwarded。Host/Origin 校验仍生效。若需要本机访问，必须显式将本机使用的来源 IP 加入名单；当前名单不包含本机地址。
+network 模式不需要访问凭证或会话 Cookie，界面不显示登录和退出入口；白名单同时保护页面、RPC、SSE、上传、下载和终端。来源 IP 使用 TCP 连接的实际对端，不信任 X-Forwarded-For/Forwarded。Host/Origin 校验仍生效。若需要本机访问，必须显式将本机使用的来源 IP 加入名单；当前名单不包含本机地址。移除当前访问 IP 时，设置页会要求确认；确认后当前设备失去访问权限。
 
 不指定 authMode 时仍默认使用原 token 登录模式。也可使用 --auth-mode network --allowed-clients 192.168.1.80，或 CODEX_WEB_AUTH_MODE / CODEX_WEB_ALLOWED_CLIENTS 环境变量。network 模式缺少有效白名单会拒绝启动。
 
@@ -79,6 +79,17 @@ node bin/codex-web-ui.mjs --host 0.0.0.0 --public-origin http://192.168.1.20:878
 
 单一已认证操作者能够访问服务端目录和 Shell；Codex 的会话权限、Web 认证和 Git 写开关分别生效。退出登录会关闭该会话的活动请求；后台待发送队列继续由服务调度。
 
+## 设置页面
+
+从工作台左下角齿轮或底部“设置”进入：
+
+- “版本与更新”：检查更新、CLI 升级/回滚、守护进程管理、体检和任务输出。状态查询失败会提示状态待确认并继续重试，不重复发起更新。
+- “访问白名单”：显示当前访问 IP 和访问模式，支持添加、移除、校验、保存与重新加载。保存立即生效且持久化；并发修改有冲突提示。移除当前 IP、放弃未保存更改均需确认。
+- 当前部署启用 `settingsFirewall`，保存名单时同步对应 firewalld rich rules，包含运行时和永久规则；失败时保留原配置。页面不会修改其他端口或防火墙区域。
+- 如果名单由 CLI 或环境变量覆盖，设置页只读并说明原因。未传应用配置文件时，页面设置保存到应用 state-dir/settings.json。
+
+当前服务以 systemd 临时单元 `codex-cli-web.service` 运行，可用 `systemctl restart codex-cli-web` 重启。该单元不随终端退出而停止；未设置机器重启后自动启动。
+
 ## 检查与测试
 
 ```bash
@@ -106,7 +117,7 @@ CODEX_WEB_LIVE=1 npm run test:live
 
 ## 状态与故障排查
 
-- Codex 未连接：Web 页面仍可打开；检查 codex 可执行路径、CODEX_HOME、transport 和工作台“版本与连接”。
+- Codex 未连接：Web 页面仍可打开；检查 codex 可执行路径、CODEX_HOME、transport 和“设置 → 版本与更新”。
 - 登录失效：重新输入 Web 访问凭证；服务重启会清空 Web 会话。
 - 请求 403：核对 publicOrigin、Host/Origin 白名单和代理转发配置。脚本写请求需带 Origin 或 X-Codex-Request: 1，以及有效 Cookie。
 - 终端不可用：检查 optional PTY 包是否安装，以及 Linux Bash 是否存在。

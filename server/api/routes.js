@@ -19,10 +19,12 @@ const CHANNEL = '/codex-cli'
 const EVENTS_PATH = `${CHANNEL}/events`
 const KEEPALIVE_MS = 15000
 
-export function createRoutes({ hub, bus, connection, config, logger, versions, runtime, workspace, git, followups, terminal }) {
+export function createRoutes({ hub, bus, connection, config, logger, versions, runtime, workspace, git, followups, terminal, settings }) {
   const streams = new Set()
   const uploads = new Set()
   const endpoints = {
+    'settings/read': (_payload,_signal,context) => settings.read(context.request),
+    'settings/whitelist': (payload,_signal,context) => settings.update(payload,context),
     'terminal/open': payload => terminal.open(payload),
     'terminal/read': (payload, signal) => terminal.read(payload, signal),
     'terminal/write': payload => terminal.write(payload),
@@ -171,7 +173,7 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
     },
   }
 
-  async function handleRpc(endpoint, payload, signal) {
+  async function handleRpc(endpoint, payload, signal, context) {
     if (endpoint.startsWith('git/') && git) {
       try { return {ok:true, value:await git.call(endpoint.slice(4), payload ?? {}, signal)} }
       catch(cause) { return {ok:false,error:{code:cause.code || 'git-vcs/internal',message:cause.message,details:cause.details || {}}} }
@@ -183,7 +185,7 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
       }
     }
     try {
-      const value = await endpoints[endpoint](payload ?? {}, signal)
+      const value = await endpoints[endpoint](payload ?? {}, signal, context)
       return { ok: true, value: value ?? null }
     } catch (cause) {
       if (cause instanceof HubError) {
@@ -333,7 +335,7 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
     response.once?.('close', cancel)
     let result
     try {
-      result = await handleRpc(method, payload, controller.signal)
+      result = await handleRpc(method, payload, controller.signal, {request, response})
     } finally {
       response.off?.('close', cancel)
     }

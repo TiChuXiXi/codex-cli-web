@@ -61,7 +61,7 @@
   "src/client/page/ThreadRowMenu.tsx": "web/src/page/ThreadRowMenu.tsx",
   "src/client/page/ThreadView.tsx": "web/src/page/ThreadView.tsx",
   "src/client/page/ToolGroup.tsx": "web/src/page/ToolGroup.tsx",
-  "src/client/page/VersionsDialog.tsx": "web/src/page/VersionsDialog.tsx",
+  "src/client/page/VersionsDialog.tsx": "web/src/page/VersionsPanel.tsx",
   "src/client/page/projectOrder.ts": "web/src/page/projectOrder.ts",
   "src/client/page/versionsStyles.ts": "web/src/page/versionsStyles.ts",
   "src/client/permissions.ts": "web/src/permissions.ts",

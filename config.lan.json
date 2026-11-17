@@ -5,5 +5,10 @@
   "authMode": "network",
   "allowedClients": [
     "192.168.1.80"
-  ]
+  ],
+  "settingsFirewall": {
+    "enabled": true,
+    "zone": "public",
+    "destination": "192.168.1.182"
+  }
 }

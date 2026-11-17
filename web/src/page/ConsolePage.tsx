@@ -35,7 +35,7 @@ declare const __CODEX_CLIENT_BUILD_ID__: string
 import { ThreadView } from './ThreadView'
 import type { Attachment, ModelOption, PermissionMode } from './Composer'
 import { ThreadActions } from './ThreadActions'
-import { VersionsDialog } from './VersionsDialog'
+import { SettingsPage } from './SettingsPage'
 
 /** 长会话按回合分页：初始与每页都只取最近/更早的 2 个回合。 */
 const TURN_PAGE = 2
@@ -209,7 +209,14 @@ export function ConsolePage(props: ConsolePageProps) {
     }
   })
   const [dirPickerOpen, setDirPickerOpen] = React.useState(false)
-  const [versionsOpen, setVersionsOpen] = React.useState(false)
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
+  const settingsDirty = React.useRef(false)
+  const onSettingsDirty = React.useCallback((dirty:boolean)=>{settingsDirty.current=dirty},[])
+  const showSettings = () => {setSettingsOpen(true);appearance.closeNav()}
+  const goToWorkspace = (action:()=>void = ()=>{}) => {
+    if(settingsOpen && settingsDirty.current && !window.confirm('白名单更改尚未保存，确定离开设置吗？'))return
+    setSettingsOpen(false);action()
+  }
   const restoredRef = React.useRef(selectedId !== null)
   const createThreadRef = React.useRef<(request: { cwd: string }) => Promise<void>>(async () => {})
   const searchTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -857,19 +864,19 @@ export function ConsolePage(props: ConsolePageProps) {
 
   return (
     <I18nContext.Provider value={t}>
-      <div ref={rootRef} onDragOverCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} onDropCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} style={{'--codex-nav-width': navWidth + 'px'} as React.CSSProperties} className={'dsh-codex-root'+(navResizing?' is-nav-resizing':'')+(appearance.collapsed?' is-nav-collapsed':'')+(appearance.navOpen?' is-nav-open':'')+(rightOpen?' has-right':'')} data-codex-theme={appearance.theme} data-client-build={__CODEX_CLIENT_BUILD_ID__}>
+      <div ref={rootRef} onDragOverCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} onDropCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} style={{'--codex-nav-width': navWidth + 'px'} as React.CSSProperties} className={'dsh-codex-root'+(navResizing?' is-nav-resizing':'')+(appearance.collapsed?' is-nav-collapsed':'')+(appearance.navOpen?' is-nav-open':'')+(rightOpen&&!settingsOpen?' has-right':'')} data-codex-theme={appearance.theme} data-client-build={__CODEX_CLIENT_BUILD_ID__}>
         <ToastHost />
         <header className="dsh-codex-workbench-header">
           <IconButton icon="panelLeft" label="展开或折叠项目栏" aria-expanded={appearance.navOpen||!appearance.collapsed} aria-controls="dsh-codex-project-nav" onClick={appearance.toggleNav}/>
-          <h1>{detail?threadTitle(detail.thread):'Codex 工作台'}</h1>
+          <h1>{settingsOpen?'设置':detail?threadTitle(detail.thread):'Codex 工作台'}</h1>
           <span className="dsh-codex-spacer"/>
           <IconButton icon={appearance.theme==='dark'?'sun':'moon'} label={appearance.theme==='dark'?'切换浅色模式':'切换深色模式'} aria-disabled={appearance.busy} onClick={appearance.toggleTheme}/>
-          {detail&&<ThreadActions api={api} thread={detail.thread}
+          {detail&&!settingsOpen&&<ThreadActions api={api} thread={detail.thread}
             onRenamed={name=>handleThreadRenamed(detail.thread.id,name)}
             onArchived={()=>{setSelectedId(null);void loadThreads(null)}}
             onForked={thread=>{if(thread?.id)setSelectedId(thread.id)}}
             onDeleted={()=>handleThreadDeleted(detail.thread.id)}/>}
-          <IconButton icon="panelRight" label={rightOpen?t('right.hide'):t('right.show')} aria-expanded={rightOpen} className={rightOpen?'is-selected':''} onClick={()=>setRightOpen(value=>!value)}/>
+          {!settingsOpen&&<IconButton icon="panelRight" label={rightOpen?t('right.hide'):t('right.show')} aria-expanded={rightOpen} className={rightOpen?'is-selected':''} onClick={()=>setRightOpen(value=>!value)}/>}
         </header>
         {appearance.navOpen&&<button type="button" className="dsh-codex-nav-backdrop" aria-label="关闭项目导航" onClick={appearance.closeNav}/>}
 
@@ -900,12 +907,12 @@ export function ConsolePage(props: ConsolePageProps) {
           hasMore={nextCursor !== null}
           search={search}
           onSearch={handleSearch}
-          onSelectProject={handleProjectToggle}
-          onSelectThread={id=>{setSelectedId(id);appearance.closeNav()}}
+          onSelectProject={cwd=>goToWorkspace(()=>handleProjectToggle(cwd))}
+          onSelectThread={id=>goToWorkspace(()=>{setSelectedId(id);appearance.closeNav()})}
           onLoadMore={() => void loadThreads(nextCursor)}
           onNew={handleNew}
           onNewProject={openNewProject}
-          onVersions={() => setVersionsOpen(true)}
+          onSettings={showSettings}
           onRefresh={() => void refresh()}
           onExit={onExit}
           onThreadRenamed={handleThreadRenamed}
@@ -913,6 +920,7 @@ export function ConsolePage(props: ConsolePageProps) {
           onThreadDeleted={handleThreadDeleted}
         />
         <main className="dsh-codex-main">
+          {settingsOpen ? <SettingsPage api={api} onClose={()=>goToWorkspace()} onDirtyChange={onSettingsDirty}/> : <>
           {error !== null ? (
             <div className="dsh-codex-error">
               {error}
@@ -962,12 +970,13 @@ export function ConsolePage(props: ConsolePageProps) {
             onExport={() => void exportThread()}
 
           />
+          </>}
         </main>
 
         <RightPanel
           api={api}
           cwd={detail?.thread.cwd ?? selectedCwd ?? ''}
-          open={rightOpen}
+          open={rightOpen&&!settingsOpen}
           requestId={rightRequest}
           tab={rightTab}
           onTabChange={setRightTab}
@@ -987,8 +996,7 @@ export function ConsolePage(props: ConsolePageProps) {
           onPick={pickProject}
           onClose={() => setDirPickerOpen(false)}
         />
-        <footer className="dsh-codex-workbench-status"><span><i className={'dsh-codex-dot '+(streamState==='open'?'ok':'warn')}/>{t('status.events.'+streamState)}</span><span className="dsh-codex-status-branch"><Icon name="git" size={13}/>{detail?.thread.gitInfo?.branch as string||'工作区'}</span><span className="dsh-codex-spacer"/><span>{t('projects.count',{count:totalThreads})}</span><button type="button" onClick={()=>setVersionsOpen(true)}>版本与连接</button></footer>
-        <VersionsDialog open={versionsOpen} api={api} onClose={() => setVersionsOpen(false)} />
+        <footer className="dsh-codex-workbench-status"><span><i className={'dsh-codex-dot '+(streamState==='open'?'ok':'warn')}/>{t('status.events.'+streamState)}</span><span className="dsh-codex-status-branch"><Icon name="git" size={13}/>{detail?.thread.gitInfo?.branch as string||'工作区'}</span><span className="dsh-codex-spacer"/><span>{t('projects.count',{count:totalThreads})}</span><button type="button" onClick={showSettings}>设置</button></footer>
       </div>
     </I18nContext.Provider>
   )

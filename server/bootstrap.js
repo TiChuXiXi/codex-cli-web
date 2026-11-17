@@ -7,6 +7,8 @@ import { WorkspaceService } from './services/workspace.js'
 import { TerminalService } from './services/terminal.js'
 import { createGitService } from './services/git.js'
 import { VersionService } from './services/versions.js'
+import { createSettingsFirewall } from './services/settings-firewall.js'
+import { SettingsService } from './services/settings.js'
 import { createRoutes } from './api/routes.js'
 import { createAuth, readAccessToken, json } from './auth.js'
 import { createLogger } from './logger.js'
@@ -14,6 +16,7 @@ import { createRuntime } from './runtime.js'
 import { createStatic } from './static.js'
 
 export async function bootstrap(config, options={}) {
+  const settingsFirewall=options.settingsFirewall ?? createSettingsFirewall({...config.settingsFirewall,port:config.port})
   const token=config.authMode==='network'?undefined:await readAccessToken(config)
   const logger=options.logger ?? createLogger(config.logLevel,[token])
   const auth=createAuth(config,token),bus=new EventBus({capacity:config.codex.eventBufferSize})
@@ -21,8 +24,9 @@ export async function bootstrap(config, options={}) {
   const followups=new FollowupQueue({hub,bus}),workspace=new WorkspaceService(bus),terminal=new TerminalService()
   const git=createGitService(config.git)
   const versions=new VersionService({config:config.codex,logger,bus,hub})
+  const settings=new SettingsService({config,auth,firewall:settingsFirewall})
   const runtime=createRuntime()
-  const routes=createRoutes({hub,bus,connection:auth,config:config.codex,logger,versions,runtime,workspace,git,followups,terminal})
+  const routes=createRoutes({hub,bus,connection:auth,config:config.codex,logger,versions,runtime,workspace,git,followups,terminal,settings})
   const serveStatic=createStatic(options.webRoot ?? fileURLToPath(new URL('../dist/web/',import.meta.url)))
   let closing=false,closePromise
   const sockets=new Set()
@@ -61,6 +65,7 @@ export async function bootstrap(config, options={}) {
       const deadline=setTimeout(()=>{for(const socket of sockets)socket.destroy()},3000)
       try {
         routes.dispose()
+        await settings.dispose()
         auth.dispose()
         followups.dispose()
         workspace.dispose()
@@ -82,6 +87,6 @@ export async function bootstrap(config, options={}) {
     auth.setOrigin(config.publicOrigin ?? origin)
     hub.start()
     logger.info('Listening on '+(config.publicOrigin ?? origin))
-    return {server,origin,close,hub,bus,runtime,workspace,terminal,followups,versions}
+    return {server,origin,close,hub,bus,runtime,workspace,terminal,followups,versions,settings}
   }catch(error){await close();throw error}
 }

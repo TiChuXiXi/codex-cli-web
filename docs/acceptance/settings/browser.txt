@@ -1,0 +1,28 @@
+
+> codex-cli-web@0.1.0 test:e2e
+> playwright test
+
+[WebServer] (node:3969720) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 14 tests using 1 worker
+
+(node:3969774) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   1 test/e2e/network-access.spec.ts:2:1 › IP allowlist opens the workbench without login, cookies or a logout control (2.0s)
+  ✓   2 test/e2e/settings.spec.ts:26:1 › settings contains the migrated update, daemon confirmation and rollback flows (4.3s)
+  ✓   3 test/e2e/settings.spec.ts:50:1 › whitelist editing persists, rejects invalid IPs and reloads the actual saved values (2.2s)
+  ✓   4 test/e2e/settings.spec.ts:71:1 › removing your own IP prompts before saving and can be cancelled (1.3s)
+  ✓   5 test/e2e/settings.spec.ts:83:1 › settings page stays usable at desktop and mobile sizes in both themes (2.2s)
+  ✓   6 test/e2e/settings.spec.ts:98:1 › returning from settings preserves a conversation draft and warns about unsaved whitelist changes (1.6s)
+  ✓   7 test/e2e/settings.spec.ts:118:1 › version job polling reports unknown status and recovers without repeating an update (1.5s)
+  ✓   8 test/e2e/settings.spec.ts:146:1 › reload confirms before discarding whitelist edits and cancellation preserves the draft (1.5s)
+  ✓   9 test/e2e/workbench.spec.ts:15:1 › login, conversation streaming, queue, refresh and logout (4.6s)
+  ✓  10 test/e2e/workbench.spec.ts:31:1 › command approval round trip (1.6s)
+  ✓  11 test/e2e/workbench.spec.ts:39:1 › themes, responsive navigation and file workbench (2.8s)
+  -  12 test/e2e/workbench.spec.ts:48:1 › responsive evidence in both themes
+  ✓  13 test/e2e/workbench.spec.ts:67:1 › login connection failure has a working retry and clears only the connection error (1.8s)
+  ✓  14 test/e2e/workbench.spec.ts:89:1 › file preview, HTML sandbox, terminal retention and Git workbench (3.3s)
+
+  1 skipped
+  13 passed (32.2s)

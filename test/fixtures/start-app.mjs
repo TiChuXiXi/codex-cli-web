@@ -16,7 +16,13 @@ export async function startFixture(overrides={}) {
   await exec('git',['init',root])
   await exec('git',['-C',root,'add','示例.md','preview.html'])
   await exec('git',['-C',root,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-m','Fixture'])
-  const config=await loadConfig({port:0,stateDir:join(root,'state'),accessToken:FIXTURE_TOKEN,logLevel:'silent',transport:'stdio',codexHome:join(root,'codex'),...overrides},{})
+  const {persistedConfig,...startup}=overrides
+  let configFile
+  if(persistedConfig) {
+    configFile=join(root,'application.json')
+    await writeFile(configFile,JSON.stringify(persistedConfig))
+  }
+  const config=await loadConfig({port:0,stateDir:join(root,'state'),accessToken:FIXTURE_TOKEN,logLevel:'silent',transport:'stdio',codexHome:join(root,'codex'),...startup,...(configFile?{configFile}:{})},{})
   let transport
   const app=await bootstrap(config,{openTransport:async()=>{
     transport=new StdioTransport({command:process.execPath,args:[fileURLToPath(new URL('./mock-codex.mjs',import.meta.url))],env:{...process.env,MOCK_WORKSPACE:root},logger:{warn(){},info(){}}})

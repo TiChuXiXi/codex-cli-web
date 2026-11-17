@@ -1,0 +1,43 @@
+.dsh-codex-root .codex-settings{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:24px clamp(16px,4vw,48px) 40px;color:var(--codex-text)}
+.codex-settings>*{width:min(860px,100%);margin-inline:auto;box-sizing:border-box}
+.codex-settings .settings-page-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}
+.settings-page-header p{margin:0;color:var(--codex-muted);font-size:13px}
+.codex-settings .settings-nav{display:flex;gap:24px;border-bottom:1px solid var(--codex-border);margin-bottom:4px}
+.settings-nav>button{display:flex;align-items:center;gap:8px;padding:12px 2px;border:0;border-bottom:2px solid transparent;background:none;font:inherit;font-size:14px;color:var(--codex-muted);cursor:pointer}
+.settings-nav>button[aria-selected=true]{color:var(--codex-text);border-bottom-color:var(--codex-accent);font-weight:600}
+.codex-settings :focus-visible{outline:2px solid var(--codex-accent);outline-offset:3px}
+.codex-settings [hidden]{display:none!important}
+.codex-settings .settings-versions{width:100%;max-width:none;margin:0;padding:0;display:flex;flex-direction:column}
+.codex-settings .settings-versions .versions-header{padding:24px 0 18px}
+.codex-settings .settings-versions .versions-body{padding:22px 0}
+.codex-settings .settings-versions .versions-footer{padding:14px 0}
+.codex-settings .settings-access{padding:24px 0}
+.settings-access h2{font-size:18px;font-weight:650;line-height:1.5;margin:0 0 6px}
+.settings-access header>p{font-size:13px;line-height:1.6;color:var(--codex-muted);margin:0}
+.settings-access-facts{display:flex;gap:clamp(24px,6vw,64px);padding:20px 0;margin:0 0 24px;border-bottom:1px solid var(--codex-border)}
+.settings-access-facts dt{font-size:12px;color:var(--codex-muted);margin-bottom:6px}
+.settings-access-facts dd{margin:0;font-size:14px;overflow-wrap:anywhere}
+.settings-access code{font-family:ui-monospace,monospace;font-size:13px}
+.settings-access fieldset{margin:0;padding:0;border:0;min-width:0}
+.settings-access legend{padding:0;font-size:14px;font-weight:600}
+.settings-access .settings-field-help{margin:8px 0 16px;color:var(--codex-muted);font-size:12px;line-height:1.6}
+.settings-ip-list{display:flex;flex-direction:column;gap:10px;margin-bottom:12px;max-width:600px}
+.settings-ip-row{display:flex;gap:10px;align-items:center}
+.settings-ip-row input{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--codex-border);border-radius:8px;background:var(--codex-bg);color:var(--codex-text);font:13px ui-monospace,monospace;line-height:1.5}
+.settings-ip-row input::placeholder{color:var(--codex-muted)}
+.settings-remove{display:grid;place-items:center;width:38px;height:38px;flex:none;border:0;border-radius:7px;background:none;color:var(--codex-muted);cursor:pointer}
+.settings-remove:hover:not(:disabled){background:var(--codex-soft);color:var(--codex-danger)}
+.settings-form-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:24px}
+.codex-settings .settings-primary{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:8px 14px;border:0;border-radius:7px;font:inherit;font-size:13px;background:#3264cd;color:#fff;cursor:pointer}
+.codex-settings .settings-primary:hover:not(:disabled){background:#2854b5}
+.codex-settings button:disabled{opacity:.5;cursor:default}
+.settings-message,.settings-notice{font-size:13px;line-height:1.6;overflow-wrap:anywhere;margin:18px 0 0}
+.settings-message.is-error{color:var(--codex-danger)}
+.settings-message.is-success{color:var(--codex-success)}
+.settings-message>button{margin-left:12px}
+.settings-notice{background:var(--codex-panel);padding:12px;border-radius:8px;margin-bottom:20px}
+.settings-confirm{margin-top:24px;padding:16px;background:var(--codex-panel);border-radius:10px;font-size:13px;line-height:1.6}
+.settings-confirm p{margin:8px 0 16px}
+.settings-confirm>div{display:flex;flex-wrap:wrap;gap:10px}
+.settings-sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:560px){.dsh-codex-root .codex-settings{padding:16px 16px 28px}.codex-settings .settings-page-header{align-items:flex-start;gap:10px}.settings-page-header p{max-width:16ch}.codex-settings .settings-nav{gap:20px}.settings-access-facts{gap:24px;flex-wrap:wrap}.settings-form-actions .settings-primary{flex:1}}

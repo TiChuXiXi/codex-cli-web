@@ -1,7 +1,7 @@
-/** 版本与健康对话框：版本探测、升级/回滚、守护进程动作、doctor 体检。 */
+/** 设置页的版本面板：版本探测、升级/回滚、守护进程动作和体检。 */
 
 import * as React from 'react'
-import { Icon, IconButton } from '../components/Icon'
+import { Icon } from '../components/Icon'
 import { VERSIONS_CSS } from './versionsStyles'
 import { useT } from '../i18n'
 import type { Api } from '../rpc'
@@ -30,20 +30,13 @@ interface JobState {
   lines: string[]
 }
 
-export interface VersionsDialogProps {
-  open: boolean
-  onClose: () => void
-  api: Api
-}
+export interface VersionsPanelProps { api: Api }
 
-export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
+export function VersionsPanel({ api }: VersionsPanelProps) {
   const t = useT()
   const [check, setCheck] = React.useState<VersionCheck | null>(null)
   const titleId = React.useId()
   const rollbackId = React.useId()
-  const dialogRef = React.useRef<HTMLDivElement | null>(null)
-  const onCloseRef = React.useRef(onClose)
-  onCloseRef.current = onClose
   const [submitting, setSubmitting] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -53,6 +46,8 @@ export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
   const [pendingDaemon, setPendingDaemon] = React.useState<string | null>(null)
   const [lastAction, setLastAction] = React.useState<{ endpoint: string, payload: Record<string, unknown> } | null>(null)
   const pollRef = React.useRef<number | null>(null)
+  const pollGeneration = React.useRef(0)
+  const pollFailed = React.useRef(false)
   const logRef = React.useRef<HTMLPreElement | null>(null)
 
   const load = React.useCallback(
@@ -72,11 +67,12 @@ export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
   )
 
   React.useEffect(() => {
-    if (open) void load(false)
-  }, [open, load])
+    void load(false)
+  }, [load])
 
   React.useEffect(
     () => () => {
+      pollGeneration.current += 1
       if (pollRef.current !== null) window.clearInterval(pollRef.current)
     },
     [],
@@ -84,21 +80,28 @@ export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
 
   const pollJob = React.useCallback(
     (jobId: string) => {
+      const generation = ++pollGeneration.current
+      let inFlight = false
+      pollFailed.current = false
       if (pollRef.current !== null) window.clearInterval(pollRef.current)
       pollRef.current = window.setInterval(async () => {
+        if (inFlight || generation !== pollGeneration.current) return
+        inFlight = true
         try {
           const state = await api<JobState>('versions/job', { jobId })
+          if (generation !== pollGeneration.current) return
+          if (pollFailed.current) { pollFailed.current = false; setError(null) }
           setJob(state)
           if (state.status !== 'running') {
             if (pollRef.current !== null) window.clearInterval(pollRef.current)
             pollRef.current = null
             void load(true)
           }
-        } catch {
-          // 任务可能已被清理；停止轮询。
-          if (pollRef.current !== null) window.clearInterval(pollRef.current)
-          pollRef.current = null
-        }
+        } catch (cause) {
+          if (generation !== pollGeneration.current) return
+          pollFailed.current = true
+          setError('任务状态读取失败，正在重试。状态尚未确认，请勿重复执行更新。' + messageOf(cause))
+        } finally { inFlight = false }
       }, 1000)
     },
     [api, load],
@@ -133,34 +136,6 @@ export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
     if (element !== null) element.scrollTop = element.scrollHeight
   }, [job?.lines.length])
 
-  React.useEffect(() => {
-    if (!open) return
-    const previous = document.activeElement
-    dialogRef.current?.focus()
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onCloseRef.current(); return }
-      if (event.key !== 'Tab') return
-      const dialog = dialogRef.current
-      if (dialog === null) return
-      const elements = Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), summary, pre[tabindex]'))
-        .filter((element) => element.getClientRects().length > 0)
-      const first = elements[0], last = elements[elements.length - 1]
-      const outside = document.activeElement === dialog || !dialog.contains(document.activeElement)
-      if (event.shiftKey && (document.activeElement === first || outside)) {
-        event.preventDefault(); last?.focus()
-      } else if (!event.shiftKey && (document.activeElement === last || outside)) {
-        event.preventDefault(); first?.focus()
-      }
-    }
-    document.addEventListener('keydown', onKeyDown, true)
-    return () => {
-      document.removeEventListener('keydown', onKeyDown, true)
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus()
-    }
-  }, [open])
-
-  if (!open) return null
-
   const doctor = check?.doctor ?? null
   const problems = doctor?.checks.filter((entry) => entry.status !== 'ok') ?? []
   const daemonVersion = check?.daemon?.appServerVersion ?? check?.daemon?.cliVersion ?? null
@@ -176,15 +151,10 @@ export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
           : job?.kind === 'daemon-stop' ? t('versions.stop') : t('versions.job')
 
   return (
-    <div className="dsh-codex-dialog-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose()
-    }}>
+    <section className="dsh-codex-versions settings-versions" aria-labelledby={titleId}>
       <style>{VERSIONS_CSS}</style>
-      <div className="dsh-codex-dialog dsh-codex-versions" role="dialog" aria-modal="true" aria-labelledby={titleId}
-        ref={dialogRef} tabIndex={-1}>
         <header className="versions-header">
-          <div><h2 id={titleId}>{t('versions.title')}</h2><p>{t('versions.subtitle')}</p></div>
-          <IconButton icon="close" label={t('versions.close')} onClick={onClose} />
+          <div><h2 id={titleId}>版本与更新</h2><p>{t('versions.subtitle')}</p></div>
         </header>
 
         <div className="versions-body">
@@ -223,7 +193,7 @@ export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
             {job !== null ? <section className={`versions-task is-${job.status}`} aria-label={t('versions.job')}>
               <div className="versions-section-heading" role="status">
                 <h3><Icon name={job.status === 'running' ? 'loader' : job.status === 'done' ? 'circleCheck' : 'circleAlert'} className={job.status === 'running' ? 'versions-spinner' : undefined} size={17} />{jobLabel}</h3>
-                <span>{job.status === 'running' ? t('versions.running') : job.status === 'done' ? t('versions.done') : t('versions.failed', { code: job.exitCode ?? '?' })}</span>
+                <span>{job.status === 'running' ? (pollFailed.current ? '状态待确认' : t('versions.running')) : job.status === 'done' ? t('versions.done') : t('versions.failed', { code: job.exitCode ?? '?' })}</span>
               </div>
               {job.status === 'done' && (job.kind === 'update' || job.kind === 'rollback') ? <p className="versions-task-hint">{t('versions.updatedHint')}</p> : null}
               <details className="versions-log" open={job.status !== 'done'}>
@@ -289,10 +259,8 @@ export function VersionsDialog({ open, onClose, api }: VersionsDialogProps) {
 
         <footer className="versions-footer">
           <span className="versions-muted">{check !== null ? t('versions.checkedAt', { time: new Date(check.checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }) : t('versions.checking')}</span>
-          <button type="button" className="dsh-codex-button" onClick={onClose}>{t('versions.close')}</button>
         </footer>
-      </div>
-    </div>
+    </section>
   )
 }
 

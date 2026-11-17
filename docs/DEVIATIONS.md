@@ -33,3 +33,11 @@ W-02：验收手册写“删除移入 .dsh-trash”，但锁定源码 WorkspaceS
 用户明确取消内网登录凭证，并指定当前白名单只有 192.168.1.80。增加 authMode=network 和 allowedClients（精确 IPv4/IPv6 或 CIDR），默认 token 模式保持原行为。部署配置为 config.lan.json；network 模式不读取/生成访问凭证、不签发 Cookie，隐藏登出入口。白名单校验在静态页面及全部业务通道之前执行，使用真实 TCP 对端，保留 Host/Origin 和写请求同源检查。
 
 来源名单变更需重启服务；允许网段和其他 IP 是可配置能力，不表示当前已放行。新增 test/client-access.test.mjs 和 test/e2e/network-access.spec.ts。原压缩包中强制 Web 登录的要求已由本次用户指令覆盖。
+
+## 用户追加：设置页面与白名单管理
+
+新增工作台“设置”页面，将原 VersionsDialog 的检查更新、升级、回滚、守护进程管理及体检迁为 VersionsPanel 页内内容；原入口改为设置，保留原业务 API 和活动回合保护。新增“访问白名单”分类，支持逐行添加、删除、校验、保存和重新加载；显示实际对端 IP，移除当前 IP 需明确确认，未保存离开有提示。
+
+新增 settings/read、settings/whitelist 两个认证 RPC。保存有 revision 冲突检查，白名单原子写入所用应用配置（无配置文件时写 state-dir/settings.json），更新内存过滤器并关闭被移除 IP 的活动连接。CLI/环境覆盖白名单时页面只读，避免保存后无效。旧版本弹窗文件已移除。
+
+当前服务器 config.lan.json 开启 settingsFirewall，由服务以显式配置的 zone/destination/当前端口同步精确来源 rich rules 的运行时和永久规则。只操作对应白名单规则，不 reload 全局防火墙；同步或落盘失败会回滚已执行步骤并保留旧内存配置。模拟测试不执行真实升级/daemon 管理，也不调用服务器 firewalld。
