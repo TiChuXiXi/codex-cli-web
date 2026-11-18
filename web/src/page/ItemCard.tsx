@@ -82,7 +82,7 @@ function AsyncQuestions({ item, onAnswer }: { item: CodexItem, onAnswer?: (text:
   </section>
 }
 
-function Message({
+export function Message({
   api,
   cwd = '',
   kind,

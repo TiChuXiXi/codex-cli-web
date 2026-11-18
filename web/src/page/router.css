@@ -4,7 +4,6 @@
 .dsh-codex-root .dsh-codex-router .dsh-codex-button { min-height:44px; }
 .dsh-codex-root .dsh-codex-router-tabs .dsh-codex-button[aria-pressed="true"],
 .dsh-codex-root .dsh-codex-router-nav[aria-pressed="true"] { background:var(--codex-selected); color:var(--codex-text); }
-.dsh-codex-root .dsh-codex-router-model { margin-inline-start:auto; overflow-wrap:anywhere; color:var(--codex-muted); font-size:13px; }
 .dsh-codex-root .dsh-codex-router-scroll { flex:1; overflow:auto; min-height:0; width:min(100%, 900px); margin-inline:auto; padding:16px; box-sizing:border-box; }
 .dsh-codex-root .dsh-codex-router-empty,
 .dsh-codex-root .dsh-codex-router-meta { color:var(--codex-muted); font-size:13px; }
@@ -18,5 +17,6 @@
 .dsh-codex-root .dsh-codex-router-choices li { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--codex-border); }
 .dsh-codex-root .dsh-codex-router-choices li > div { min-width:0; overflow-wrap:anywhere; }
 .dsh-codex-root .dsh-codex-router-alert { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:8px 16px; }
-.dsh-codex-root .dsh-codex-router-composer { width:min(100%, 900px); margin-inline:auto; box-sizing:border-box; }
-.dsh-codex-root .dsh-codex-router-actions { justify-content:flex-end; gap:8px; }
+.dsh-codex-root .dsh-codex-router .dsh-codex-composer-input { max-height:240px; overflow-y:auto; }
+.dsh-codex-root .dsh-codex-router .dsh-codex-model-trigger { cursor:default; max-width:100%; }
+.dsh-codex-root .dsh-codex-router .dsh-codex-router-card { width:100%; box-sizing:border-box; }

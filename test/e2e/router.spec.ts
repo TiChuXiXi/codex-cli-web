@@ -60,3 +60,112 @@ test('Router restores a choice, confirms only the selected Worker and opens it f
   await expect(page.locator('.dsh-codex-workbench-header h1')).toHaveText('验收会话')
   await expect(page.getByRole('region', { name: 'Router' })).toHaveCount(0)
 })
+
+test('Router shares message rendering, keyboard input, drafts and stream scrolling', async ({ page }, info) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  await page.addInitScript(() => {
+    const Native = window.EventSource
+    window.EventSource = class extends Native {
+      constructor(url: string | URL, init?: EventSourceInit) {
+        super(url, init)
+        window.addEventListener('fixture-router-update', () => this.onmessage?.call(this,
+          new MessageEvent('message', { data: JSON.stringify({ type: 'router/changed', payload: {} }) })))
+      }
+    }
+  })
+  let busy = false
+  let fail = true
+  const ids: string[] = []
+  const messages = [{ id: 'agent-1', role: 'assistant', status: 'completed',
+    text: '| 会话名称 | 会话 ID |\n| --- | --- |\n| 已有会话 | `session-1` |\n\n```js\nconst total = 1 + 1\n```' }]
+  await page.route('**/codex-cli/status', async route => {
+    const response = await route.fetch()
+    const body = await response.json()
+    body.result.value.router = { enabled: true, phase: 'ready' }
+    await route.fulfill({ response, json: body })
+  })
+  await page.route('**/codex-cli/router/**', async route => {
+    const request = route.request().postDataJSON()
+    if (request.method === 'router/send') {
+      ids.push(request.payload.requestId)
+      if (fail) {
+        fail = false
+        await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId,
+          result: { ok: false, error: { code: 'fixture-failure', message: '发送失败，请重试' } } } })
+        return
+      }
+      messages.push({ id: 'user-1', role: 'user', status: 'completed', text: request.payload.text })
+      messages.push({ id: 'stream', role: 'assistant', status: 'streaming', text: '正在检索' })
+      busy = true
+    }
+    const value = request.method === 'router/read'
+      ? { enabled: true, phase: 'ready', error: null, model: 'gpt-6.1-terra', busy, messages,
+          clarifications: [], tasks: [], latestEventId: 0 } : {}
+    await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } } })
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证', { exact: true }).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button', { name: '登录工作台' }).click()
+  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  const router = page.getByRole('region', { name: 'Router', exact: true })
+  const input = page.getByRole('textbox', { name: '给 Router 发送消息' })
+  const send = router.getByRole('button', { name: '发送', exact: true })
+  await expect(router.getByRole('table')).toBeVisible()
+  await expect(router.locator('pre')).toContainText('const total = 1 + 1')
+  await expect(router.getByText('GPT-6.1 Terra', { exact: true })).toBeVisible()
+  await input.fill('第一行')
+  await input.press('Shift+Enter')
+  await input.press('a')
+  await expect(input).toHaveValue('第一行\na')
+  expect(ids).toHaveLength(0)
+  await input.dispatchEvent('compositionstart')
+  await input.press('Enter')
+  expect(ids).toHaveLength(0)
+  await input.dispatchEvent('compositionend')
+  await input.fill('重试消息')
+  await input.press('Enter')
+  await expect(router.getByRole('alert')).toHaveText('发送失败，请重试')
+  await expect(input).toHaveValue('重试消息')
+  await input.press('Enter')
+  await expect(input).toHaveValue('')
+  expect(ids).toHaveLength(2)
+  expect(ids[0]).toBe(ids[1])
+  await expect(send).toBeDisabled()
+  await expect(router.getByRole('status')).toContainText('Router 正在回复')
+  await input.fill('尚未发送的草稿')
+  await input.press('Enter')
+  expect(ids).toHaveLength(2)
+
+  const log = router.getByRole('log')
+  const update = async () => {
+    await page.evaluate(() => window.dispatchEvent(new Event('fixture-router-update')))
+  }
+  messages.at(-1)!.text = Array.from({ length: 60 }, (_, i) => '流式消息第 ' + i + ' 行').join('\n\n')
+  await update()
+  await expect(log).toContainText('流式消息第 59 行')
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(33)
+  await log.evaluate(el => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')) })
+  await expect(router.getByRole('button', { name: '回到底部' })).toBeVisible()
+  messages.at(-1)!.text += '\n\n新增尾部内容'
+  await update()
+  await expect(log).toContainText('新增尾部内容')
+  await expect.poll(() => log.evaluate(el => el.scrollTop)).toBe(0)
+  await router.getByRole('button', { name: '回到底部' }).click()
+  await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(33)
+  messages.at(-1)!.status = 'completed'
+  busy = false
+  await update()
+  await expect(send).toBeEnabled()
+  await page.reload()
+  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  await expect(input).toHaveValue('尚未发送的草稿')
+  await log.evaluate(el => { el.scrollTop = 0 })
+  await page.screenshot({ path: info.outputPath('router-chat-desktop.png'), animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: '切换深色模式' }).click()
+  await expect(router.getByRole('table')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false)
+  await page.screenshot({ path: info.outputPath('router-chat-mobile-dark.png'), animations: 'disabled' })
+  expect(errors).toEqual([])
+})

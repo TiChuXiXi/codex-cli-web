@@ -132,7 +132,7 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
         config: threadConfig,
       }),
       resume: threadId => request('thread/resume', {
-        threadId, excludeTurns: true, cwd, approvalPolicy: 'never', sandbox: 'read-only', config: threadConfig,
+        ...base, threadId, excludeTurns: true, sandbox: 'read-only', config: threadConfig,
       }),
       send: (threadId, text, requestId) => request('turn/start', {
         ...base,
@@ -151,7 +151,7 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
 
 export function normalizeRouterConfig(value) {
   if (value === undefined || value?.enabled !== true) return { enabled: false }
-  const { launcher, launcherSha256, projects = [], models = [] } = value
+  const { launcher, launcherSha256, projects = [], models = [{ model: 'gpt-6.1-terra', effort: 'low' }] } = value
   if (typeof launcher !== 'string' || !isAbsolute(launcher) ||
       typeof launcherSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(launcherSha256)) {
     throw new Error('启用 Router 需要绝对启动器路径和小写 SHA-256')

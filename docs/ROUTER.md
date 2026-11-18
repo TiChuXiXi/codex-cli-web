@@ -25,7 +25,7 @@ Router 是工作台内的独立对话入口。它用专用 Codex App Server 管�
     "launcher": "/opt/codex-router/router-launcher.sh",
     "launcherSha256": "<实际启动器的 64 位小写 SHA-256>",
     "models": [
-      { "model": "<账号验证通过的模型>", "effort": "low" }
+      { "model": "gpt-6.1-terra", "effort": "low" }
     ],
     "projects": [
       {
@@ -40,7 +40,7 @@ Router 是工作台内的独立对话入口。它用专用 Codex App Server 管�
 }
 ```
 
-`models` 按数组顺序选择第一个已验证组合，默认关闭 Router。项目列表可为空。项目策略默认 `read-only`，可显式设为 `workspace-write`。可写 Worker 的有效策略必须把写入限制在项目目录，禁用临时目录的额外写权限和网络访问，并由用户审批。项目路径必须是已存在的目录，与 Router 状态目录分离。
+Router 默认关闭；启用且省略 `models` 时默认使用 GPT-6.1 Terra（`gpt-6.1-terra`，`low`）。显式配置 `models` 时按数组顺序选择第一个已验证组合，不会自动替换成未配置的模型。模型与推理强度仍须通过账号目录验证。恢复已有 Router 线程时也应用所选模型，保留会话历史。项目列表可为空。项目策略默认 `read-only`，可显式设为 `workspace-write`。可写 Worker 的有效策略必须把写入限制在项目目录，禁用临时目录的额外写权限和网络访问，并由用户审批。项目路径必须是已存在的目录，与 Router 状态目录分离。
 
 ## 任务、恢复和停用
 

@@ -2,6 +2,8 @@ import * as React from 'react'
 import type { Api } from '../rpc'
 import { randomId } from '../randomId'
 import type { RouterSnapshot, RouterTask, RouterClarification } from '../../../shared/contracts'
+import { Message } from './ItemCard'
+import { Icon } from '../components/Icon'
 import './router.css'
 
 const labels: Record<string, string> = {
@@ -13,7 +15,13 @@ const labels: Record<string, string> = {
 export function RouterView({ api, revision, onWorker }: { api: Api, revision: number, onWorker: (id: string) => void }) {
   const [snapshot, setSnapshot] = React.useState<RouterSnapshot | null>(null)
   const [error, setError] = React.useState<string | null>(null)
-  const [text, setText] = React.useState('')
+  const [text, setText] = React.useState(() => {
+    try { return sessionStorage.getItem('codex-router-draft') ?? '' } catch { return '' }
+  })
+  const [showJump, setShowJump] = React.useState(false)
+  const inputRef = React.useRef<HTMLTextAreaElement>(null)
+  const composing = React.useRef(false)
+  const submitting = React.useRef(false)
   const [sending, setSending] = React.useState(false)
   const [acting, setActing] = React.useState<string | null>(null)
   const [tab, setTab] = React.useState<'chat' | 'tasks'>('chat')
@@ -23,6 +31,7 @@ export function RouterView({ api, revision, onWorker }: { api: Api, revision: nu
   const retry = React.useRef<{ text: string, id: string } | null>(null)
   const reads = React.useRef(0)
   const log = React.useRef<HTMLDivElement>(null)
+  const contentRef = React.useRef<HTMLDivElement>(null)
   const stickToEnd = React.useRef(true)
 
   const refresh = React.useCallback(async () => {
@@ -37,9 +46,29 @@ export function RouterView({ api, revision, onWorker }: { api: Api, revision: nu
 
   React.useEffect(() => { void refresh() }, [refresh, revision])
   React.useEffect(() => {
+    try { sessionStorage.setItem('codex-router-draft', text) } catch {}
+  }, [text])
+  React.useLayoutEffect(() => {
+    const input = inputRef.current
+    if (!input) return
+    input.style.height = 'auto'
+    input.style.height = Math.min(input.scrollHeight, 240) + 'px'
+  }, [text, tab])
+  React.useLayoutEffect(() => {
     const view = log.current
     if (view && stickToEnd.current) view.scrollTop = view.scrollHeight
   }, [tab, snapshot?.messages, snapshot?.clarifications.length])
+  React.useLayoutEffect(() => {
+    const view = log.current
+    const content = contentRef.current
+    if (!view || !content) return
+    const follow = () => { if (stickToEnd.current) view.scrollTop = view.scrollHeight }
+    const observer = new ResizeObserver(follow)
+    observer.observe(view)
+    observer.observe(content)
+    content.addEventListener('load', follow, true)
+    return () => { observer.disconnect(); content.removeEventListener('load', follow, true) }
+  }, [tab])
   React.useEffect(() => {
     if (tab !== 'tasks' || !snapshot?.latestEventId) return
     setViewed(snapshot.latestEventId)
@@ -53,20 +82,23 @@ export function RouterView({ api, revision, onWorker }: { api: Api, revision: nu
     finally { await refresh() }
   }
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault()
-    if (!text.trim() || sending || snapshot?.busy || snapshot?.phase !== 'ready') return
+  async function submit() {
+    if (!text.trim() || submitting.current || snapshot?.busy || snapshot?.phase !== 'ready') return
+    submitting.current = true
     const input = text.trim()
     const id = retry.current?.text === input ? retry.current.id : randomId()
     retry.current = { text: input, id }
     stickToEnd.current = true
+    setShowJump(false)
     setSending(true)
     await action(async () => {
       await api('router/send', { text: input, requestId: id })
       setText(current => current.trim() === input ? '' : current)
       retry.current = null
     })
+    submitting.current = false
     setSending(false)
+    inputRef.current?.focus()
   }
 
   async function choose(item: RouterClarification, candidateId?: string) {
@@ -85,7 +117,6 @@ export function RouterView({ api, revision, onWorker }: { api: Api, revision: nu
       <button type="button" className="dsh-codex-button" aria-pressed={tab === 'tasks'} onClick={() => setTab('tasks')}>
         {latestUnseen ? '任务 · 有更新' : '任务'}
       </button>
-      {snapshot?.model && <span className="dsh-codex-router-model">{snapshot.model}</span>}
     </nav>
     {error && <p className="dsh-codex-error" role="alert">{error}</p>}
     {snapshot?.error && <div className="dsh-codex-router-alert" role="status">
@@ -96,21 +127,22 @@ export function RouterView({ api, revision, onWorker }: { api: Api, revision: nu
       {snapshot?.enabled === false ? 'Router 未启用' : '正在连接 Router…'}
     </p>}
     {tab === 'chat' && <>
-      <div ref={log} className="dsh-codex-router-scroll dsh-codex-messages" role="log" aria-label="Router 对话"
+      <div className="dsh-codex-messages-wrap">
+      <div ref={log} className="dsh-codex-messages" role="log" aria-label="Router 对话"
         onScroll={event => {
           const { scrollTop, scrollHeight, clientHeight } = event.currentTarget
-          stickToEnd.current = scrollHeight - scrollTop - clientHeight < 96
+          stickToEnd.current = scrollHeight - scrollTop - clientHeight <= 32
+          setShowJump(!stickToEnd.current)
         }}>
         {ready && !snapshot?.messages.length && <p className="dsh-codex-router-empty">
           可以直接聊天，也可以让 Router 查找已登记项目、续接会话或查询任务。
         </p>}
-        {snapshot?.messages.map(message => <article key={message.id} aria-live={message.status === 'streaming' ? 'off' : undefined}
-          className={'dsh-codex-message ' + (message.role === 'user' ? 'user' : 'assistant')}>
-          <span className="dsh-codex-message-head">{message.role === 'user' ? '你' : 'Router'}</span>
-          <div className="dsh-codex-bubble dsh-codex-router-text">{message.text}</div>
+        <div ref={contentRef} className="dsh-codex-message-content">
+        {snapshot?.messages.map(message => <React.Fragment key={message.id}>
+          <Message api={api} kind={message.role} label={message.role === 'user' ? '你' : 'Router'} text={message.text}/>
           {message.status === 'unknown' && <span className="dsh-codex-router-meta">消息结果待核对</span>}
           {message.status === 'failed' && <span className="dsh-codex-router-meta">Router 回合失败</span>}
-        </article>)}
+        </React.Fragment>)}
         {snapshot?.clarifications.map(item => <section key={item.id} className="dsh-codex-router-card" aria-label={item.label}>
           <h2>{item.label}</h2>
           {item.original && <details className="dsh-codex-router-original">
@@ -136,15 +168,38 @@ export function RouterView({ api, revision, onWorker }: { api: Api, revision: nu
           <button type="button" className="dsh-codex-button" disabled={!ready || acting !== null}
             onClick={() => void choose(item)}>取消</button>
         </section>)}
+        </div>
       </div>
-      <form className="dsh-codex-composer-wrap dsh-codex-router-composer" onSubmit={submit}>
-        <div className="dsh-codex-composer-card">
-          <textarea aria-label="给 Router 发送消息" className="dsh-codex-composer-input" rows={2} maxLength={12000}
-            placeholder="给 Router 发送消息" value={text} onChange={event => setText(event.target.value)}/>
-          <div className="dsh-codex-composer-row dsh-codex-router-actions">
-            {snapshot?.busy && <span role="status" className="dsh-codex-router-meta">Router 正在回复…</span>}
-            <button type="submit" className="dsh-codex-button primary"
-              disabled={!ready || !text.trim() || snapshot?.busy || sending}>发送</button>
+      {showJump && <button type="button" className="dsh-codex-jump" aria-label="回到底部" onClick={() => {
+        stickToEnd.current = true
+        setShowJump(false)
+        log.current?.scrollTo({ top: log.current.scrollHeight, behavior: 'smooth' })
+      }}><Icon name="arrowDown" size={16}/></button>}
+      </div>
+      {snapshot?.busy && <div role="status" className="dsh-codex-running-bar">
+        <Icon name="loader" size={16} className="dsh-codex-running-spinner"/>Router 正在回复…
+      </div>}
+      <form className="dsh-codex-composer-wrap" onSubmit={event => { event.preventDefault(); void submit() }}>
+        <div className="dsh-codex-composer-card" aria-busy={sending || snapshot?.busy}>
+          <textarea ref={inputRef} aria-label="给 Router 发送消息" className="dsh-codex-composer-input" rows={1} maxLength={12000}
+            placeholder="给 Router 发送消息" value={text} disabled={!ready}
+            onChange={event => setText(event.target.value)}
+            onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
+            onKeyDown={event => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !composing.current) {
+                event.preventDefault()
+                void submit()
+              }
+            }}/>
+          <div className="dsh-codex-composer-row">
+            <div className="dsh-codex-composer-spacer"/>
+            <div className="dsh-codex-composer-trailing">
+            {snapshot?.model && <span className="dsh-codex-model-trigger" title={snapshot.model}>
+              <Icon name="model" size={16}/><span className="dsh-codex-model-label">{snapshot.model === 'gpt-6.1-terra' ? 'GPT-6.1 Terra' : snapshot.model}</span>
+            </span>}
+            <button type="submit" className="dsh-codex-send" aria-label="发送" title="发送"
+              disabled={!ready || !text.trim() || snapshot?.busy || sending}><Icon name="arrowUp" size={16}/></button>
+            </div>
           </div>
         </div>
       </form>

@@ -49,3 +49,11 @@ W-02：验收手册写“删除移入 .dsh-trash”，但锁定源码 WorkspaceS
 ## Router 工作台扩展
 
 新增可选 Router 入口与 SQLite 状态区，权限边界由专用 Codex 工具白名单、私有启动器和 Node 调度网关共同执行。Worker 派发使用原生空闲队列并保留现有手动工作台、RPC 信封和 SSE。默认关闭。详见 [Router MVP](ROUTER.md)。
+
+## Router 对话体验对齐
+
+Router 复用普通会话的 Message 组件、Markdown 渲染及消息列和输入区样式，支持表格、代码块、用户消息复制、Enter 发送、Shift+Enter 换行、输入法保护、输入区自适应高度与草稿保留。流式消息跟随底部，上滚阅读时保持位置并提供回到底部按钮；保留候选确认和任务页。Router 的受控工具边界不变，附件、通用命令、模型自由切换和 Worker 原生队列仍由普通会话提供。
+
+仅 Router 会话默认模型设为 `gpt-6.1-terra`（low），本机只调整 `router.models`；普通会话的默认模型及已有选择不变。新建、恢复和后续 Router 回合都传所选模型，保留原 Router 历史。显式的 Router 候选配置仍可覆盖默认值，且须通过账号目录验证。新增 Router 模型协议夹具与对话浏览器回归测试；夹具不调用真实模型。
+
+本次验证：build、typecheck、10 项 Router 单元/协议夹具和 7 项相关浏览器回归通过；原有 VISUAL 专用矩阵未启用（1 项跳过），已人工检查 Router 桌面浅色与手机深色截图。部署服务重启后日志确认 `Router 已就绪（gpt-6.1-terra，9 个登记项目）`；未执行真实模型对话，不据此宣称完整视觉矩阵或全部功能验收通过。
