@@ -23,3 +23,13 @@ export function createClientFilter(entries = []) {
     return version !== 0 && block.check(address, version === 4 ? 'ipv4' : 'ipv6')
   }
 }
+
+const loopback = createClientFilter(['127.0.0.1', '::1'])
+export const isLanAddress = createClientFilter(['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16'])
+export function isLocalSetupRequest(config, request) {
+  const { remoteAddress, localAddress, localPort } = request.socket
+  return config.localWhitelistSetup && loopback(remoteAddress) && loopback(localAddress) &&
+    request.headers.host === (localPort === 80 ? '127.0.0.1' : `127.0.0.1:${localPort}`) &&
+    request.headers['x-forwarded-for'] === undefined &&
+    request.headers.forwarded === undefined
+}

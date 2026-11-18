@@ -1,7 +1,7 @@
 import { readFile, mkdir, open, rename, unlink, lstat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
-import { createClientFilter } from '../client-access.js'
+import { createClientFilter, isLocalSetupRequest } from '../client-access.js'
 import { HubError } from '../codex/hub.js'
 import { createSettingsFirewall } from './settings-firewall.js'
 
@@ -14,7 +14,7 @@ export class SettingsService {
     this.auth=auth
     this.firewall=firewall
     this.renameFile=renameFile
-    this.path=config.configFile || join(config.stateDir,'settings.json')
+    this.path=(config.accessScope===undefined && config.configFile) || join(config.stateDir,'settings.json')
   }
   revision(){return createHash('sha256').update(JSON.stringify(this.config.allowedClients)).digest('hex').slice(0,20)}
   read(request) {
@@ -44,7 +44,8 @@ export class SettingsService {
     if(!next.length || next.some(ip=>!ip))throw fail('invalid','白名单至少需要一个有效 IP 或 CIDR')
     let allowed
     try{allowed=createClientFilter(next)}catch(error){throw fail('invalid',error.message)}
-    if(this.config.authMode==='network' && !allowed(request.socket.remoteAddress) && payload.confirmSelfRemoval!==true)
+    const disconnecting=this.config.authMode==='network' && !allowed(request.socket.remoteAddress) && !isLocalSetupRequest(this.config,request)
+    if(disconnecting && payload.confirmSelfRemoval!==true)
       throw fail('self-removal','保存后，当前访问 IP 将不再被允许。确认后当前连接会断开。')
     let file={},mode=0o600
     try {
@@ -79,7 +80,7 @@ export class SettingsService {
     }
     this.auth.setAllowedClients(next,response)
     this.config.allowedClients=next
-    return {...this.read(request),saved:true,disconnecting:this.config.authMode==='network' && !allowed(request.socket.remoteAddress)}
+    return {...this.read(request),saved:true,disconnecting}
   }
   async dispose(){this.#disposed=true;await this.#queue}
 }

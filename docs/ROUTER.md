@@ -40,6 +40,8 @@ Router 是工作台内的独立对话入口。它用专用 Codex App Server 管�
 }
 ```
 
+新电脑使用 `config.portable.json` 时，部署完上述 Router 运行组件后，用同一个运行账号和状态目录执行 `npm start -- --config config.portable.json --register-router-launcher /绝对路径/launch.sh`。命令自动记录启动器路径和摘要，服务下次启动时加载。已有 Codex 会话中的项目自动列出，首次使用前在面板确认项目目录。授权以只读方式保存，重启后复用。路径或目录身份变化时需重新确认。专用运行组件未安装时，普通工作台可独立使用。
+
 Router 默认关闭；启用且省略 `models` 时默认使用 GPT-6.1 Terra（`gpt-6.1-terra`，`low`）。显式配置 `models` 时按数组顺序选择第一个已验证组合，不会自动替换成未配置的模型。模型与推理强度仍须通过账号目录验证。恢复已有 Router 线程时也应用所选模型，保留会话历史。项目列表可为空。项目策略默认 `read-only`，可显式设为 `workspace-write`。可写 Worker 的有效策略必须把写入限制在项目目录，禁用临时目录的额外写权限和网络访问，并由用户审批。项目路径必须是已存在的目录，与 Router 状态目录分离。
 
 ## 任务、恢复和停用

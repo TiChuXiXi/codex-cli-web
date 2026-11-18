@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, realpath, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { HubError } from '../codex/hub.js'
 import { connectRouterApp } from './app-server.js'
 import { RouterDispatcher } from './dispatcher.js'
@@ -65,6 +65,10 @@ export class RouterService {
       this.directory = directory
       this.projects = await loadRouterProjects(this.config.projects, directory)
       this.store = new RouterStore(join(directory, 'router.sqlite'))
+      for (const project of this.store.list('approved-project')) {
+        if (this.projects.has(project.id) || [...this.projects.values()].some(entry => entry.cwd === project.cwd)) continue
+        if (await checkProject(project).catch(() => null)) this.projects.set(project.id, project)
+      }
       this.dispatcher = new RouterDispatcher({
         hub: this.hub, bus: this.bus, followups: this.followups, store: this.store,
         project: id => this.projects.get(id), routerThreadId: () => this.session?.id,
@@ -177,7 +181,9 @@ export class RouterService {
         ...this.deltas.values(),
       ],
       clarifications: this.store?.list('clarification').filter(item => item.status === 'pending' && item.expiresAt > now)
-        .map(({ id, revision, kind, label, candidates, original }) => ({ id, revision, kind, label, candidates, original })) ?? [],
+        .map(({ id, revision, kind, label, candidates, original }) => ({
+          id, revision, kind, label, candidates: candidates.map(({ pendingProject, ...candidate }) => candidate), original,
+        })) ?? [],
       tasks: recentTasks,
       latestEventId: this.store?.events(1)[0]?.eventId ?? 0,
     }
@@ -327,11 +333,29 @@ export class RouterService {
   async projectRows() {
     const discovered = await this.hub.projects().catch(() => [])
     const byCwd = new Map(discovered.map(item => [item.cwd, item]))
-    return [...this.projects.values()].map(project => {
+    const registeredByPath = new Map([...this.projects.values()].map(project => [project.cwd, project]))
+    const candidates = new Map()
+    for (const item of discovered.slice(0, 100)) {
+      if (typeof item.cwd !== 'string') continue
+      try {
+        const cwd = await realpath(item.cwd)
+        const registered = registeredByPath.get(cwd)
+        if (registered && await checkProject(registered).catch(() => null)) continue
+        const name = shortText(item.name || basename(cwd), 120)
+        const projects = await loadRouterProjects([{ id: 'discovered', name, cwd }], this.directory)
+        const project = projects.get('discovered')
+        const id = 'auto-' + createHash('sha256').update(cwd + '\u0000' + project.identity).digest('hex').slice(0, 32)
+        if (this.projects.has(id) || candidates.has(id)) continue
+        candidates.set(id, { ...project, id })
+        byCwd.set(cwd, item)
+      } catch { /* Ignore missing or ineligible discovered directories. */ }
+    }
+    return [...this.projects.values(), ...candidates.values()].map(project => {
       const meta = byCwd.get(project.cwd)
       const updatedAt = meta?.lastUpdatedAt
       return {
         id: project.id, name: project.name, aliases: [...project.aliases, project.cwd], projectId: project.id,
+        ...(candidates.has(project.id) ? { requiresApproval: true, pendingProject: project } : {}),
         ...(typeof updatedAt === 'number' ? { updatedAt: updatedAt < 100000000000 ? updatedAt * 1000 : updatedAt } : {}),
         ...(meta ? { threadCount: meta.threadCount, activeCount: meta.activeCount } : {}),
       }
@@ -380,7 +404,7 @@ export class RouterService {
     switch (name) {
       case 'list_projects':
         return rankCandidates(await this.projectRows(), args.query, { original: source.text }).slice(0, limit)
-          .map(({ aliases, ...row }) => row)
+          .map(({ aliases, pendingProject, ...row }) => row)
       case 'list_sessions': {
         const projects = args.projectId ? [this.projects.get(args.projectId)] : [...this.projects.values()]
         const lists = await Promise.all(projects.slice(0, 20).map(project => this.sessions(project)))
@@ -416,23 +440,31 @@ export class RouterService {
     if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前 Router 回合已结束')
     const existing = previousOperation(this.store, source.requestId, intent)
     if (existing) return existing
-    const project = await checkProject(this.projects.get(intent.projectId))
-    if (intent.threadId) await this.resolveThread(intent.threadId, project.id)
+    const projectRows = await this.projectRows()
+    const registered = this.projects.get(intent.projectId)
+    const project = await checkProject(registered ?? projectRows.find(row => row.id === intent.projectId)?.pendingProject)
+    if (intent.threadId && registered) await this.resolveThread(intent.threadId, project.id)
     const bindingTime = this.store.get('binding', 'last')
     const storedDate = bindingTime ? new Date(bindingTime.at) : null
     const previous = new Date()
     previous.setDate(previous.getDate() - 1)
     const binding = reference.test(source.text) && (!yesterday.test(source.text) ||
       storedDate?.toDateString() === previous.toDateString()) ? bindingTime : null
-    const projects = rankCandidates(await this.projectRows(), '', { original: source.text, boundId: binding?.projectId })
+    const projects = rankCandidates(projectRows, '', { original: source.text, boundId: binding?.projectId })
     if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前 Router 回合已结束')
     const matchedProject = selectCandidate(projects)
     if (matchedProject?.id !== project.id) {
       return this.clarify(source, {
         kind: 'project', label: '选择目标项目', intent,
-        candidates: projects.slice(0, 5).map(({ aliases, ...row }) => row),
+        candidates: projects.slice(0, 5).map(({ aliases, pendingProject, ...row }) => ({ ...row,
+          ...(pendingProject ? { name: `允许访问 ${row.name}（${pendingProject.cwd}）`, pendingProject } : {}),
+        })),
       })
     }
+    if (!registered) return this.clarify(source, {
+      kind: 'project', label: '确认允许 Router 使用此项目（只读）', intent,
+      candidates: [{ id: project.id, projectId: project.id, name: `${project.name}（${project.cwd}）`, pendingProject: project }],
+    })
     return this.prepareSession(source, intent, project, binding)
   }
 
@@ -516,7 +548,18 @@ export class RouterService {
     this.requireReady()
     const candidate = row.candidates.find(item => item.id === row.candidateId)
     if (row.kind === 'interrupt') return this.execute(row.requestId, { kind: 'interrupt', ...row.intent })
-    const project = await checkProject(this.projects.get(candidate.projectId))
+    let project = this.projects.get(candidate.projectId)
+    if (row.kind === 'project' && candidate.pendingProject) {
+      const pending = await checkProject(candidate.pendingProject)
+      if (!project) {
+        this.store.put('approved-project', pending.id, pending)
+        this.projects.set(pending.id, pending)
+        project = pending
+      } else if (project.cwd !== pending.cwd || project.identity !== pending.identity) {
+        throw new HubError('codex-cli/router-project', '项目目录已改变，需要重新确认')
+      }
+    }
+    await checkProject(project)
     if (row.kind === 'project') {
       const intent = { ...row.intent, projectId: project.id }
       return this.prepareSession({ requestId: row.requestId, text: row.original }, intent, project, null, true)

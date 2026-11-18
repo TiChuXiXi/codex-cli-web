@@ -1,7 +1,10 @@
 import test from 'node:test'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { request as httpRequest } from 'node:http'
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile, readFile, stat, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, readFile, realpath, stat, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, parseArgs } from '../server/config.js'
@@ -22,6 +25,38 @@ test('application config priority, validation and Codex defaults',async t=>{
   for(const invalid of [{port:'nan'},{transport:'invalid'},{gitWrite:'maybe'},{allowedHosts:['*']},{sessionTtlMs:0}])await assert.rejects(loadConfig(invalid,{}))
   assert.deepEqual(parseArgs(['--port','9999','--transport=stdio']),{port:'9999',transport:'stdio'})
   assert.throws(()=>parseArgs(['--port']))
+})
+test('portable LAN mode permits local whitelist setup without changing the two-option config',async t=>{
+  const preferences={accessScope:'lan',lanPasswordless:true}
+  const app=await fixture(t,{persistedConfig:preferences})
+  const read=await (await rpc(app,'','settings/read')).json()
+  assert.deepEqual(read.result.value.allowedClients,[])
+  const saved=await (await rpc(app,'','settings/whitelist',{
+    allowedClients:['192.0.2.41'],revision:read.result.value.revision
+  })).json()
+  assert.equal(saved.result.value.disconnecting,false)
+  assert.deepEqual(JSON.parse(await readFile(join(app.root,'application.json'),'utf8')),preferences)
+  const loaded=await loadConfig({configFile:join(app.root,'application.json'),stateDir:join(app.root,'state')},{})
+  assert.deepEqual(loaded.allowedClients,['192.0.2.41'])
+  assert.equal((await rpc(app,'','status')).status,200)
+  const proxy=await fetch(app.origin+'/auth/session',{headers:{'x-forwarded-for':'192.0.2.41'}})
+  assert.equal(proxy.status,403)
+})
+test('registering a trusted launcher generates portable Router installation metadata',async t=>{
+  const stateDir=await mkdtemp(join(tmpdir(),'router-install-'))
+  t.after(()=>rm(stateDir,{recursive:true,force:true}))
+  const configFile=join(stateDir,'preferences.json')
+  const launcher=join(stateDir,'launcher')
+  await writeFile(configFile,JSON.stringify({accessScope:'local',lanPasswordless:false}))
+  await writeFile(launcher,'#!/bin/sh\nexit 99\n',{mode:0o700})
+  const cli=fileURLToPath(new URL('../bin/codex-web-ui.mjs',import.meta.url))
+  await promisify(execFile)(process.execPath,[cli,'--config',configFile,'--state-dir',stateDir,'--register-router-launcher',launcher])
+  const config=await loadConfig({configFile,stateDir},{})
+  assert.equal(config.router.enabled,true)
+  assert.equal(config.router.launcher,await realpath(launcher))
+  assert.match(config.router.launcherSha256,/^[a-f0-9]{64}$/)
+  assert.deepEqual(config.router.projects,[])
+  assert.equal((await stat(join(stateDir,'router-installation.json'))).mode & 0o777,0o600)
 })
 test('generated access credential persists with owner-only permissions',async t=>{
   const stateDir=await mkdtemp(join(tmpdir(),'credential-'));t.after(()=>rm(stateDir,{recursive:true,force:true}))

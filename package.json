@@ -16,6 +16,7 @@
     "server",
     "shared",
     "dist/web",
+    "config.portable.json",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "README.md",

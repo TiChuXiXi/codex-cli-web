@@ -1,6 +1,6 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises'
-import { createClientFilter } from './client-access.js'
+import { createClientFilter, isLanAddress, isLocalSetupRequest } from './client-access.js'
 import { join } from 'node:path'
 const COOKIE='codex_web_session'
 const digest=value=>createHash('sha256').update(String(value)).digest()
@@ -31,7 +31,8 @@ async function readLogin(request) {
 export function createAuth(config,token) {
   const sessions=new Map(),attempts=new Map()
   const networkMode=config.authMode==='network'
-  let clientAllowed=createClientFilter(config.allowedClients ?? [])
+  let whitelist=createClientFilter(config.allowedClients ?? [])
+  const clientAllowed=request=>whitelist(request.socket.remoteAddress) || isLocalSetupRequest(config,request)
   const networkResponses=new Map()
   const hash=digest(token)
   let origin=''
@@ -53,26 +54,34 @@ export function createAuth(config,token) {
     return {id:cookie,...session}
   }
   function originRejection(request) {
-    if(networkMode && !clientAllowed(request.socket.remoteAddress))return 403
+    if(networkMode && !clientAllowed(request))return 403
     if(!origin)return 403
     const host=request.headers.host
-    if(typeof host!=='string' || ![new URL(origin).host,...config.allowedHosts].includes(host)) return 403
+    const localAddress=request.socket.localAddress
+    const localPort=request.socket.localPort
+    let localOrigin=origin
+    if(config.accessScope==='lan' && !config.publicOrigin) {
+      if(!localPort || (localAddress!=='127.0.0.1' && !isLanAddress(localAddress)))return 403
+      const addressHost=localAddress.includes(':')?`[${localAddress}]`:localAddress
+      localOrigin=new URL(`http://${addressHost}:${localPort}`).origin
+    }
+    if(typeof host!=='string' || ![new URL(localOrigin).host,...config.allowedHosts].includes(host)) return 403
     const requestOrigin=request.headers.origin
-    if(requestOrigin!==undefined && ![origin,...config.allowedOrigins].includes(requestOrigin)) return 403
+    if(requestOrigin!==undefined && ![localOrigin,...config.allowedOrigins].includes(requestOrigin)) return 403
     if(request.headers['sec-fetch-site']==='cross-site') return 403
     if(!['GET','HEAD'].includes(request.method) && requestOrigin===undefined && request.headers['x-codex-request']!=='1') return 403
   }
   return {
     setOrigin(value){origin=value},
     setAllowedClients(entries, savingResponse) {
-      clientAllowed=createClientFilter(entries)
-      for(const [response,ip]of networkResponses)if(response!==savingResponse && !clientAllowed(ip))response.destroy()
+      whitelist=createClientFilter(entries)
+      for(const [response,request]of networkResponses)if(response!==savingResponse && !clientAllowed(request))response.destroy()
     },
     originRejection,
     requestRejection(request){return originRejection(request) ?? (networkMode || sessionOf(request)?undefined:401)},
     attach(request,response) {
       if(networkMode) {
-        networkResponses.set(response,request.socket.remoteAddress)
+        networkResponses.set(response,request)
         response.once('close',()=>networkResponses.delete(response))
         return
       }

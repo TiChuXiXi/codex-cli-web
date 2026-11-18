@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { EventBus } from './services/events.js'
 import { FollowupQueue } from './services/followups.js'
@@ -11,6 +12,7 @@ import { createSettingsFirewall } from './services/settings-firewall.js'
 import { SettingsService } from './services/settings.js'
 import { createRoutes } from './api/routes.js'
 import { createAuth, readAccessToken, json } from './auth.js'
+import { isLanAddress } from './client-access.js'
 import { createLogger } from './logger.js'
 import { createRuntime } from './runtime.js'
 import { createStatic } from './static.js'
@@ -94,6 +96,12 @@ export async function bootstrap(config, options={}) {
     hub.start()
     router?.start()
     logger.info('Listening on '+(config.publicOrigin ?? origin))
+    if(config.accessScope==='lan' && !config.publicOrigin) {
+      for(const entry of Object.values(networkInterfaces()).flat()) {
+        if(entry.family==='IPv4' && isLanAddress(entry.address) && (config.host==='0.0.0.0'||entry.address===config.host))
+          logger.info(`LAN access: http://${entry.address}:${address.port}`)
+      }
+    }
     return {server,origin,close,hub,bus,runtime,workspace,terminal,followups,versions,settings,router}
   }catch(error){await close();throw error}
 }

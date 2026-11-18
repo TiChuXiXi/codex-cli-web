@@ -26,7 +26,16 @@ Web 登录与 Codex 登录分开；Codex 登录使用 `codex login`。默认 tra
 node bin/codex-web-ui.mjs --transport stdio --port 8787
 ```
 
-## 内网免登录与 IP 白名单
+## 新电脑部署
+
+使用 `npm start -- --config config.portable.json` 启动。这个文件只需要两个选项：
+
+- `accessScope` 填 `local` 仅本机访问，填 `lan` 开启内网 IP 访问。启动日志会显示已检测到的内网访问地址。
+- `lanPasswordless` 填 `true` 允许白名单设备免登录，仅在 `lan` 下生效。首次请在服务器本机打开 `http://127.0.0.1:8787`，在「设置 → 访问白名单」中添加访问设备。面板自动保存名单，其他设备默认拒绝。未开启免登录时，Web 凭证自动生成。
+
+端口、状态目录和默认模型使用内置默认值。Router 需要先安装专用 App Server。安装后注册启动器即可自动生成配置，工作目录由已有 Codex 会话发现。详见 [Router MVP](docs/ROUTER.md)。
+
+## 旧服务器部署的内网免登录与 IP 白名单
 
 当前服务器使用 `config.lan.json`，只允许 `192.168.1.80` 免登录访问：
 

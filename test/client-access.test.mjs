@@ -34,6 +34,20 @@ test('network access retains Host/Origin checks and never trusts forwarded peer 
   assert.equal(auth.requestRejection(request('192.168.1.81',{'x-forwarded-for':'192.168.1.80',forwarded:'for=192.168.1.80'})),403)
   assert.equal(auth.requestRejection(request('192.168.1.80',{origin:'http://attacker.invalid'})),403)
 })
+test('portable LAN mode validates the connected interface, peer and same-origin host',async t=>{
+  const config=await loadConfig({accessScope:'lan',lanPasswordless:true,allowedClients:['192.168.1.80']},{})
+  const auth=createAuth(config)
+  t.after(()=>auth.dispose())
+  auth.setOrigin('http://127.0.0.1:8787')
+  const request=(remoteAddress,localAddress,host,origin='http://'+host)=>({
+    socket:{remoteAddress,localAddress,localPort:8787},method:'POST',headers:{host,origin},
+  })
+  assert.equal(auth.requestRejection(request('192.168.1.80','192.168.1.182','192.168.1.182:8787')),undefined)
+  assert.equal(auth.requestRejection(request('192.168.1.81','192.168.1.182','192.168.1.182:8787')),403)
+  assert.equal(auth.requestRejection(request('192.168.1.80','192.168.1.182','127.0.0.1:8787')),403)
+  assert.equal(auth.requestRejection(request('192.168.1.80','192.168.1.182','192.168.1.182:8787','http://192.168.1.180:8787')),403)
+  assert.equal(auth.requestRejection(request('192.168.1.80','203.0.113.1','203.0.113.1:8787')),403)
+})
 test('allowed peer can use UI, RPC, SSE, download and native PTY without a Cookie',async t=>{
   const app=await startFixture({authMode:'network',allowedClients:['127.0.0.1']})
   t.after(()=>app.close())

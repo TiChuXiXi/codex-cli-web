@@ -11,7 +11,7 @@ import { RouterStore } from '../server/router/store.js'
 import { normalizeRouterConfig } from '../server/router/app-server.js'
 import { routerNamespace } from '../server/router/tools.js'
 
-async function fixture(t) {
+async function fixture(t, { discover = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'router-service-'))
   const cwd = join(root, 'worker')
   await mkdir(cwd)
@@ -26,7 +26,7 @@ async function fixture(t) {
   let loseReply = false
   const hub = {
     status: () => ({ phase: 'ready', codexVersion: '0.169.1' }),
-    projects: async () => [],
+    projects: async () => discover ? [{ cwd, name: 'Alpha', threadCount: 2 }] : [],
     listThreads: async () => ({ data: [...threads.values()].map(value => value.thread) }),
     routerReadWorker: async id => threads.get(id) ?? { thread: null, turns: [] },
     newThread: async (params, options) => {
@@ -76,7 +76,7 @@ async function fixture(t) {
       },
     }
   }
-  const config = { enabled: true, projects: [{ id: 'alpha-project', name: 'Alpha', cwd }] }
+  const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: 'Alpha', cwd }] }
   async function boot() {
     router = new RouterService({ config, stateDir, hub, bus, connect })
     router.start()
@@ -110,6 +110,28 @@ async function fixture(t) {
 function args(requestId, threadId = 'worker-a') {
   return { projectId: 'alpha-project', threadId, mode: 'resume', instruction: 'untrusted replacement', requestId }
 }
+
+test('discovered projects require explicit access approval and remember it across restart', async t => {
+  const fx = await fixture(t, { discover: true })
+  const requestId = 'discover-project-01'
+  await fx.router.send({ requestId, text: '在 Alpha 新建会话' })
+  const listed = await fx.tool('list_projects', { query: 'Alpha' })
+  assert.equal(listed.success, true)
+  const [project] = listed.value
+  assert.equal(project.requiresApproval, true)
+  assert.equal(fx.router.projects.size, 0)
+  const proposed = await fx.tool('create_session', { projectId: project.id })
+  assert.equal(proposed.value.status, 'needs_confirmation')
+  const [pending] = fx.router.read().clarifications
+  assert.match(pending.candidates[0].name, /Alpha/)
+  assert.equal(fx.threads.has('created-worker'), false)
+  await fx.router.confirm({ id: pending.id, revision: pending.revision, candidateId: project.id })
+  assert.equal(fx.threads.has('created-worker'), true)
+  fx.finish()
+  await fx.restart()
+  assert.equal(fx.router.projects.get(project.id)?.sandbox, 'read-only')
+  assert.equal((await fx.router.projectRows()).find(row => row.id === project.id)?.requiresApproval, undefined)
+})
 
 test('Router chats and restores the same session and transcript', async t => {
   const fx = await fixture(t)

@@ -16,7 +16,7 @@ const fields = {
 }
 
 const definitions = {
-  list_projects: ['查找允许 Router 访问的项目。', [], ['query', 'limit']],
+  list_projects: ['查找已登记与自动发现的项目。requiresApproval 为 true 的项目需用户先授权。', [], ['query', 'limit']],
   list_sessions: ['查找 Worker 会话。先定位项目，再查询该项目下的会话。', [], ['projectId', 'query', 'limit']],
   get_session: ['读取一个候选会话的有限摘要。', ['threadId'], []],
   create_session: ['在已登记项目中创建空会话。可能需要用户在界面确认。', ['projectId'], ['title']],
