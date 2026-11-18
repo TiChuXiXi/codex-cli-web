@@ -8,6 +8,9 @@
 export const DEFAULTS = {
   /** auto = 守护进程优先、失败回退 stdio；daemon = 只连守护进程；stdio = 私有实例。 */
   transport: 'auto',
+  /** 普通工作会话（含 Router 新建 Worker）的默认模型与思考强度。 */
+  defaultModel: 'gpt-6.2-sol',
+  defaultEffort: 'medium',
   /** codex 可执行文件绝对路径；空 = 从 PATH 解析。 */
   codexPath: '',
   /** CODEX_HOME；空 = 环境变量或 ~/.codex。 */

@@ -10,5 +10,72 @@
     "enabled": true,
     "zone": "public",
     "destination": "192.168.1.182"
+  },
+  "router": {
+    "enabled": true,
+    "launcher": "/opt/codex-web-router/launch.sh",
+    "launcherSha256": "e1e80215db89a28fe38a189b3e75fbc09a9561a7e1802bdf6db922c8dd573289",
+    "models": [
+      {
+        "model": "gpt-6.1-terra",
+        "effort": "low"
+      }
+    ],
+    "projects": [
+      {
+        "id": "dsh-codex-cli",
+        "name": "dsh-codex-cli",
+        "cwd": "/root/project/dsh-codex-cli",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "codex-cli-web",
+        "name": "codex-cli-web",
+        "cwd": "/root/project/codex-cli-web",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "certbase",
+        "name": "certbase",
+        "cwd": "/root/project/certbase",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "face",
+        "name": "face",
+        "cwd": "/root/project/face",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "certbase-offline",
+        "name": "certbase-offline",
+        "cwd": "/root/project/certbase-offline",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "version-hub",
+        "name": "version-hub",
+        "cwd": "/root/project/version-hub",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "codex",
+        "name": "codex",
+        "cwd": "/root/project/codex",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "driver",
+        "name": "driver",
+        "cwd": "/root/project/driver",
+        "sandbox": "read-only"
+      },
+      {
+        "id": "data-collection",
+        "name": "data-collection",
+        "cwd": "/root/project/data-collection",
+        "sandbox": "read-only"
+      }
+    ]
   }
 }

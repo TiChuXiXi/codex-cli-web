@@ -416,7 +416,11 @@ export class CodexHub {
   /** 新线程：thread/start，返回紧凑 DTO 并纳入订阅。 */
   async newThread(params = {}, { routerWorker = false } = {}) {
     const rpc = this.#requireRpc()
-    const request = { modelProvider: 'openai' }
+    const request = {
+      modelProvider: 'openai',
+      model: this.config.defaultModel,
+      effort: this.config.defaultEffort,
+    }
     if (typeof params.cwd === 'string' && params.cwd !== '') request.cwd = params.cwd
     if (typeof params.model === 'string' && params.model !== '') request.model = params.model
     if (typeof params.effort === 'string' && params.effort !== '') request.effort = params.effort

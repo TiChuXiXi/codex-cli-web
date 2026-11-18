@@ -50,6 +50,10 @@ W-02：验收手册写“删除移入 .dsh-trash”，但锁定源码 WorkspaceS
 
 新增可选 Router 入口与 SQLite 状态区，权限边界由专用 Codex 工具白名单、私有启动器和 Node 调度网关共同执行。Worker 派发使用原生空闲队列并保留现有手动工作台、RPC 信封和 SSE。默认关闭。详见 [Router MVP](ROUTER.md)。
 
+## 普通工作会话默认模型
+
+Router 以外的新普通工作会话（含 Router 新建的 Worker）默认使用 `gpt-6.2-sol`、`medium` 思考强度，由 Hub 在 `thread/start` 显式传入。应用 JSON 可通过 `defaultModel`、`defaultEffort` 覆盖；新建请求中的显式模型和强度优先。已有会话保留原选择，Router 自身继续使用独立的 `router.models` 配置。
+
 ## Router 对话体验对齐
 
 Router 复用普通会话的 Message 组件、Markdown 渲染及消息列和输入区样式，支持表格、代码块、用户消息复制、Enter 发送、Shift+Enter 换行、输入法保护、输入区自适应高度与草稿保留。流式消息跟随底部，上滚阅读时保持位置并提供回到底部按钮；保留候选确认和任务页。Router 的受控工具边界不变，附件、通用命令、模型自由切换和 Worker 原生队列仍由普通会话提供。
