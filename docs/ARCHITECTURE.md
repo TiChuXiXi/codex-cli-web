@@ -17,3 +17,7 @@ server/bootstrap.js 装配认证、事件总线、Hub、队列、工作区、Git
 设置服务：SettingsService 提供受同一认证栅栏保护的 settings/read 和 settings/whitelist。read 返回 authMode、allowedClients、真实 clientIp、revision、editable/lockedReason、firewallManaged；不返回凭证、配置文件路径或任意原始配置。whitelist 请求为 {allowedClients, revision, confirmSelfRemoval?}，成功即时生效并持久化。错误包含 invalid、conflict、locked、self-removal、storage、firewall。来源、Host/Origin 和写请求同源校验保持。
 
 settingsFirewall 为服务端部署配置，形如 {enabled:true,zone:"public",destination:"192.168.1.182"}，端口取当前应用监听端口。页面只编辑名单，不能通过 API 选择配置文件路径、firewall zone 或命令。启用时 firewalld 同步失败会阻止保存，落盘失败会回滚相应规则；未启用时页面说明外部防火墙需自行管理。
+
+## Router
+
+RouterService 使用通过工具策略校验的私有 Codex stdio 进程。Router SQLite 保存会话映射、确认、派发、审计与事件。Worker 派发经工作台 Hub 提交到原生队列，使用关联消息 ID 对账。浏览器通过工作台认证和 SSE 刷新 Router，原生审批从 Worker 入口完成。部署和权限边界见 [Router MVP](ROUTER.md)。

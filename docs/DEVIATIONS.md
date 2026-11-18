@@ -41,3 +41,11 @@ W-02：验收手册写“删除移入 .dsh-trash”，但锁定源码 WorkspaceS
 新增 settings/read、settings/whitelist 两个认证 RPC。保存有 revision 冲突检查，白名单原子写入所用应用配置（无配置文件时写 state-dir/settings.json），更新内存过滤器并关闭被移除 IP 的活动连接。CLI/环境覆盖白名单时页面只读，避免保存后无效。旧版本弹窗文件已移除。
 
 当前服务器 config.lan.json 开启 settingsFirewall，由服务以显式配置的 zone/destination/当前端口同步精确来源 rich rules 的运行时和永久规则。只操作对应白名单规则，不 reload 全局防火墙；同步或落盘失败会回滚已执行步骤并保留旧内存配置。模拟测试不执行真实升级/daemon 管理，也不调用服务器 firewalld。
+
+## 2026-11-18 Router A1 验证
+
+本机 Codex 0.169.1 使用临时私有 stdio 进程及回环模型夹具，验证了动态工具注册和回传、线程恢复、受测内置工具禁用及原子空闲启动。新增独立实验脚本和协议测试，生产工具白名单与宿主隔离待验收。详见 [Router A1 验证](acceptance/router-a1.md)。
+
+## Router 工作台扩展
+
+新增可选 Router 入口与 SQLite 状态区，权限边界由专用 Codex 工具白名单、私有启动器和 Node 调度网关共同执行。Worker 派发使用原生空闲队列并保留现有手动工作台、RPC 信封和 SSE。默认关闭。详见 [Router MVP](ROUTER.md)。

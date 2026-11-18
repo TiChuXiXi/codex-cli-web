@@ -41,6 +41,8 @@ export interface FocusSidebarProps {
   onNew: () => void
   onNewProject: () => void
   onSettings: () => void
+  routerOpen?: boolean
+  onRouter?: () => void
   onRefresh: () => void
   onExit?: () => void
   onThreadRenamed: (id: string, name: string) => void
@@ -73,6 +75,8 @@ export function FocusSidebar({
   onNew,
   onNewProject,
   onSettings,
+  routerOpen,
+  onRouter,
   onRefresh,
   onExit,
   onThreadRenamed,
@@ -182,6 +186,9 @@ export function FocusSidebar({
         </button>
         <IconButton icon="refresh" label={t('status.refresh')} onClick={onRefresh}/>
       </div>
+
+      {onRouter && <button type="button" className="dsh-codex-button dsh-codex-router-nav"
+        aria-pressed={routerOpen} onClick={onRouter}><Icon name="message" size={17}/>Router</button>}
 
       <div className="dsh-codex-focus-search-row">
         <input

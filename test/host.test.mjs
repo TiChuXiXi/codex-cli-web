@@ -31,7 +31,7 @@ test('generated access credential persists with owner-only permissions',async t=
 })
 test('all business channels reject anonymous and cross-origin access',async t=>{
   const app=await fixture(t)
-  for(const [path,method]of [['status','POST'],['events','GET'],['workspace/download','GET'],['upload/file','POST'],['terminal/open','POST']]) {
+  for(const [path,method]of [['status','POST'],['events','GET'],['router/read','POST'],['router/send','POST'],['router/clarifications/confirm','POST'],['workspace/download','GET'],['upload/file','POST'],['terminal/open','POST']]) {
     const response=await fetch(app.origin+'/codex-cli/'+path,{method,headers:{'x-codex-request':'1'}})
     assert.equal(response.status,401,path)
   }

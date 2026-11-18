@@ -121,6 +121,7 @@ export interface HubStatus {
   pendingApprovals?: number
   seq?: number
   pending?: unknown[]
+  router?: { enabled: boolean; phase: string }
 }
 
 export interface CodexEvent {

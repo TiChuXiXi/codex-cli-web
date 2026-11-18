@@ -44,3 +44,7 @@
 ## 后续设置页变更
 
 用户追加的设置页、更新迁移和即时白名单管理已交付；最新验证为155项自动测试通过、13项E2E通过。初次验收表保留其历史构建与证据；本次范围、截图及限制见 [设置页验证](acceptance/settings/RESULTS.md)。
+
+## Router 独立验收
+
+Router 使用独立离线夹具验证协议、宿主隔离、权限拒绝、确认与调度恢复。当前账号在临时只读项目通过真实模型闭环。生产模型出口与目标 Worker 仍需现场核验。详见 [Router A1](acceptance/router-a1.md) 和 [Router A2](acceptance/router-a2.md)。

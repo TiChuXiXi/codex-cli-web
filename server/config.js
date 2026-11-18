@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { createClientFilter } from './client-access.js'
 import { normalizeConfig } from './codex/config.js'
+import { normalizeRouterConfig } from './router/app-server.js'
 
 const fields = {authMode:'AUTH_MODE',allowedClients:'ALLOWED_CLIENTS',publicOrigin:'PUBLIC_ORIGIN',host:'HOST',port:'PORT',stateDir:'STATE_DIR',accessToken:'ACCESS_TOKEN',codexPath:'CODEX_PATH',codexHome:'CODEX_HOME',transport:'TRANSPORT',logLevel:'LOG_LEVEL',allowedHosts:'ALLOWED_HOSTS',allowedOrigins:'ALLOWED_ORIGINS',sessionTtlMs:'SESSION_TTL_MS',gitWrite:'GIT_WRITE'}
 const flags = {'auth-mode':'authMode','allowed-clients':'allowedClients','public-origin':'publicOrigin','host':'host','port':'port','config':'configFile','state-dir':'stateDir','codex-path':'codexPath','codex-home':'codexHome','transport':'transport','log-level':'logLevel','allowed-hosts':'allowedHosts','allowed-origins':'allowedOrigins','git-write':'gitWrite'}
@@ -64,6 +65,7 @@ export async function loadConfig(cli={}, env=process.env) {
     if(!['http:','https:'].includes(url.protocol)||url.origin!==config.publicOrigin)throw new Error('public-origin 必须为完整 HTTP(S) origin，不带路径')
   }
   config.codex=normalizeConfig(config)
+  config.router=normalizeRouterConfig(config.router)
   config.stateDir=resolve(config.stateDir)
   if(config.accessToken!==undefined&&(typeof config.accessToken!=='string'||config.accessToken.length<16)) throw new Error('访问凭证至少需要 16 个字符')
   return config

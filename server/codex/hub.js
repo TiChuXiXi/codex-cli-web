@@ -414,7 +414,7 @@ export class CodexHub {
   // ── 对话 ────────────────────────────────────────────────────────────────
 
   /** 新线程：thread/start，返回紧凑 DTO 并纳入订阅。 */
-  async newThread(params = {}) {
+  async newThread(params = {}, { routerWorker = false } = {}) {
     const rpc = this.#requireRpc()
     const request = { modelProvider: 'openai' }
     if (typeof params.cwd === 'string' && params.cwd !== '') request.cwd = params.cwd
@@ -423,13 +423,74 @@ export class CodexHub {
     if (params.approvalPolicy !== undefined && params.approvalPolicy !== null) request.approvalPolicy = params.approvalPolicy
     if (typeof params.sandbox === 'string' && params.sandbox !== '') request.sandbox = params.sandbox
     if (params.ephemeral === true) request.ephemeral = true
+    if (routerWorker) {
+      request.approvalsReviewer = 'user'
+      if (request.sandbox === 'workspace-write') {
+        request.config = {
+          'sandbox_workspace_write.writable_roots': [],
+          'sandbox_workspace_write.network_access': false,
+          'sandbox_workspace_write.exclude_tmpdir_env_var': true,
+          'sandbox_workspace_write.exclude_slash_tmp': true,
+        }
+      }
+    }
     const result = await rpc.request('thread/start', request, { timeoutMs: 30000 })
     const thread = compactThread({ ...result?.thread, model: result?.model ?? result?.thread?.model, reasoningEffort: result?.reasoningEffort ?? result?.thread?.reasoningEffort })
     if (thread?.id) {
       this.#owned.add(thread.id)
+      if (routerWorker) this.#threadSettings.set(thread.id, workerSettings(result))
       this.#invalidateProjects()
     }
     return thread
+  }
+
+  /** Internal Router operations are intentionally absent from the public RPC table. */
+  async routerReadWorker(threadId) {
+    if (typeof threadId !== 'string' || !threadId) throw new HubError('codex-cli/bad-request', 'threadId 不能为空')
+    const rpc = this.#requireRpc()
+    const snapshot = await rpc.request('thread/read', { threadId, includeTurns: false }, { timeoutMs: 15000 })
+    const thread = snapshot?.thread
+    if (!thread) throw new HubError('codex-cli/router-thread', '找不到 Worker 会话')
+    const active = thread.status?.type === 'active'
+    let turns
+    try {
+      const history = await rpc.request('thread/turns/list', {
+        threadId, limit: 30, sortDirection: 'desc', itemsView: 'full',
+      }, { timeoutMs: 15000 })
+      turns = Array.isArray(history?.data) ? [...history.data].reverse() : []
+    } catch (error) {
+      if (!this.#owned.has(threadId) || active || !/not materialized/i.test(error.message)) throw error
+      turns = []
+    }
+    return { thread, turns }
+  }
+
+  async routerWorkerSettings(threadId) {
+    if (this.#owned.has(threadId) && this.#threadSettings.has(threadId)) return this.#threadSettings.get(threadId)
+    const snapshot = await this.#requireRpc().request('thread/resume', {
+      threadId, excludeTurns: true,
+    }, { timeoutMs: 20000 })
+    return workerSettings(snapshot)
+  }
+
+  async routerAddWorkerMessage(threadId, clientUserMessageId, text) {
+    const result = await this.#requireRpc().request('thread/queue/add', {
+      threadId, clientUserMessageId, input: [{ type: 'text', text, text_elements: [] }],
+    }, { timeoutMs: 15000 })
+    this.#owned.delete(threadId)
+    return result?.queuedSubmission
+  }
+
+  async routerFindWorkerMessage(threadId, clientId) {
+    const result = await this.#requireRpc().request('thread/queue/list', { threadId, limit: 100 }, { timeoutMs: 12000 })
+    return result?.data?.find(message => message.clientUserMessageId === clientId) ?? null
+  }
+
+  async routerStartWorkerMessage(threadId, queuedSubmissionId) {
+    const result = await this.#requireRpc().request('thread/queue/start', {
+      threadId, queuedSubmissionId,
+    }, { timeoutMs: 15000 })
+    return result?.turn
   }
 
   /** 发一条用户消息，开一个新回合。 */
@@ -934,6 +995,15 @@ export class CodexHub {
 }
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────
+
+function workerSettings(response) {
+  return {
+    approvalPolicy: response?.approvalPolicy ?? null,
+    approvalsReviewer: response?.approvalsReviewer ?? null,
+    sandbox: response?.sandbox ?? null,
+    cwd: response?.cwd ?? response?.thread?.cwd ?? null,
+  }
+}
 
 /** 线程 DTO：只保留 UI 需要的字段，避免把整个 rollouts 元数据透传。 */
 function compactThread(thread) {

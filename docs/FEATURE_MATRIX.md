@@ -48,3 +48,7 @@
 补充浏览器证据：test/e2e/workbench.spec.ts 覆盖登录、对话/队列/刷新/登出、审批、主题与右栏；test:visual 采集四种尺寸两种主题，test:parity 对比锁定源码空会话工作台。复杂视觉、真实账号和版本写操作未被这些测试替代。
 
 源码到目标文件的完整映射见 migration-map.json；无独立提交时以构建 ID 与测试报告对应，不填虚构提交号。
+
+## Router 扩展
+
+Router 独立验收覆盖对话、候选确认、派发、队列、审批等待、状态回放和 Worker 跳转。原基线 38 项的验收边界保持独立。验证见 [Router 记录](acceptance/router-a1.md) 和 [部署文档](ROUTER.md)。

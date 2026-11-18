@@ -19,10 +19,25 @@ const CHANNEL = '/codex-cli'
 const EVENTS_PATH = `${CHANNEL}/events`
 const KEEPALIVE_MS = 15000
 
-export function createRoutes({ hub, bus, connection, config, logger, versions, runtime, workspace, git, followups, terminal, settings }) {
+export function createRoutes({ hub, bus, connection, config, logger, versions, runtime, workspace, git, followups, terminal, settings, router }) {
   const streams = new Set()
   const uploads = new Set()
+  const requireRouter = () => {
+    if (!router) throw new HubError('codex-cli/router-unavailable', 'Router 未启用')
+    return router
+  }
   const endpoints = {
+    'router/read': () => router?.read() ?? {
+      enabled: false, phase: 'disabled', error: null, model: null, busy: false,
+      messages: [], clarifications: [], tasks: [], latestEventId: 0,
+    },
+    'router/reconnect': () => { requireRouter().start(); return router.status() },
+    'router/send': payload => requireRouter().send(payload),
+    'router/clarifications/confirm': payload => requireRouter().confirm(payload),
+    'router/clarifications/cancel': payload => requireRouter().confirm(payload, true),
+    'router/tasks/list': payload => requireRouter().listTasks(payload),
+    'router/tasks/get': payload => requireRouter().getTask(payload?.dispatchId),
+    'router/tasks/dismiss-unknown': payload => requireRouter().dismissUnknown(payload),
     'settings/read': (_payload,_signal,context) => settings.read(context.request),
     'settings/whitelist': (payload,_signal,context) => settings.update(payload,context),
     'terminal/open': payload => terminal.open(payload),
@@ -46,6 +61,7 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
         ...hub.status(),
         runtime: { ...runtime?.(), workspaceWatchCount: workspace?.watchCount ?? 0, terminalSessionCount: terminal?.count ?? 0 },
         pending: hub.pendingApprovals(),
+        ...(router ? { router: router.status() } : {}),
       }
     },
     'projects/list'(payload) {

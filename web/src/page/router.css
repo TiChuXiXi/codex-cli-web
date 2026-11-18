@@ -1,0 +1,22 @@
+.dsh-codex-root .dsh-codex-router { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; }
+.dsh-codex-root .dsh-codex-router-nav { margin:0 10px 8px; width:calc(100% - 20px); justify-content:flex-start; }
+.dsh-codex-root .dsh-codex-router-tabs { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 16px; border-bottom:1px solid var(--codex-border); }
+.dsh-codex-root .dsh-codex-router .dsh-codex-button { min-height:44px; }
+.dsh-codex-root .dsh-codex-router-tabs .dsh-codex-button[aria-pressed="true"],
+.dsh-codex-root .dsh-codex-router-nav[aria-pressed="true"] { background:var(--codex-selected); color:var(--codex-text); }
+.dsh-codex-root .dsh-codex-router-model { margin-inline-start:auto; overflow-wrap:anywhere; color:var(--codex-muted); font-size:13px; }
+.dsh-codex-root .dsh-codex-router-scroll { flex:1; overflow:auto; min-height:0; width:min(100%, 900px); margin-inline:auto; padding:16px; box-sizing:border-box; }
+.dsh-codex-root .dsh-codex-router-empty,
+.dsh-codex-root .dsh-codex-router-meta { color:var(--codex-muted); font-size:13px; }
+.dsh-codex-root .dsh-codex-router-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.dsh-codex-root .dsh-codex-router-card { display:grid; justify-items:start; gap:8px; padding:12px; border:1px solid var(--codex-border); border-radius:10px; background:var(--codex-panel); }
+.dsh-codex-root .dsh-codex-router-card h2 { font-size:14px; font-weight:650; margin:0; overflow-wrap:anywhere; }
+.dsh-codex-root .dsh-codex-router-card p { margin:4px 0 0; }
+.dsh-codex-root .dsh-codex-router-original { max-width:100%; color:var(--codex-muted); font-size:13px; }
+.dsh-codex-root .dsh-codex-router-tasks { display:flex; flex-direction:column; gap:10px; }
+.dsh-codex-root .dsh-codex-router-choices { display:grid; gap:8px; width:100%; margin:0; padding:0; list-style:none; }
+.dsh-codex-root .dsh-codex-router-choices li { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--codex-border); }
+.dsh-codex-root .dsh-codex-router-choices li > div { min-width:0; overflow-wrap:anywhere; }
+.dsh-codex-root .dsh-codex-router-alert { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:8px 16px; }
+.dsh-codex-root .dsh-codex-router-composer { width:min(100%, 900px); margin-inline:auto; box-sizing:border-box; }
+.dsh-codex-root .dsh-codex-router-actions { justify-content:flex-end; gap:8px; }

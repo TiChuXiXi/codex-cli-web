@@ -130,3 +130,7 @@ CODEX_WEB_LIVE=1 npm run test:live
 ## 来源
 
 参考提交：48590b624d011d8036d412c31c8f5f319410eecb。项目及带入代码遵循 MIT 等原许可证，详见 LICENSE、THIRD_PARTY_NOTICES.md 和 vendor/dsh-dockkit/PROVENANCE.md。
+
+## Router
+
+Router 提供独立的 Codex 对话、候选确认和 Worker 调度。默认关闭。专用 App Server 的构建、隔离与启用方式见 [Router MVP](docs/ROUTER.md)。

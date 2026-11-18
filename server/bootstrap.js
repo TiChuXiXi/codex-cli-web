@@ -26,7 +26,12 @@ export async function bootstrap(config, options={}) {
   const versions=new VersionService({config:config.codex,logger,bus,hub})
   const settings=new SettingsService({config,auth,firewall:settingsFirewall})
   const runtime=createRuntime()
-  const routes=createRoutes({hub,bus,connection:auth,config:config.codex,logger,versions,runtime,workspace,git,followups,terminal,settings})
+  let router
+  if(config.router?.enabled) {
+    const {RouterService}=await import('./router/service.js')
+    router=new RouterService({config:config.router,stateDir:config.stateDir,hub,followups,bus,logger,connect:options.openRouterApp})
+  }
+  const routes=createRoutes({hub,bus,connection:auth,config:config.codex,logger,versions,runtime,workspace,git,followups,terminal,settings,router})
   const serveStatic=createStatic(options.webRoot ?? fileURLToPath(new URL('../dist/web/',import.meta.url)))
   let closing=false,closePromise
   const sockets=new Set()
@@ -67,12 +72,13 @@ export async function bootstrap(config, options={}) {
         routes.dispose()
         await settings.dispose()
         auth.dispose()
+        const stoppingRouter=router?.close()
         followups.dispose()
         workspace.dispose()
         terminal.dispose()
         git.dispose()
         versions.dispose()
-        await hub.stop()
+        await Promise.all([stoppingRouter,hub.stop()])
         bus.dispose()
         server.closeIdleConnections()
         await stopped
@@ -86,7 +92,8 @@ export async function bootstrap(config, options={}) {
     const origin='http://'+(host.includes(':')?'['+host+']':host)+':'+address.port
     auth.setOrigin(config.publicOrigin ?? origin)
     hub.start()
+    router?.start()
     logger.info('Listening on '+(config.publicOrigin ?? origin))
-    return {server,origin,close,hub,bus,runtime,workspace,terminal,followups,versions,settings}
+    return {server,origin,close,hub,bus,runtime,workspace,terminal,followups,versions,settings,router}
   }catch(error){await close();throw error}
 }
