@@ -144,6 +144,7 @@ export interface CodexEvent {
 }
 
 export interface PendingApproval {
+  instanceId: string
   requestId: string | number
   method: string
   params: any

@@ -116,9 +116,12 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
           result: { ok: false, error: { code: 'fixture-failure', message: '发送失败，请重试' } } } })
         return
       }
-      messages.push({ id: 'user-1', role: 'user', status: 'completed', text: request.payload.text })
-      messages.push({ id: 'stream', role: 'assistant', status: 'streaming', text: '正在检索' })
-      busy = true
+      if (busy) messages.push({ id: 'queued', role: 'user', status: 'queued', text: request.payload.text })
+      else {
+        messages.push({ id: 'user-1', role: 'user', status: 'completed', text: request.payload.text })
+        messages.push({ id: 'stream', role: 'assistant', status: 'streaming', text: '正在检索' })
+        busy = true
+      }
     }
     const value = request.method === 'router/read'
       ? { enabled: true, phase: 'ready', error: null, model: 'gpt-6.1-terra', effort: 'high',
@@ -155,27 +158,29 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   expect(ids[0]).toBe(ids[1])
   await expect(send).toBeDisabled()
   await expect(router.getByRole('status')).toContainText('Router 正在回复')
+  await input.fill('排在下一轮')
+  await send.click()
+  await expect(router.getByText('已排队', {exact:true})).toBeVisible()
   await input.fill('尚未发送的草稿')
-  await input.press('Enter')
-  expect(ids).toHaveLength(2)
+  await expect(send).toBeEnabled()
 
   const log = router.getByRole('log')
   const update = async () => {
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-router-update')))
   }
-  messages.at(-1)!.text = Array.from({ length: 60 }, (_, i) => '流式消息第 ' + i + ' 行').join('\n\n')
+  messages.find(message => message.id === 'stream')!.text = Array.from({ length: 60 }, (_, i) => '流式消息第 ' + i + ' 行').join('\n\n')
   await update()
   await expect(log).toContainText('流式消息第 59 行')
   await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(33)
   await log.evaluate(el => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')) })
   await expect(router.getByRole('button', { name: '回到底部' })).toBeVisible()
-  messages.at(-1)!.text += '\n\n新增尾部内容'
+  messages.find(message => message.id === 'stream')!.text += '\n\n新增尾部内容'
   await update()
   await expect(log).toContainText('新增尾部内容')
   await expect.poll(() => log.evaluate(el => el.scrollTop)).toBe(0)
   await router.getByRole('button', { name: '回到底部' }).click()
   await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(33)
-  messages.at(-1)!.status = 'completed'
+  messages.find(message => message.id === 'stream')!.status = 'completed'
   busy = false
   await update()
   await expect(send).toBeEnabled()
@@ -190,4 +195,38 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false)
   await page.screenshot({ path: info.outputPath('router-chat-mobile-dark.png'), animations: 'disabled' })
   expect(errors).toEqual([])
+})
+
+test('WeChat settings bind locally, show the first-message boundary and independently toggle incoming tasks', async ({page}) => {
+  const state = {phase:'unbound',hasBinding:false,owner:null as string|null, qr:null as string|null,loginId:null as string|null,
+    results:true,decisions:true,canNotify:false,lastReceived:null,lastSent:null,pending:0,unknown:0,failed:0}
+  await page.route('**/codex-cli/status',async route => {
+    const response = await route.fetch()
+    const body = await response.json()
+    body.result.value.router = {enabled:true,phase:'ready'}
+    await route.fulfill({response,json:body})
+  })
+  await page.route('**/codex-cli/wechat/**',async route => {
+    const {method,payload,rpcId} = route.request().postDataJSON()
+    if (method==='wechat/bind') Object.assign(state,{phase:'waiting_scan',qr:'https://example.invalid/fixture-qr',loginId:'fixture'})
+    if (method==='wechat/preferences') Object.assign(state,payload)
+    if (method==='wechat/disconnect') state.phase='disconnected'
+    await route.fulfill({json:{type:'server-response',rpcId,result:{ok:true,value:state}}})
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证',{exact:true}).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button',{name:'登录工作台'}).click()
+  await page.getByRole('button',{name:'设置',exact:true}).first().click()
+  await page.getByRole('tab',{name:'微信接入'}).click()
+  await page.getByRole('button',{name:'扫码绑定'}).click()
+  await expect(page.getByRole('img',{name:'使用本人微信扫描绑定二维码'})).toHaveAttribute('src',/^data:image\/gif;base64,/)
+  Object.assign(state,{phase:'connected',hasBinding:true,qr:null,loginId:null,owner:'••••wechat'})
+  await expect(page.getByText(/请先在微信发一句话/)).toBeVisible()
+  const results = page.getByRole('checkbox',{name:'任务结果'})
+  await expect(results).toBeChecked()
+  await results.uncheck()
+  await expect(results).not.toBeChecked()
+  await expect(page.getByRole('checkbox',{name:'审批及决策'})).toBeChecked()
+  await page.getByRole('button',{name:'断开连接'}).click()
+  await expect(page.getByRole('button',{name:'恢复连接'})).toBeVisible()
 })

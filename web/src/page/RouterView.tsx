@@ -106,7 +106,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
   }
 
   async function submit() {
-    if (!text.trim() || savingModel || submitting.current || snapshot?.busy || snapshot?.phase !== 'ready') return
+    if (!text.trim() || savingModel || submitting.current || snapshot?.phase !== 'ready') return
     submitting.current = true
     const input = text.trim()
     const id = retry.current?.text === input ? retry.current.id : randomId()
@@ -179,6 +179,8 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
             try { await api('router/questions/answer', { id: message.id, text: answer }) }
             finally { await refresh() }
           } : undefined}/>}
+          {message.status === 'queued' && <span className="dsh-codex-router-meta">已排队</span>}
+          {message.status === 'cancelled' && <span className="dsh-codex-router-meta">已取消</span>}
           {message.status === 'unknown' && <span className="dsh-codex-router-meta">消息结果待核对</span>}
           {message.status === 'failed' && <span className="dsh-codex-router-meta">Router 回合失败</span>}
         </React.Fragment>)}
@@ -231,7 +233,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
       }}><Icon name="arrowDown" size={16}/></button>}
       </div>
       {snapshot?.busy && <div role="status" className="dsh-codex-running-bar">
-        <Icon name="loader" size={16} className="dsh-codex-running-spinner"/>Router 正在回复…
+        <Icon name="loader" size={16} className="dsh-codex-running-spinner"/>Router 正在回复…{snapshot.queuedCount ? '　排队 ' + snapshot.queuedCount + ' 条' : ''}
       </div>}
       <form className="dsh-codex-composer-wrap" onSubmit={event => { event.preventDefault(); void submit() }}>
         <div className="dsh-codex-composer-card" aria-busy={sending || snapshot?.busy}>
@@ -253,7 +255,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
               onModelChange={model => void changeModel(model)}
               onEffortChange={effort => void changeModel(snapshot.model!, effort)}/>}
             <button type="submit" className="dsh-codex-send" aria-label="发送" title="发送"
-              disabled={!ready || !text.trim() || snapshot?.busy || sending || savingModel}><Icon name="arrowUp" size={16}/></button>
+              disabled={!ready || !text.trim() || sending || savingModel}><Icon name="arrowUp" size={16}/></button>
             </div>
           </div>
         </div>

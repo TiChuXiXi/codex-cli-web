@@ -4,7 +4,7 @@ import { basename, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { HubError } from '../codex/hub.js'
 import { connectRouterApp } from './app-server.js'
-import { RouterDispatcher } from './dispatcher.js'
+import { finalAnswer, RouterDispatcher } from './dispatcher.js'
 import { rankCandidates } from './matching.js'
 import { checkProject, checkThread, describeWorkerSettings, loadRouterProjects, shortText, workerDispatchIssue, workerIdentityIssue } from './projects.js'
 import { RouterStore } from './store.js'
@@ -34,8 +34,8 @@ function previousOperation(store, requestId, intent) {
 }
 
 export class RouterService {
-  constructor({ config, stateDir, hub, followups, bus, logger, connect = connectRouterApp, wakePolicy }) {
-    Object.assign(this, { config, stateDir, hub, followups, bus, logger, connect, wakePolicy })
+  constructor({ config, stateDir, hub, followups, bus, logger, connect = connectRouterApp, wakePolicy, createChannel }) {
+    Object.assign(this, { config, stateDir, hub, followups, bus, logger, connect, wakePolicy, createChannel })
     this.phase = 'idle'
     this.nativeBusy = false
     this.projects = new Map()
@@ -78,8 +78,10 @@ export class RouterService {
         routerThreadId: () => this.session?.id ?? this.store.get('session', 'active')?.id,
         isReady: () => !this.closed && this.phase === 'ready',
         onReceipt: () => this.wake.kick(),
+        onTerminal: (task, receipt) => this.wechat?.terminal(task, receipt),
       })
       this.wake = new RouterWakeScheduler(this, this.wakePolicy)
+      this.wechat = this.createChannel?.(this)
       this.publish()
     }
     const epoch = Symbol('router-connection')
@@ -124,6 +126,7 @@ export class RouterService {
       this.logger?.info?.(`Router 已就绪（${app.selected.model}，${this.projects.size} 个登记项目）`)
       this.publish()
       this.dispatcher.schedule()
+      this.kickInputs()
       this.wake.kick()
       this.resumeRootRequests()
       for (const row of this.store.list('clarification').filter(item => item.status === 'confirming')) {
@@ -146,29 +149,30 @@ export class RouterService {
   }
 
   async recoverMessages(app) {
-    const pending = this.store.list('message', 80).filter(message =>
-      message.role === 'user' && ['sending', 'accepted', 'unknown'].includes(message.status))
+    const pending = this.store.messagesWithStatus('sending','accepted','unknown').filter(message => message.role === 'user')
     if (!pending.length) return
-    const history = await app.request('thread/turns/list', {
-      threadId: this.session.id, limit: 30, sortDirection: 'desc', itemsView: 'full',
-    })
-    if (this.app !== app || this.closed) return
     let nativeStatus
     for (const message of pending) {
-      const turn = history.data?.find(turn => turn.id === message.turnId ||
-        turn.items?.some(item => item.type === 'userMessage' && item.clientId === message.requestId))
+      const turn = await this.wake.findTurn(app, { ...message, routerThreadId: this.session.id, startedAt: message.startedAt ?? 0 })
+      if (this.app !== app || this.closed) return
       if (turn?.status === 'inProgress') {
         nativeStatus ??= await this.readThreadStatus(app, this.session.id)
         if (this.app !== app || this.closed) return
         if (nativeStatus === 'active' && !this.active) {
-          this.active = { ...message, turnId: turn.id }
+          const answer = finalAnswer(turn.items)
+          this.active = { ...message, turnId: turn.id, finalText: answer?.text, finalPhase: answer?.phase }
           continue
         }
         if (!this.active) this.nativeBusy = nativeStatus !== 'idle'
         this.recordMessage({ ...message, turnId: turn.id, status: 'unknown' })
         continue
       }
-      this.recordMessage({ ...message, turnId: turn?.id ?? message.turnId, status: turn?.status ?? 'unknown' })
+      if (!turn) {
+        nativeStatus ??= await this.readThreadStatus(app, this.session.id)
+        if (this.app !== app || this.closed) return
+        this.nativeBusy = nativeStatus !== 'idle'
+      }
+      this.finishMessage({ ...message, turnId: turn?.id ?? message.turnId, status: turn?.status ?? 'unknown' }, finalAnswer(turn?.items)?.text)
       for (const item of turn?.items ?? []) {
         if (item.type === 'agentMessage' && typeof item.text === 'string') {
           this.recordMessage({ id: 'agent:' + item.id, role: 'assistant', text: item.text.slice(0, 24000), status: 'completed' })
@@ -217,10 +221,11 @@ export class RouterService {
       usingDefaultModel: !this.session?.modelSelection || !this.app?.resolveSelection?.(this.session.modelSelection),
       busy: Boolean(this.active) || this.nativeBusy,
       receiptLimited: this.wake?.limited() ?? false,
+      queuedCount: this.store?.queuedInputCount.get().count ?? 0,
       messages: [
         ...(this.store?.list('message', 80).reverse().map(message =>
           ({ id: message.id, role: message.role, label: message.label, text: message.text, status: message.status,
-            questions: message.questions })) ?? []),
+            questions: message.questions, dispatchId: message.dispatchId, interactionMethod: message.interactionMethod })) ?? []),
         ...this.deltas.values(),
       ],
       clarifications: this.store?.list('clarification').filter(item => item.status === 'pending' && item.expiresAt > now)
@@ -398,7 +403,7 @@ export class RouterService {
     this.publish()
   }
 
-  async send({ requestId, text } = {}) {
+  admit({ requestId, text } = {}, origin) {
     this.requireReady()
     if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{12,128}$/.test(requestId) ||
         typeof text !== 'string' || !text.trim() || text.length > textLimit) {
@@ -407,37 +412,86 @@ export class RouterService {
     const id = 'user:' + requestId
     const previous = this.store.get('message', id)
     if (previous) {
-      if (previous.text !== text) throw new HubError('codex-cli/router-conflict', '消息请求 ID 与原消息冲突')
+      if (previous.text !== text || previous.origin?.generation !== origin?.generation) throw new HubError('codex-cli/router-conflict', '消息请求 ID 与原消息冲突')
       return { id, status: previous.status }
     }
-    if (this.active || this.nativeBusy) throw new HubError('codex-cli/router-busy', 'Router 正在回复，请等待当前回合结束')
+    const message = { id, requestId, text, role: 'user', status: 'queued', turnId: null, routerThreadId: this.session.id,
+      ...(origin && { origin, label: '你 · 微信' }) }
+    this.recordMessage(message)
+    return { id, status: message.status }
+  }
+
+  async send(payload) {
+    const accepted = this.admit(payload)
+    await this.drainInput()
+    if (this.closed) throw new HubError('codex-cli/router-unavailable', '工作台正在关闭')
+    return { id: accepted.id, status: this.store.get('message', accepted.id).status }
+  }
+
+  kickInputs() {
+    queueMicrotask(() => this.drainInput().catch(() => this.logger?.warn?.('Router 输入队列暂时不可用')))
+  }
+
+  async drainInput() {
+    if (this.closed || this.phase !== 'ready' || !this.app || this.active || this.nativeBusy) return
+    const row = this.store.nextInput.get()
+    if (!row) return
+    const message = JSON.parse(row.value)
+    if (message.routerThreadId !== this.session.id || (message.origin && !this.wechat?.owns(message.origin.generation))) {
+      this.recordMessage({ ...message, status: 'cancelled' })
+      this.kickInputs()
+      return
+    }
+    const { text, requestId } = message
     const app = this.app
-    const message = { id, requestId, text, role: 'user', status: 'sending', turnId: null }
+    message.status = 'sending'
     this.active = message
+    this.earlyEvents = []
+    message.startedAt = Date.now()
     this.recordMessage(message)
     try {
       const worker = this.hub.config
-      const { turn } = await app.send(this.session.id, text, requestId, { workerDefaults: {
+      const { turn } = await app.send(this.session.id, text, requestId, { relatedTasks: message.origin?.relatedTasks, workerDefaults: {
         model: worker.defaultModel, effort: worker.defaultEffort,
         permission: worker.defaultPermission, executionMode: worker.defaultExecutionMode,
       } })
       if (!turn?.id) throw new Error('Router 回合未确认')
       if (this.active === message) {
-        message.turnId = turn.id
-        message.status = 'accepted'
-        this.recordMessage(message)
+        if (message.turnId && message.turnId !== turn.id) throw new Error('Router 回合身份不匹配')
+        this.bindTurn(message, turn.id)
+        if (this.active === message) {
+          message.status = 'accepted'
+          this.recordMessage(message)
+          if (['completed','failed','interrupted'].includes(turn.status)) this.onEvent('turn/completed', { threadId: this.session.id, turn })
+        }
       }
     } catch (error) {
       if (this.active === message) {
         const rejected = [-32600, -32601, -32602].includes(error.code)
         message.status = rejected ? 'failed' : 'unknown'
         this.active = null
-        this.recordMessage(message)
-        if (rejected) this.wake.kick()
+        this.finishMessage(message)
+        if (rejected) { this.kickInputs(); this.wake.kick() }
         else this.resetApp(app)
       }
     }
-    return { id, status: message.status }
+  }
+
+  bindTurn(message, turnId) {
+    message.turnId = turnId
+    const early = this.earlyEvents ?? []
+    this.earlyEvents = []
+    for (const [method, params] of early) {
+      if (this.active === message && (params.turnId ?? params.turn?.id) === turnId) this.onEvent(method, params)
+    }
+  }
+
+  finishMessage(message, answer) {
+    this.store.transaction(() => {
+      this.store.put('message', message.id, message)
+      if (message.origin) this.wechat?.reply(message, answer)
+    })
+    this.publish()
   }
 
   onEvent(method, params) {
@@ -447,7 +501,16 @@ export class RouterService {
       this.wake.onEvent(active, method, params)
       return
     }
-    if (method === 'turn/started' && !active.turnId) active.turnId = params.turn?.id
+    if (!active.turnId) {
+      if (params.turnId && params.item?.type === 'userMessage' && params.item.clientId === active.requestId) {
+        this.bindTurn(active, params.turnId)
+      } else {
+        // A late final item from another turn must never acquire this input's reply address.
+        if ((method === 'turn/completed' || (method === 'item/completed' && finalAnswer([params.item].filter(Boolean)))) &&
+            this.earlyEvents.length < 32) this.earlyEvents.push([method, params])
+        return
+      }
+    }
     if (method === 'item/started' && active.turnId === params.turnId &&
         params.item?.type === 'userMessage' && params.item.clientId === active.requestId && !this.session.materialized) {
       this.session = this.store.put('session', 'active', { ...this.session, materialized: true })
@@ -464,6 +527,10 @@ export class RouterService {
     }
     if (active.turnId === params.turnId && method === 'item/completed' && params.item?.type === 'agentMessage') {
       this.deltas.delete('agent:' + params.item.id)
+      if (finalAnswer([params.item]) && (params.item.phase === 'final_answer' || !active.finalPhase)) {
+        active.finalText = params.item.text.slice(0, 24000)
+        active.finalPhase = params.item.phase
+      }
       this.recordMessage({
         id: 'agent:' + params.item.id, role: 'assistant', text: String(params.item.text ?? '').slice(0, 24000),
         status: 'completed',
@@ -473,7 +540,12 @@ export class RouterService {
       active.status = params.turn.status
       this.clearDeltas()
       this.active = null
-      this.recordMessage(active)
+      const item = finalAnswer(params.turn.items)
+      const answer = active.finalPhase === 'final_answer' && item?.phase !== 'final_answer' ? active.finalText : item?.text ?? active.finalText
+      delete active.finalText
+      delete active.finalPhase
+      this.finishMessage(active, answer)
+      this.kickInputs()
       this.wake.kick()
     }
   }
@@ -908,6 +980,7 @@ export class RouterService {
 
   async close() {
     this.closed = true
+    this.active = null
     this.clearDeltas()
     this.epoch = null
     this.connectionAbort?.abort()
@@ -916,6 +989,7 @@ export class RouterService {
     await this.opening
     await Promise.allSettled(this.confirming.values())
     await Promise.allSettled([...this.creatingProjects.values()].map(row => row.promise))
+    await this.wechat?.close()
     await this.wake?.close()
     await this.dispatcher?.close()
     this.store?.close()

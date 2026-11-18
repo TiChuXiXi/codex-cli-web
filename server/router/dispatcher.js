@@ -27,8 +27,8 @@ const taskEvents = {
 }
 
 export class RouterDispatcher {
-  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt }) {
-    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt })
+  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal }) {
+    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal })
     this.off = bus.subscribe(event => this.onEvent(event))
     this.retained = new Set()
     this.timer = setInterval(() => this.schedule(), 12000)
@@ -125,6 +125,7 @@ export class RouterDispatcher {
         }
       }
       if (receiptAdded || (!workerTerminal && next.status === 'failed' && next.routerThreadId === this.routerThreadId())) {
+        this.onTerminal?.(next, receiptAdded)
         const messageId = 'worker-result:' + id
         const outcome = { completed: 'Worker 回合已结束，未返回最终文本。', interrupted: 'Worker 回合已中断。', failed: next.error || 'Worker 回合失败。' }
         const text = next.status === 'completed' && next.finalReply ? next.finalReply :
@@ -212,7 +213,7 @@ export class RouterDispatcher {
     if (!response || typeof response !== 'object' || Array.isArray(response)) {
       throw new HubError('codex-cli/bad-request', '缺少 Worker 请求的响应')
     }
-    return this.hub.respondApproval(request.requestId, response)
+    return this.hub.respondApproval(request.requestId, response, instanceId)
   }
 
   recordQuestions(task, turnId, items) {
@@ -227,24 +228,30 @@ export class RouterDispatcher {
     }
   }
 
-  async answerQuestion({ id, text } = {}) {
+  async currentQuestion(id) {
     const question = typeof id === 'string' && this.store.get('message', id)
     const stale = () => new HubError('codex-cli/router-stale', '此 Worker 问题已处理或已失效')
     if (!question?.questions || question.status !== 'pending') throw stale()
-    if (typeof text !== 'string' || !text.trim() || text.length > 12000) throw new HubError('codex-cli/bad-request', '回答为空或过长')
     const task = this.get(question.dispatchId)
     if (task.routerThreadId !== this.routerThreadId() || task.turnId !== question.turnId) throw stale()
     const { detail } = await this.inspect(task, true)
     const turn = detail.turns.at(-1)
     if (this.closed || this.store.get('message', id)?.status !== 'pending') throw stale()
-    const save = status => this.store.put('message', id, { ...question, status })
     const items = turn?.items ?? []
     if (turn?.id !== question.turnId || !['completed', 'inProgress'].includes(turn.status) ||
         !items.slice(items.findLastIndex(item => item.type === 'userMessage') + 1).some(item => item.id === question.itemId && item.questions?.length)) {
-      save('closed')
+      this.store.put('message', id, { ...question, status: 'closed' })
       this.publish({ id: task.id })
       throw stale()
     }
+    return { question, task, turn }
+  }
+
+  async answerQuestion({ id, text } = {}) {
+    if (typeof text !== 'string' || !text.trim() || text.length > 12000) throw new HubError('codex-cli/bad-request', '回答为空或过长')
+    const { question, task, turn } = await this.currentQuestion(id)
+    if (this.closed || this.store.get('message', id)?.status !== 'pending') throw new HubError('codex-cli/router-stale', '问题已失效')
+    const save = status => this.store.put('message', id, { ...question, status })
     if (turn.status === 'inProgress') {
       // Persist before steering. A lost native acknowledgement must not send the same answer twice.
       save('unknown')

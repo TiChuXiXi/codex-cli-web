@@ -3,12 +3,13 @@ import { Icon } from '../components/Icon'
 import type { Api } from '../rpc'
 import type { AccessSettings } from '../../../shared/contracts'
 import { VersionsPanel } from './VersionsPanel'
+import { WeChatSettings } from './WeChatSettings'
 import { RouterSettings } from './RouterSettings'
 import { WorkerSettings } from './WorkerSettings'
 import './settings.css'
 
 export function SettingsPage({api,onClose,onDirtyChange,routerEnabled}:{api:Api;onClose:()=>void;onDirtyChange:(dirty:boolean)=>void;routerEnabled:boolean}) {
-  const [tab,setTab]=React.useState<'versions'|'access'|'worker'|'router'>('versions')
+  const [tab,setTab]=React.useState<'versions'|'access'|'worker'|'router'|'wechat'>('versions')
   const [workerDirty,setWorkerDirty]=React.useState(false)
   const [visitedWorker,setVisitedWorker]=React.useState(false)
   const [accessDirty,setAccessDirty]=React.useState(false)
@@ -28,7 +29,7 @@ export function SettingsPage({api,onClose,onDirtyChange,routerEnabled}:{api:Api;
       <button type="button" className="dsh-codex-button" onClick={onClose}><Icon name="arrowLeft" size={15}/>返回工作台</button>
     </header>
     <nav className="settings-nav" role="tablist" aria-label="设置分类">
-      {([{id:'versions',label:'版本与更新',icon:'download'},{id:'access',label:'访问白名单',icon:'shield'},{id:'worker',label:'Worker',icon:'settings'},{id:'router',label:'中枢',icon:'orbit'}] as const).filter(entry=>entry.id!=='router'||routerEnabled).map((entry,index,entries)=>
+      {([{id:'versions',label:'版本与更新',icon:'download'},{id:'access',label:'访问白名单',icon:'shield'},{id:'worker',label:'Worker',icon:'settings'},{id:'router',label:'中枢',icon:'orbit'},{id:'wechat',label:'微信接入',icon:'settings'}] as const).filter(entry=>!['wechat','router'].includes(entry.id)||routerEnabled).map((entry,index,entries)=>
         <button key={entry.id} type="button" role="tab" id={'settings-tab-'+entry.id} aria-controls={'settings-panel-'+entry.id} aria-selected={tab===entry.id} tabIndex={tab===entry.id?0:-1} onClick={()=>setTab(entry.id)} onKeyDown={event=>{
           if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||event.nativeEvent.isComposing)return
           event.preventDefault()
@@ -45,6 +46,7 @@ export function SettingsPage({api,onClose,onDirtyChange,routerEnabled}:{api:Api;
     <div id="settings-panel-worker" role="tabpanel" aria-labelledby="settings-tab-worker" hidden={tab!=='worker'}>
       {visitedWorker && <WorkerSettings api={api} onDirtyChange={setWorkerDirty}/>}
     </div>
+    {routerEnabled && tab==='wechat' && <div id="settings-panel-wechat" role="tabpanel" aria-labelledby="settings-tab-wechat"><WeChatSettings api={api}/></div>}
     {routerEnabled && <div id="settings-panel-router" role="tabpanel" aria-labelledby="settings-tab-router" hidden={tab!=='router'}>
       {visitedRouter && <RouterSettings api={api} onDirtyChange={setRouterDirty}/>}
     </div>}

@@ -56,9 +56,11 @@ export interface RouterSnapshot {
   effort: string | null
   models: ModelOption[]
   usingDefaultModel: boolean
+  queuedCount?: number
   receiptLimited?: boolean
   messages: {
     id: string; role: 'user' | 'assistant'; label?: string; text: string; status: string
+    dispatchId?: string; interactionMethod?: string
     questions?: { title: string; options?: string[] | null }[]
   }[]
   interactions: {
@@ -68,6 +70,23 @@ export interface RouterSnapshot {
   clarifications: RouterClarification[]
   tasks: RouterTask[]
   latestEventId: number
+}
+
+export interface WeChatStatus {
+  phase: 'unbound' | 'waiting_scan' | 'waiting_confirmation' | 'waiting_pin' | 'connected' | 'reconnecting' | 'disconnected' | 'expired' | 'error'
+  hasBinding: boolean
+  owner: string | null
+  qr: string | null
+  loginId: string | null
+  canNotify: boolean
+  results: boolean
+  decisions: boolean
+  lastReceived: number | null
+  lastSent: number | null
+  pending: number
+  unknown: number
+  failed: number
+  error: string | null
 }
 
 export interface AccessSettings {

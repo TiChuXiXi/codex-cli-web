@@ -7,7 +7,7 @@ import { QuestionForm } from './QuestionForm'
 
 export interface ApprovalStackProps {
   approvals: PendingApproval[]
-  onRespond: (requestId: string | number, response: any) => Promise<void>
+  onRespond: (requestId: string | number, response: any, instanceId: string) => Promise<void>
 }
 
 export function ApprovalStack({ approvals, onRespond }: ApprovalStackProps) {
@@ -15,7 +15,7 @@ export function ApprovalStack({ approvals, onRespond }: ApprovalStackProps) {
   return (
     <div className="dsh-codex-approvals">
       {approvals.map((approval) => (
-        <ApprovalCard key={JSON.stringify([approval.params?.threadId, approval.method, approval.requestId])} approval={approval} onRespond={onRespond} />
+        <ApprovalCard key={approval.instanceId} approval={approval} onRespond={onRespond} />
       ))}
     </div>
   )
@@ -26,7 +26,7 @@ export function ApprovalCard({
   onRespond,
 }: {
   approval: PendingApproval
-  onRespond: (requestId: string | number, response: any) => Promise<void>
+  onRespond: (requestId: string | number, response: any, instanceId: string) => Promise<void>
 }) {
   const t = useT()
   const [busy, setBusy] = React.useState(false)
@@ -36,7 +36,7 @@ export function ApprovalCard({
     if (busy) return
     setBusy(true)
     try {
-      await onRespond(approval.requestId, response)
+      await onRespond(approval.requestId, response, approval.instanceId)
     } catch {
       // ConsolePage reports the error; keep the request available for retry.
     } finally {
@@ -45,7 +45,7 @@ export function ApprovalCard({
   }
 
   if (approval.method === 'item/tool/requestUserInput') {
-    return <InputCard approval={approval} onRespond={response => onRespond(approval.requestId, response)} />
+    return <InputCard approval={approval} onRespond={response => onRespond(approval.requestId, response, approval.instanceId)} />
   }
 
   if (approval.method === 'item/commandExecution/requestApproval') {

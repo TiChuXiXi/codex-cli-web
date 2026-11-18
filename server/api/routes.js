@@ -26,7 +26,19 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
     if (!router) throw new HubError('codex-cli/router-unavailable', 'Router 未启用')
     return router
   }
+  function wechat() {
+    const channel = requireRouter().wechat
+    if (!channel) throw new HubError('codex-cli/router-unavailable', '微信接入正在初始化')
+    return channel
+  }
   const endpoints = {
+    'wechat/status': () => wechat().status(),
+    'wechat/bind': () => wechat().bind(),
+    'wechat/pin': payload => wechat().pin(payload),
+    'wechat/disconnect': () => wechat().disconnect(),
+    'wechat/unbind': () => wechat().disconnect(true),
+    'wechat/resume': () => wechat().resume(),
+    'wechat/preferences': payload => wechat().preferences(payload),
     'router/read': () => router?.read() ?? {
       enabled: false, phase: 'disabled', error: null, model: null, busy: false,
       messages: [], clarifications: [], tasks: [], latestEventId: 0,
@@ -199,7 +211,7 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
       if (payload === null || typeof payload !== 'object') {
         throw new HubError('codex-cli/bad-request', '缺少审批响应体')
       }
-      return hub.respondApproval(payload.requestId, payload.response ?? payload.decision)
+      return hub.respondApproval(payload.requestId, payload.response ?? payload.decision, payload.instanceId)
     },
   }
 

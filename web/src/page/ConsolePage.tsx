@@ -485,16 +485,14 @@ export function ConsolePage(props: ConsolePageProps) {
             const request = event.payload as PendingApproval | null
             if (request === null || request === undefined) break
             setPending((previous) =>
-              previous.some((entry) => String(entry.requestId) === String(request.requestId))
-                ? previous
-                : [...previous, request],
+              [...previous.filter(entry => String(entry.requestId) !== String(request.requestId)), request],
             )
             break
           }
           case 'approval/resolved': {
             setRouterRevision(value => value + 1)
             const requestId = event.payload?.requestId
-            setPending((previous) => previous.filter((entry) => String(entry.requestId) !== String(requestId)))
+            setPending((previous) => previous.filter(entry => event.payload?.instanceId ? entry.instanceId !== event.payload.instanceId : String(entry.requestId) !== String(requestId)))
             break
           }
           case 'resync': {
@@ -748,11 +746,11 @@ export function ConsolePage(props: ConsolePageProps) {
   }, [api, selectedId, activeTurnId])
 
   const respond = React.useCallback(
-    async (requestId: string | number, response: any) => {
+    async (requestId: string | number, response: any, instanceId: string) => {
       setError(null)
       try {
-        await api('approvals/respond', { requestId, response })
-        setPending((previous) => previous.filter((entry) => String(entry.requestId) !== String(requestId)))
+        await api('approvals/respond', { requestId, response, instanceId })
+        setPending((previous) => previous.filter((entry) => entry.instanceId !== instanceId))
       } catch (cause) {
         setError(messageOf(cause))
         throw cause

@@ -10,7 +10,7 @@ export class RouterStore {
         this.lock.exec('BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS router_instance (id INTEGER)')
       }
       const version = this.db.prepare('PRAGMA user_version').get().user_version
-      if (version > 2) throw new Error('Router 数据库版本高于当前程序')
+      if (version > 3) throw new Error('Router 数据库版本高于当前程序')
       this.db.exec('PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL')
       if (version === 0) this.db.exec(`
         BEGIN IMMEDIATE;
@@ -43,6 +43,19 @@ export class RouterStore {
         PRAGMA user_version=2;
         COMMIT;
       `)
+      if (version < 3) this.db.exec(`
+        BEGIN IMMEDIATE;
+        CREATE TABLE wechat_records (
+          seq INTEGER PRIMARY KEY, kind TEXT NOT NULL, id TEXT NOT NULL,
+          state TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(kind,id)
+        );
+        CREATE INDEX wechat_pending ON wechat_records(kind,state,seq);
+        CREATE INDEX router_queued_messages ON router_records(kind,json_extract(value,'$.status'));
+        PRAGMA user_version=3;
+        COMMIT;
+      `)
+      this.queuedInputCount = this.db.prepare("SELECT count(*) AS count FROM router_records WHERE kind='message' AND json_extract(value,'$.status')='queued'")
+      this.nextInput = this.db.prepare("SELECT value FROM router_records WHERE kind='message' AND json_extract(value,'$.status')='queued' ORDER BY rowid LIMIT 1")
       this.read = this.db.prepare('SELECT value FROM router_records WHERE kind=? AND id=?')
       this.save = this.db.prepare('INSERT INTO router_records (kind,id,value) VALUES (?,?,?) ON CONFLICT (kind,id) DO UPDATE SET value=excluded.value')
       this.scan = this.db.prepare('SELECT value FROM router_records WHERE kind=? ORDER BY rowid DESC LIMIT ?')
@@ -88,6 +101,12 @@ export class RouterStore {
     return this.scan.all(kind, limit).map(row => JSON.parse(row.value))
   }
 
+  messagesWithStatus(...states) {
+    const slots = states.map(() => '?').join(',')
+    return this.db.prepare(`SELECT value FROM router_records WHERE kind='message' AND
+      json_extract(value,'$.status') IN (${slots}) ORDER BY rowid DESC`).all(...states).map(row => JSON.parse(row.value))
+  }
+
   transaction(action) {
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -98,6 +117,25 @@ export class RouterStore {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  wxRead(kind, id) {
+    const data = this.db.prepare('SELECT data FROM wechat_records WHERE kind=? AND id=?').get(kind, id)?.data
+    return data ? JSON.parse(data) : null
+  }
+
+  wxSave(kind, row) {
+    this.db.prepare(`INSERT INTO wechat_records(kind,id,state,data) VALUES(?,?,?,?)
+      ON CONFLICT(kind,id) DO UPDATE SET state=excluded.state,data=excluded.data`)
+      .run(kind, row.id, row.state, JSON.stringify(row))
+    return row
+  }
+
+  wxRows(kind, state) {
+    const rows = state === undefined
+      ? this.db.prepare('SELECT data FROM wechat_records WHERE kind=? ORDER BY seq').all(kind)
+      : this.db.prepare('SELECT data FROM wechat_records WHERE kind=? AND state=? ORDER BY seq').all(kind,state)
+    return rows.map(row => JSON.parse(row.data))
   }
 
   addWorkerReceipt(task) {

@@ -933,6 +933,7 @@ export class CodexHub {
       'approval/requested',
       {
         requestId: request.id,
+        instanceId: pending.instanceId,
         method: request.method,
         params: pending.params,
         createdAt: pending.createdAt,
@@ -954,7 +955,10 @@ export class CodexHub {
   }
 
   /** 回应一个挂起的服务端请求；response 是方法对应的原始响应体。 */
-  respondApproval(requestId, response) {
+  respondApproval(requestId, response, instanceId) {
+    if (!instanceId || this.#pendingApprovals.get(String(requestId))?.instanceId !== instanceId) {
+      throw new HubError('codex-cli/unknown-approval', '审批请求已处理或失效，请刷新')
+    }
     const ok = this.#settleApproval(String(requestId), response, 'answered')
     if (!ok) throw new HubError('codex-cli/unknown-approval', '审批请求不存在或已解决')
     return { requestId, resolved: true }
@@ -979,7 +983,7 @@ export class CodexHub {
     pending.resolve(response)
     this.bus.publish(
       'approval/resolved',
-      { requestId: pending.id, reason },
+      { requestId: pending.id, instanceId: pending.instanceId, reason },
       {
         threadId: pending.params.threadId,
         turnId: pending.params.turnId,
@@ -994,7 +998,7 @@ export class CodexHub {
       if (pending.timer !== null) clearTimeout(pending.timer)
       pending.resolve(SKIP_RESPONSE)
       this.#pendingApprovals.delete(key)
-      this.bus.publish('approval/resolved', { requestId: pending.id, reason })
+      this.bus.publish('approval/resolved', { requestId: pending.id, instanceId: pending.instanceId, reason })
     }
   }
 

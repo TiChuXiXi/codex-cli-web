@@ -10,11 +10,13 @@ import { bootstrap } from '../server/bootstrap.js'
 import { loadConfig } from '../server/config.js'
 import { RouterService } from '../server/router/service.js'
 import { loadRouterProjects } from '../server/router/projects.js'
+import { WeChatChannel } from '../server/channels/wechat/channel.js'
+import { fakeClient, inbound, until } from './fixtures/wechat.mjs'
 import { RouterStore } from '../server/router/store.js'
 import { normalizeRouterConfig } from '../server/router/app-server.js'
 import { routerNamespace } from '../server/router/tools.js'
 
-async function fixture(t, { discover = false, resumeExistingPermissions = false, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
+async function fixture(t, { discover = false, resumeExistingPermissions = false, createChannel, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'router-service-'))
   const cwd = join(root, 'worker')
   await mkdir(cwd)
@@ -128,7 +130,7 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
   }
   const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: 'Alpha', cwd, resumeExistingPermissions }] }
   async function boot() {
-    router = new RouterService({ config, stateDir, hub, bus, connect, wakePolicy })
+    router = new RouterService({ config, stateDir, hub, bus, connect, wakePolicy, createChannel })
     router.start()
     await router.opening
     assert.equal(router.status().phase, 'ready')
@@ -626,6 +628,9 @@ test('authenticated RPC reaches the private Router service through the workbench
     })
   }
   assert.equal((await rpc('router/read', {})).status, 401)
+  for (const operation of ['status','bind','pin','disconnect','unbind','resume','preferences']) {
+    assert.equal((await rpc('wechat/' + operation, {})).status,401)
+  }
   const login = await fetch(app.origin + '/auth/login', {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-codex-request': '1' },
     body: JSON.stringify({ token: accessToken }),
@@ -793,10 +798,11 @@ test('an ambiguous wake stays visible across restart and waits for native idle b
   fx.nativeStatus = 'active'
   await fx.restart()
   assert.equal(fx.router.getTask(task.id).receiptStatus, 'unknown')
-  await assert.rejects(fx.router.send({ requestId: 'receipt-busy-after-01', text: '另一个用户问题' }), /正在回复/)
+  assert.equal((await fx.router.send({ requestId: 'receipt-busy-after-01', text: '另一个用户问题' })).status, 'queued')
   fx.nativeStatus = 'idle'
   await fx.router.wake.run()
-  assert.equal(fx.router.read().busy, false)
+  assert.equal(fx.sent.at(-1).requestId, 'receipt-busy-after-01')
+  fx.finish()
   await fx.restart()
   assert.equal(fx.router.getTask(task.id).receiptStatus, 'unknown')
   assert.equal(fx.sent.filter(send => send.workerReceipt).length, 1)
@@ -902,7 +908,7 @@ test('v1 state migration preserves old terminal tasks without seeding receipts',
   try {
     assert.equal(migrated.get('task', 'old').status, 'completed')
     assert.equal(migrated.receiptState('old'), null)
-    assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 2)
+    assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 3)
   } finally { migrated.close() }
 })
 
@@ -921,4 +927,151 @@ test('a failed receipt insert rolls back Worker terminal state before history re
   await fx.router.dispatcher.sweep()
   assert.equal(fx.router.getTask(task.id).status, 'completed')
   assert.equal(fx.router.getTask(task.id).receiptStatus, 'pending')
+})
+
+test('Web and WeChat share a durable FIFO and owner-only replies across restart with no browser', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t,{createChannel: router => new WeChatChannel(router,client)})
+  let channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  await fx.router.send({requestId:'web-private-turn',text:'private Web conversation'})
+  channel.accept({msgs:[inbound('1','hello from phone')],get_updates_buf:'cursor'})
+  await until(() => fx.router.read().messages.some(m => m.text==='hello from phone' && m.status==='queued'))
+  await fx.router.send({requestId:'web-queued-turn',text:'next Web message'})
+  assert.deepEqual(fx.sent.map(s => s.text),['private Web conversation'])
+  await fx.restart()
+  channel = fx.router.wechat
+  fx.finish('private Web answer')
+  await until(() => fx.sent.length === 2)
+  assert.equal(fx.sent[1].text,'hello from phone')
+  fx.finish('phone answer')
+  await until(() => fx.sent.length === 3)
+  fx.finish('another private Web answer')
+  await until(() => client.sent.length === 1)
+  assert.deepEqual(client.sent.map(m => [m.text,m.context]),[['phone answer','context-1']])
+  assert.equal(new Set(fx.sent.map(s => s.threadId)).size,1)
+  assert.equal(channel.account.cursor,'cursor')
+  assert.ok(fx.router.read().messages.some(m => m.label==='你 · 微信'))
+  channel.accept({msgs:[inbound('1','hello from phone')],get_updates_buf:'cursor2'})
+  assert.equal(channel.store.wxRows('in').length,1)
+})
+
+test('a Web-dispatched Worker sends one committed Router receipt; a phone follow-up carries its dispatch reference', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, {createChannel: router => new WeChatChannel(router,client)})
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  channel.accept({msgs:[inbound('init','你好')]})
+  await until(() => fx.router.active?.text === '你好')
+  fx.finish('你好！')
+  await until(() => client.sent.length === 1)
+  const task = await dispatch(fx,'web-dispatched-worker')
+  const repeat = completeWorker(fx,task)
+  repeat()
+  fx.wakeBehavior = 'ended-before-ack'
+  await fx.router.wake.run()
+  await until(() => client.sent.length === 2)
+  assert.match(client.sent[1].text,/提前完成的回执/)
+  assert.doesNotMatch(client.sent[1].text,/关联 Worker 的最终答复/)
+  channel.accept({msgs:[inbound('next','刚才那个任务再检查一下')]})
+  await until(() => fx.router.active?.text === '刚才那个任务再检查一下')
+  assert.deepEqual(fx.router.active.origin.relatedTasks,[task.id])
+  assert.equal(fx.router.getTask(task.id).receiptStatus,'delivered')
+})
+
+test('a phone clarification is delivered once and its original instruction reaches only the chosen Worker', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, {createChannel: router => new WeChatChannel(router,client)})
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  channel.accept({msgs:[inbound('choose','帮我继续 Alpha 的同名测试任务')]})
+  await until(() => fx.router.active?.origin)
+  const source = fx.router.active
+  const call = await fx.tool('dispatch_task', {requestId:source.requestId,instruction:source.text,mode:'resume',
+    candidateThreadIds:['worker-a','worker-b'],reason:'请选择同名会话'})
+  assert.equal(call.value.status,'needs_confirmation')
+  fx.finish('选中后将继续。')
+  await until(() => client.sent.length === 1)
+  assert.match(client.sent[0].text,/选中后将继续。.*同名测试甲/s)
+  channel.accept({msgs:[inbound('selected','1')]})
+  await until(() => fx.submitted.length === 1)
+  assert.equal(fx.submitted[0].threadId,'worker-a')
+  assert.equal(fx.submitted[0].text,source.text)
+  assert.equal(fx.sent.length,1)
+})
+
+test('a phone approval answers the original child Worker while the shared Router is busy', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, {createChannel: router => new WeChatChannel(router,client)})
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  const task = await dispatch(fx,'wechat-child-dispatch')
+  const scope = { threadId:task.threadId, turnId:'turn-' + task.id }
+  fx.bus.publish('item/upsert',{item:{type:'userMessage',clientId:task.id}},scope)
+  fx.bus.publish('item/upsert',{item:{type:'subAgentActivity',kind:'started',agentThreadId:'child',agentPath:'/root/check'},completed:true},scope)
+  const params = {threadId:'child',turnId:'child-turn',command:'npm run build',cwd:fx.cwd}
+  const request = {requestId:14,instanceId:'original-child',method:'item/commandExecution/requestApproval',params}
+  let choice
+  fx.hub.pendingApprovals = () => choice ? [] : [request]
+  fx.hub.respondApproval = (id,response,instanceId) => {
+    assert.equal(id,14)
+    assert.equal(instanceId,request.instanceId)
+    choice = response
+    fx.bus.publish('approval/resolved',{requestId:id},params)
+  }
+  await fx.router.send({requestId:'busy-web-request',text:'另一个 Web 任务'})
+  fx.bus.publish('approval/requested',request,params)
+  channel.accept({msgs:[inbound('first','稍后处理这项新任务')]})
+  await until(() => client.sent.some(m => m.text.includes('npm run build')))
+  assert.equal(fx.router.read().interactions[0].dispatchId,task.id)
+  channel.accept({msgs:[inbound('reply','允许')]})
+  await until(() => choice)
+  assert.deepEqual(choice,{decision:'accept'})
+  assert.equal(fx.router.active.requestId,'busy-web-request')
+  assert.equal(fx.router.read().interactions.length,0)
+  assert.throws(() => fx.router.respond({dispatchId:task.id,instanceId:request.instanceId,response:{decision:'accept'}}),/失效/)
+})
+
+test('a structured question answered in WeChat resumes its completed Worker exactly once', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, {createChannel: router => new WeChatChannel(router,client)})
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  const task = await dispatch(fx,'wechat-business-question')
+  const item = {id:'db-choice',type:'agentMessage',questions:[{title:'使用哪个数据库？',options:['SQLite','PostgreSQL']}]}
+  fx.threads.get(task.threadId).turns = [{id:'turn-' + task.id,status:'completed',
+    items:[{type:'userMessage',clientId:task.id},item]}]
+  await fx.router.dispatcher.reconcile(fx.router.dispatcher.get(task.id))
+  channel.accept({msgs:[inbound('first','你好')]})
+  await until(() => client.sent.some(m => m.text.includes('使用哪个数据库？')))
+  channel.accept({msgs:[inbound('answer','SQLite'),inbound('answer','SQLite')]})
+  await until(() => fx.router.dispatcher.list().some(t => t.instruction.includes('使用哪个数据库？\nSQLite')))
+  const followups = fx.router.dispatcher.list().filter(task => task.instruction.includes('\nSQLite'))
+  assert.equal(followups.length,1)
+  assert.equal(followups[0].threadId,task.threadId)
+  assert.equal(fx.router.read().messages.find(m=>m.questions)?.status,'answered')
+})
+
+test('early foreign completion cannot inherit a phone reply address before the native turn is acknowledged', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t,{createChannel: router => new WeChatChannel(router,client)})
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  fx.router.app.send = async (threadId) => {
+    for (const [id,text] of [['earlier-web','private Web answer'],['phone-turn','actual phone answer']]) {
+      fx.router.onEvent('turn/started',{threadId,turn:{id}})
+      fx.router.onEvent('item/completed',{threadId,turnId:id,item:{type:'agentMessage',id,text,phase:'final_answer'}})
+      fx.router.onEvent('turn/completed',{threadId,turn:{id,status:'completed'}})
+    }
+    return {turn:{id:'phone-turn',status:'completed'}}
+  }
+  channel.accept({msgs:[inbound('ask','你好')]})
+  await until(() => client.sent.length)
+  assert.deepEqual(client.sent.map(message => message.text),['actual phone answer'])
 })

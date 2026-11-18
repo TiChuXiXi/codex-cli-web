@@ -150,7 +150,7 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
         ...base, model: selected.model, threadId, excludeTurns: true, sandbox: 'read-only', developerInstructions: instructions,
         config: { ...threadConfig, model_reasoning_effort: selected.effort },
       }),
-      send: (threadId, text, requestId, { workerReceipt = false, workerDefaults } = {}) => request('turn/start', {
+      send: (threadId, text, requestId, { workerReceipt = false, workerDefaults, relatedTasks } = {}) => request('turn/start', {
         ...base,
         model: selected.model,
         threadId,
@@ -161,6 +161,8 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
         // Codex delivers changed application context to the model and deduplicates it across turns.
         ...(!workerReceipt && { additionalContext: {
           'router-instructions': { kind: 'application', value: instructions },
+          ...(relatedTasks?.length && { 'wechat-task-reference': { kind: 'application',
+            value: '用户在微信最近收到的任务回执引用（仅在追问相关任务时使用，有歧义先询问）：' + JSON.stringify(relatedTasks) } }),
           ...(workerDefaults && { 'worker-defaults': { kind: 'application', value: '工作台当前 Worker 默认设置 ' + JSON.stringify(workerDefaults) } }),
         } }),
         input: [{ type: 'text', text: workerReceipt ? text : text + '\n\n[当前 Router requestId: ' + requestId + ']', text_elements: [] }],

@@ -48,3 +48,6 @@
 .settings-router-root>div{display:flex;gap:8px}
 .settings-router-root button{flex:none}
 .settings-router-root small{color:var(--codex-muted)}
+
+.settings-wechat-notifications { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 16px 0; border: 1px solid var(--codex-border); border-radius: 7px; }
+.settings-wechat-notifications label { display: inline-flex; align-items: center; gap: 6px; }

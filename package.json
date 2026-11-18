@@ -27,6 +27,7 @@
     "docs/acceptance/router-a1.md",
     "docs/acceptance/router-a2.md",
     "docs/acceptance/router-interactions.md",
+    "scripts/test-wechat-live.mjs",
     "scripts/prepare-router-codex.mjs",
     "scripts/router-launcher.sh"
   ],
@@ -39,6 +40,7 @@
     "test:e2e": "playwright test",
     "test:visual": "VISUAL=1 playwright test",
     "test:live": "node scripts/test-live.mjs",
+    "test:wechat:live": "node scripts/test-wechat-live.mjs",
     "prepack": "npm run build",
     "test:parity": "node scripts/test-parity.mjs",
     "test:package": "node scripts/test-package.mjs"
@@ -50,6 +52,7 @@
     "highlight.js": "11.12.0",
     "lucide-react": "1.70.0",
     "mermaid": "11.17.2",
+    "qrcode-generator": "2.0.4",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "ws": "8.22.1"

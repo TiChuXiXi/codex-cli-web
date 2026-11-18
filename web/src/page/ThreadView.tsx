@@ -37,7 +37,7 @@ export interface ThreadViewProps {
   loadingOlder: boolean
   onLoadOlder: () => Promise<void> | void
   pending: PendingApproval[]
-  onRespond: (requestId: string | number, response: any) => Promise<void>
+  onRespond: (requestId: string | number, response: any, instanceId: string) => Promise<void>
   followups?: FollowupSnapshot
   onFollowups: (snapshot: FollowupSnapshot) => void
   onSend: (text: string, options: {

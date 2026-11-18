@@ -31,7 +31,9 @@ export async function bootstrap(config, options={}) {
   let router
   if(config.router?.enabled) {
     const {RouterService}=await import('./router/service.js')
-    router=new RouterService({config:config.router,stateDir:config.stateDir,hub,followups,bus,logger,connect:options.openRouterApp})
+    const {WeChatChannel}=await import('./channels/wechat/channel.js')
+    router=new RouterService({config:config.router,stateDir:config.stateDir,hub,followups,bus,logger,connect:options.openRouterApp,
+      createChannel: service => new WeChatChannel(service, options.wechatClient)})
   }
   const routes=createRoutes({hub,bus,connection:auth,config:config.codex,logger,versions,runtime,workspace,git,followups,terminal,settings,router})
   const serveStatic=createStatic(options.webRoot ?? fileURLToPath(new URL('../dist/web/',import.meta.url)))
