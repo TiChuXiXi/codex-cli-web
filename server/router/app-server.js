@@ -134,13 +134,13 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
       resume: threadId => request('thread/resume', {
         ...base, threadId, excludeTurns: true, sandbox: 'read-only', config: threadConfig,
       }),
-      send: (threadId, text, requestId) => request('turn/start', {
+      send: (threadId, text, requestId, { workerReceipt = false } = {}) => request('turn/start', {
         ...base,
         threadId,
         sandboxPolicy: { type: 'readOnly', networkAccess: false },
         effort: selected.effort,
         clientUserMessageId: requestId,
-        input: [{ type: 'text', text: text + '\n\n[当前 Router requestId: ' + requestId + ']', text_elements: [] }],
+        input: [{ type: 'text', text: workerReceipt ? text : text + '\n\n[当前 Router requestId: ' + requestId + ']', text_elements: [] }],
       }, 60000),
     }
   } catch (error) {

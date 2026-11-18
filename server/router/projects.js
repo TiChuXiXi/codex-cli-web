@@ -55,12 +55,21 @@ export async function checkThread(project, thread, routerThreadId) {
   return thread
 }
 
-export function canDispatch(project, settings) {
-  const sandbox = settings?.sandbox
-  return settings?.cwd === project.cwd && settings.approvalPolicy === 'on-request' && settings.approvalsReviewer === 'user' &&
-    sandbox?.networkAccess === false &&
-    (sandbox.type === 'readOnly' ||
-      (sandbox.type === 'workspaceWrite' && project.sandbox === 'workspace-write' &&
-        sandbox.excludeTmpdirEnvVar === true && sandbox.excludeSlashTmp === true &&
-        Array.isArray(sandbox.writableRoots) && sandbox.writableRoots.every(root => root === project.cwd)))
+export function workerDispatchIssue(project, settings) {
+  if (settings?.cwd !== project.cwd) return 'Worker 的工作目录与登记项目不一致'
+  const sandbox = settings.sandbox
+  const issues = []
+  if (settings.approvalPolicy !== 'on-request' || settings.approvalsReviewer !== 'user') {
+    issues.push('Worker 必须启用按需审批，并由用户审批')
+  }
+  if (sandbox?.type === 'workspaceWrite' && project.sandbox !== 'workspace-write') {
+    issues.push('项目登记为只读，所选 Worker 已启用工作区写入')
+  } else if (sandbox?.type !== 'readOnly' && sandbox?.type !== 'workspaceWrite') {
+    issues.push('所选 Worker 的沙箱不受 Router 支持，请选择只读或受限的工作区写入会话')
+  } else if (sandbox.networkAccess !== false || (sandbox.type === 'workspaceWrite' &&
+      (sandbox.excludeTmpdirEnvVar !== true || sandbox.excludeSlashTmp !== true ||
+        !Array.isArray(sandbox.writableRoots) || sandbox.writableRoots.some(root => root !== project.cwd)))) {
+    issues.push('所选 Worker 的网络或写入范围超出项目权限')
+  }
+  return issues.length ? issues.join('。') : null
 }

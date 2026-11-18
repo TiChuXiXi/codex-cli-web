@@ -21,6 +21,7 @@ export interface RouterTask {
   updatedAt: number
   summary: string | null
   error: string | null
+  receiptStatus?: 'pending' | 'claimed' | 'delivered' | 'unknown' | 'failed' | null
 }
 
 export interface RouterClarification {
@@ -38,6 +39,7 @@ export interface RouterSnapshot {
   error: string | null
   model: string | null
   busy: boolean
+  receiptLimited?: boolean
   messages: { id: string; role: 'user' | 'assistant'; text: string; status: string }[]
   clarifications: RouterClarification[]
   tasks: RouterTask[]

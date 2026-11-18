@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 test('Router restores a choice, confirms only the selected Worker and opens it from task status', async ({ page }, info) => {
   let pending = true
   let accepted = false
+  let workerFinished = false
   let confirmation: unknown
   const messages: { id: string, role: string, text: string, status: string }[] = []
   await page.route('**/codex-cli/status', async route => {
@@ -29,7 +30,8 @@ test('Router restores a choice, confirms only the selected Worker and opens it f
         { id: 'fixture-thread', name: '验收会话', project: '验收项目', reasons: ['近期活动'] },
       ] }] : [],
       tasks: accepted ? [{ id: 'task-1', project: '验收项目', threadId: 'fixture-thread',
-        status: 'awaiting_approval', updatedAt: Date.now(), summary: null, error: null }] : [],
+        status: workerFinished ? 'completed' : 'awaiting_approval',
+        receiptStatus: workerFinished ? 'unknown' : null, updatedAt: Date.now(), summary: null, error: null }] : [],
     }
     await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } } })
   })
@@ -59,6 +61,13 @@ test('Router restores a choice, confirms only the selected Worker and opens it f
   await page.getByRole('button', { name: '打开会话处理审批' }).click()
   await expect(page.locator('.dsh-codex-workbench-header h1')).toHaveText('验收会话')
   await expect(page.getByRole('region', { name: 'Router' })).toHaveCount(0)
+
+  workerFinished = true
+  await page.reload()
+  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  await page.getByRole('button', { name: '任务', exact: true }).click()
+  await expect(page.getByText('Router 回执待核对', { exact: true })).toBeVisible()
+  await expect(page.getByText('Worker 回合已结束', { exact: false })).toBeVisible()
 })
 
 test('Router shares message rendering, keyboard input, drafts and stream scrolling', async ({ page }, info) => {

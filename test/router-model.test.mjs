@@ -46,4 +46,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const sent = (await app.send('previous-sol-thread', 'hello', 'request-id-1234')).params
   assert.equal(sent.model, 'gpt-6.1-terra')
   assert.equal(sent.effort, 'low')
+  assert.match(sent.input[0].text, /当前 Router requestId/)
+  const requestId = 'router-receipt:fixture-batch:1'
+  const receipt = (await app.send('previous-sol-thread', 'Worker receipt fixture', requestId, { workerReceipt: true })).params
+  assert.equal(receipt.threadId, 'previous-sol-thread')
+  assert.equal(receipt.clientUserMessageId, requestId)
+  assert.equal(receipt.input[0].text, 'Worker receipt fixture')
+  assert.deepEqual(receipt.sandboxPolicy, { type: 'readOnly', networkAccess: false })
 })

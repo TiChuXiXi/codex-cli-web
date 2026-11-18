@@ -8,6 +8,7 @@ import { rankCandidates, selectCandidate } from './matching.js'
 import { checkProject, checkThread, loadRouterProjects, shortText } from './projects.js'
 import { RouterStore } from './store.js'
 import { routerNamespace, toolResult, validateTool } from './tools.js'
+import { RouterWakeScheduler } from './wake.js'
 
 const lifetime = 24 * 60 * 60 * 1000
 const textLimit = 12000
@@ -33,9 +34,10 @@ function previousOperation(store, requestId, intent) {
 }
 
 export class RouterService {
-  constructor({ config, stateDir, hub, followups, bus, logger, connect = connectRouterApp }) {
-    Object.assign(this, { config, stateDir, hub, followups, bus, logger, connect })
+  constructor({ config, stateDir, hub, followups, bus, logger, connect = connectRouterApp, wakePolicy }) {
+    Object.assign(this, { config, stateDir, hub, followups, bus, logger, connect, wakePolicy })
     this.phase = 'idle'
+    this.nativeBusy = false
     this.projects = new Map()
     this.confirming = new Map()
     this.deltas = new Map()
@@ -71,9 +73,12 @@ export class RouterService {
       }
       this.dispatcher = new RouterDispatcher({
         hub: this.hub, bus: this.bus, followups: this.followups, store: this.store,
-        project: id => this.projects.get(id), routerThreadId: () => this.session?.id,
+        project: id => this.projects.get(id),
+        routerThreadId: () => this.session?.id ?? this.store.get('session', 'active')?.id,
         isReady: () => !this.closed && this.phase === 'ready',
+        onReceipt: () => this.wake.kick(),
       })
+      this.wake = new RouterWakeScheduler(this, this.wakePolicy)
     }
     const epoch = Symbol('router-connection')
     this.epoch = epoch
@@ -104,35 +109,56 @@ export class RouterService {
       if (this.closed || this.epoch !== epoch) { app.close(); return }
       this.session = session
       this.app = app
-      await this.recoverMessages()
+      await this.recoverMessages(app)
+      if (this.closed || this.epoch !== epoch) { app.close(); return }
+      await this.wake.recover(app)
       if (this.closed || this.epoch !== epoch) { app.close(); return }
       this.phase = 'ready'
       this.error = null
       this.logger?.info?.(`Router 已就绪（${app.selected.model}，${this.projects.size} 个登记项目）`)
       this.publish()
       this.dispatcher.schedule()
+      this.wake.kick()
       for (const row of this.store.list('clarification').filter(item => item.status === 'confirming')) {
         this.completeConfirmation(row).catch(error => this.logger?.warn?.('Router confirmation: ' + error.code))
       }
     } catch (error) {
-      if (this.app === app) this.app = null
+      if (this.app === app) {
+        this.app = null
+        this.active = null
+        this.clearDeltas()
+      }
       app.close()
       throw error
     }
   }
 
-  async recoverMessages() {
+  async readThreadStatus(app, threadId) {
+    const { thread } = await app.request('thread/read', { threadId, includeTurns: false })
+    return thread?.id === threadId ? thread.status?.type ?? null : null
+  }
+
+  async recoverMessages(app) {
     const pending = this.store.list('message', 80).filter(message =>
       message.role === 'user' && ['sending', 'accepted', 'unknown'].includes(message.status))
     if (!pending.length) return
-    const history = await this.app.request('thread/turns/list', {
+    const history = await app.request('thread/turns/list', {
       threadId: this.session.id, limit: 30, sortDirection: 'desc', itemsView: 'full',
     })
+    if (this.app !== app || this.closed) return
+    let nativeStatus
     for (const message of pending) {
       const turn = history.data?.find(turn => turn.id === message.turnId ||
         turn.items?.some(item => item.type === 'userMessage' && item.clientId === message.requestId))
       if (turn?.status === 'inProgress') {
-        this.active = { ...message, turnId: turn.id }
+        nativeStatus ??= await this.readThreadStatus(app, this.session.id)
+        if (this.app !== app || this.closed) return
+        if (nativeStatus === 'active' && !this.active) {
+          this.active = { ...message, turnId: turn.id }
+          continue
+        }
+        if (!this.active) this.nativeBusy = nativeStatus !== 'idle'
+        this.recordMessage({ ...message, turnId: turn.id, status: 'unknown' })
         continue
       }
       this.recordMessage({ ...message, turnId: turn?.id ?? message.turnId, status: turn?.status ?? 'unknown' })
@@ -144,14 +170,19 @@ export class RouterService {
     }
   }
 
+  resetApp(app) {
+    if (this.app !== app) return
+    this.disconnected()
+    app.close()
+  }
+
   disconnected() {
     this.clearDeltas()
     this.epoch = null
     this.app = null
-    if (this.active) {
-      this.recordMessage({ ...this.active, status: 'unknown' })
-      this.active = null
-    }
+    const active = this.active
+    this.active = null
+    if (active && active.source !== 'worker_receipt') this.recordMessage({ ...active, status: 'unknown' })
     if (!this.closed) {
       this.phase = 'unavailable'
       this.error = 'Router 连接已断开'
@@ -174,7 +205,8 @@ export class RouterService {
     const recentTasks = this.dispatcher ? this.dispatcher.list().map(task => this.task(task)) : []
     return {
       ...this.status(), error: this.error ?? null, model: this.app?.selected?.model ?? null,
-      busy: Boolean(this.active),
+      busy: Boolean(this.active) || this.nativeBusy,
+      receiptLimited: this.wake?.limited() ?? false,
       messages: [
         ...(this.store?.list('message', 80).reverse().map(message =>
           ({ id: message.id, role: message.role, text: message.text, status: message.status })) ?? []),
@@ -192,7 +224,8 @@ export class RouterService {
   task(task) {
     const { id, projectId, threadId, turnId, status, createdAt, updatedAt, summary, error } = task
     return { id, projectId, project: this.projects.get(projectId)?.name ?? projectId, threadId, turnId,
-      status, createdAt, updatedAt, summary: summary ?? null, error: error ?? null }
+      status, createdAt, updatedAt, summary: summary ?? null, error: error ?? null,
+      receiptStatus: task.receiptConflict ? 'unknown' : this.store.receiptState(id) }
   }
 
   listTasks({ offset = 0, limit = 50 } = {}) {
@@ -239,12 +272,13 @@ export class RouterService {
       if (previous.text !== text) throw new HubError('codex-cli/router-conflict', '消息请求 ID 与原消息冲突')
       return { id, status: previous.status }
     }
-    if (this.active) throw new HubError('codex-cli/router-busy', 'Router 正在回复，请等待当前回合结束')
+    if (this.active || this.nativeBusy) throw new HubError('codex-cli/router-busy', 'Router 正在回复，请等待当前回合结束')
+    const app = this.app
     const message = { id, requestId, text, role: 'user', status: 'sending', turnId: null }
     this.active = message
     this.recordMessage(message)
     try {
-      const { turn } = await this.app.send(this.session.id, text, requestId)
+      const { turn } = await app.send(this.session.id, text, requestId)
       if (!turn?.id) throw new Error('Router 回合未确认')
       if (this.active === message) {
         message.turnId = turn.id
@@ -257,10 +291,8 @@ export class RouterService {
         message.status = rejected ? 'failed' : 'unknown'
         this.active = null
         this.recordMessage(message)
-        if (!rejected) {
-          this.app.close()
-          this.disconnected()
-        }
+        if (rejected) this.wake.kick()
+        else this.resetApp(app)
       }
     }
     return { id, status: message.status }
@@ -269,6 +301,10 @@ export class RouterService {
   onEvent(method, params) {
     if (!this.active || !this.session || params?.threadId !== this.session.id) return
     const active = this.active
+    if (active.source === 'worker_receipt') {
+      this.wake.onEvent(active, method, params)
+      return
+    }
     if (method === 'turn/started' && !active.turnId) active.turnId = params.turn?.id
     if (method === 'item/started' && active.turnId === params.turnId &&
         params.item?.type === 'userMessage' && params.item.clientId === active.requestId && !this.session.materialized) {
@@ -296,6 +332,7 @@ export class RouterService {
       this.clearDeltas()
       this.active = null
       this.recordMessage(active)
+      this.wake.kick()
     }
   }
 
@@ -377,7 +414,9 @@ export class RouterService {
         params.namespace !== routerNamespace || typeof params.callId !== 'string' || !params.callId || params.callId.length > 256) {
       return toolResult(false, { code: 'outsideRouterTurn' })
     }
-    const key = JSON.stringify([this.session.id, source.turnId, params.callId])
+    const key = JSON.stringify(source.source === 'worker_receipt'
+      ? [this.session.id, source.turnId, source.batch.requestId, params.callId]
+      : [this.session.id, source.turnId, params.callId])
     const existing = this.store.get('tool-call', key)
     if (existing) return existing.response ?? toolResult(false, { code: 'toolResultUnknown' })
     const count = source.calls ?? 0
@@ -395,11 +434,23 @@ export class RouterService {
         message: error instanceof HubError ? error.message : '操作暂不可用，请检查工作台状态',
       })
     }
-    this.store.put('tool-call', key, { tool: params.tool, at: Date.now(), response })
+    if (!this.closed) this.store.put('tool-call', key, { tool: params.tool, at: Date.now(), response })
     return response
   }
 
   async handleTool(name, args, source) {
+    if (source.source === 'worker_receipt') {
+      if (name !== 'get_task_status' || !source.batch.dispatchIds.includes(args.dispatchId)) {
+        throw new HubError('codex-cli/router-receipt-scope', '自动回执只能读取本批次的任务')
+      }
+      const task = this.dispatcher.get(args.dispatchId)
+      const result = await this.dispatcher.result(task.id).catch(() => ({ resultAvailability: 'temporarily_unavailable' }))
+      return {
+        id: task.id, project: this.projects.get(task.projectId)?.name ?? task.projectId,
+        threadId: task.threadId, turnId: task.turnId, executionStatus: task.executionStatus,
+        ...result,
+      }
+    }
     const limit = args.limit ?? 12
     switch (name) {
       case 'list_projects':
@@ -419,7 +470,7 @@ export class RouterService {
       case 'get_task_status': return this.getTask(args.dispatchId)
       case 'interrupt_task': {
         const task = this.dispatcher.get(args.dispatchId)
-        if (!task.turnId || !['running', 'awaiting_approval'].includes(task.status)) {
+        if (!task.turnId || !['running', 'awaiting_approval', 'awaiting_input'].includes(task.status)) {
           throw new HubError('codex-cli/router-task', '没有可中断的关联回合')
         }
         return this.clarify(source, {
@@ -437,6 +488,7 @@ export class RouterService {
   }
 
   async prepare(source, intent) {
+    intent = { ...intent, sourceRouterTurnId: source.turnId }
     if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前 Router 回合已结束')
     const existing = previousOperation(this.store, source.requestId, intent)
     if (existing) return existing
@@ -499,6 +551,7 @@ export class RouterService {
     if (existing?.status === 'pending' && existing.expiresAt > Date.now()) return { status: 'needs_confirmation', id }
     const row = {
       ...value, id, requestId: source.requestId, original: source.text,
+      sourceRouterTurnId: source.turnId ?? null,
       revision: (existing?.revision ?? 0) + 1, status: 'pending', expiresAt: Date.now() + lifetime,
     }
     this.store.put('clarification', id, row)
@@ -562,7 +615,9 @@ export class RouterService {
     await checkProject(project)
     if (row.kind === 'project') {
       const intent = { ...row.intent, projectId: project.id }
-      return this.prepareSession({ requestId: row.requestId, text: row.original }, intent, project, null, true)
+      return this.prepareSession({
+        requestId: row.requestId, text: row.original, turnId: row.sourceRouterTurnId,
+      }, intent, project, null, true)
     }
     if (candidate.id === 'create') {
       return this.execute(row.requestId, { ...row.intent, projectId: project.id, threadId: undefined, mode: 'new' })
@@ -614,6 +669,7 @@ export class RouterService {
     clearTimeout(this.reconnectTimer)
     await this.opening
     await Promise.allSettled(this.confirming.values())
+    await this.wake?.close()
     await this.dispatcher?.close()
     this.store?.close()
   }

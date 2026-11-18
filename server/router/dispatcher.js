@@ -1,18 +1,33 @@
 import { randomUUID } from 'node:crypto'
 import { HubError } from '../codex/hub.js'
-import { canDispatch, checkProject, checkThread, shortText } from './projects.js'
+import { checkProject, checkThread, shortText, workerDispatchIssue } from './projects.js'
 
-const terminal = new Set(['created', 'completed', 'failed', 'interrupted'])
+const turnTerminal = new Set(['completed', 'failed', 'interrupted'])
+const terminal = new Set(['created', ...turnTerminal])
+const waiting = new Set(['awaiting_approval', 'awaiting_input'])
+
+export function finalAnswer(items = []) {
+  const messages = items.filter(item => item.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim())
+  return messages.findLast(item => item.phase === 'final_answer') ?? messages.findLast(item => !item.phase)
+}
+
+function waitStatus(requests, flags = []) {
+  if (flags.includes('waitingOnUserInput') || requests.some(request => request.method === 'item/tool/requestUserInput')) {
+    return 'awaiting_input'
+  }
+  return flags.includes('waitingOnApproval') || requests.length ? 'awaiting_approval' : 'running'
+}
 const verifiedWorkerVersions = new Set(['0.169.1', '0.170.0'])
 const workerVisibilityGraceMs = 30000
 const taskEvents = {
   queued: 'task.queued', running: 'task.started', completed: 'task.completed',
   created: 'session.created', failed: 'task.failed', interrupted: 'task.interrupted', awaiting_approval: 'task.awaiting_approval',
+  awaiting_input: 'task.awaiting_input',
 }
 
 export class RouterDispatcher {
-  constructor({ hub, followups, bus, store, project, routerThreadId, isReady }) {
-    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady })
+  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt }) {
+    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt })
     this.off = bus.subscribe(event => this.onEvent(event))
     this.retained = new Set()
     this.timer = setInterval(() => this.schedule(), 12000)
@@ -40,6 +55,7 @@ export class RouterDispatcher {
     const now = Date.now()
     const task = {
       id, requestId: intent.requestId, routerThreadId: this.routerThreadId(),
+      sourceRouterTurnId: intent.sourceRouterTurnId ?? null,
       projectId: intent.projectId, threadId: intent.threadId ?? null, turnId: null,
       instruction: intent.instruction, mode: intent.mode, status: 'queued', createdAt: now, updatedAt: now,
     }
@@ -87,16 +103,29 @@ export class RouterDispatcher {
     this.bus.publish('router/changed', event)
   }
 
-  update(id, patch) {
+  update(id, patch, workerTerminal = false) {
     const current = this.get(id)
     if (terminal.has(current.status)) return current
     if (Object.entries(patch).every(([key, value]) => current[key] === value)) return current
     const next = { ...current, ...patch, updatedAt: Date.now() }
+    const eligible = workerTerminal && next.routerThreadId === this.routerThreadId() &&
+      next.routerThreadId && next.threadId && next.threadId !== next.routerThreadId && next.turnId
+    let receiptAdded = false
     const event = this.store.transaction(() => {
+      if (eligible) {
+        receiptAdded = this.store.addWorkerReceipt(next)
+        if (!receiptAdded) {
+          next.receiptConflict = true
+          this.store.event({
+            type: 'task.receipt_conflict', id, threadId: next.threadId, turnId: next.turnId, at: next.updatedAt,
+          })
+        }
+      }
       this.store.put('task', id, next)
       return this.recordEvent(next)
     })
     this.publish(event)
+    if (receiptAdded) this.onReceipt?.()
     return next
   }
 
@@ -110,18 +139,42 @@ export class RouterDispatcher {
     return thread
   }
 
-  async inspect(task) {
+  async inspect(task, reconcile = false) {
     const project = await checkProject(this.project(task.projectId))
-    const detail = await this.hub.routerReadWorker(task.threadId)
+    const detail = await this.hub.routerReadWorker(task.threadId, reconcile
+      ? { turnId: task.turnId, clientId: task.id, since: task.createdAt }
+      : undefined)
     await checkThread(project, detail.thread, this.routerThreadId())
+    if (detail.thread.id !== task.threadId) throw new HubError('codex-cli/router-thread', 'Worker 会话身份不匹配')
     return { project, detail }
   }
 
+  async result(id) {
+    const task = this.get(id)
+    const { detail } = await this.inspect(task, true)
+    const turn = detail.turns.find(entry => entry.id === task.turnId)
+    if (!turn || !turnTerminal.has(turn.status)) {
+      return { resultAvailability: 'temporarily_unavailable', observedSummary: task.summary ?? null }
+    }
+    const answer = finalAnswer(turn.items)?.text
+    return {
+      resultAvailability: answer ? 'available' : 'no_final_answer',
+      finalReply: answer?.slice(0, 8000) ?? null,
+      truncated: (answer?.length ?? 0) > 8000,
+      errorCode: shortText(turn.error?.codexErrorInfo, 100) || null,
+    }
+  }
+
+  pendingFor(threadId, turnId) {
+    return this.hub.pendingApprovals().filter(entry =>
+      entry.params?.turnId === turnId && (!entry.params.threadId || entry.params.threadId === threadId))
+  }
+
   async retain(threadId) {
-    if (this.retained.has(threadId)) return
-    await this.hub.openThread(threadId)
+    if (this.retained.has(threadId)) return this.hub.ensureThreadSubscription?.(threadId)
+    await this.hub.openThread(threadId, { routerWorker: true })
     if (this.closed) {
-      await this.hub.closeThread(threadId)
+      await this.hub.closeThread(threadId, { routerWorker: true })
       return
     }
     this.retained.add(threadId)
@@ -149,8 +202,9 @@ export class RouterDispatcher {
           this.followups?.list(threadId).entries.length) return
       await this.retain(threadId)
       const effective = await this.hub.routerWorkerSettings(threadId)
-      if (!canDispatch(project, effective)) {
-        this.update(task.id, { status: 'failed', error: 'Worker 审批或沙箱权限超出已验证的项目范围' })
+      const issue = workerDispatchIssue(project, effective)
+      if (issue) {
+        this.update(task.id, { status: 'failed', error: issue })
         return
       }
       await checkProject(project)
@@ -178,19 +232,21 @@ export class RouterDispatcher {
       if (task.status === 'creating') this.update(task.id, { status: 'unknown', error: '会话创建结果待核对' })
       return
     }
-    const { project, detail } = await this.inspect(task)
+    if (this.hub.status().phase !== 'ready') return
+    const { project, detail } = await this.inspect(task, true)
     const hits = detail.turns.filter(turn => turn.id === task.turnId ||
       turn.items?.some(item => item.type === 'userMessage' && item.clientId === task.id))
+    if (hits.length > 1) {
+      this.update(task.id, { status: 'unknown', error: '多个 Worker 回合与派发记录冲突，需核对' })
+      return
+    }
     if (hits.length === 1) {
       const turn = hits[0]
       if (turn.status === 'inProgress') {
         await this.retain(task.threadId)
-        if (task.status === 'awaiting_approval' || this.hub.pendingApprovals().some(entry => entry.params?.turnId === turn.id)) {
-          this.update(task.id, { turnId: turn.id, status: 'awaiting_approval', error: null })
-          return
-        }
-      }
-      this.applyTurn(task, turn)
+        const status = waitStatus(this.pendingFor(task.threadId, turn.id), detail.thread.status?.activeFlags)
+        this.applyTurn(task, turn, status)
+      } else this.applyTurn(task, turn)
       return
     }
     const queued = await this.hub.routerFindWorkerMessage(task.threadId, task.id)
@@ -198,10 +254,10 @@ export class RouterDispatcher {
     if (terminal.has(current.status) || current.turnId !== task.turnId || current.status !== task.status) return
     if (queued) {
       this.update(task.id, { status: 'submitted', queueId: queued.id, error: null })
+      await this.retain(task.threadId)
       if (detail.thread.status?.type === 'active' || detail.turns.some(turn => turn.status === 'inProgress') ||
           this.followups?.list(task.threadId).entries.length || !this.isReady() || this.closed) return
-      await this.retain(task.threadId)
-      if (canDispatch(project, await this.hub.routerWorkerSettings(task.threadId)) && this.isReady() && !this.closed) {
+      if (!workerDispatchIssue(project, await this.hub.routerWorkerSettings(task.threadId)) && this.isReady() && !this.closed) {
         try {
           const turn = await this.hub.routerStartWorkerMessage(task.threadId, queued.id)
           if (turn?.id) this.applyTurn(this.get(task.id), turn)
@@ -215,17 +271,21 @@ export class RouterDispatcher {
     }
   }
 
-  applyTurn(task, turn) {
-    const status = terminal.has(turn.status) ? turn.status :
-      turn.status === 'inProgress' && task.status === 'awaiting_approval' ? 'awaiting_approval' :
-      turn.status === 'inProgress' ? 'running' : null
+  applyTurn(task, turn, runningStatus) {
+    const current = this.get(task.id)
+    if (!turn.id || (current.turnId && current.turnId !== turn.id)) return
+    const ended = turnTerminal.has(turn.status)
+    const status = ended ? turn.status : turn.status === 'inProgress'
+      ? runningStatus ?? (waiting.has(current.status) ? current.status : 'running')
+      : null
     if (!status) return
-    const summary = turn.items?.findLast(item => item.type === 'agentMessage')?.text
+    const summary = finalAnswer(turn.items)?.text
     this.update(task.id, {
       turnId: turn.id, status,
       ...(summary ? { summary: shortText(summary, 600) } : {}),
+      ...(ended ? { executionStatus: turn.status } : {}),
       error: status === 'failed' ? 'Worker 回合失败，请打开会话查看详情' : null,
-    })
+    }, ended)
   }
 
   onEvent(event) {
@@ -237,17 +297,23 @@ export class RouterDispatcher {
         const item = event.payload?.item
         if (['thread/archived', 'thread/deleted'].includes(event.type) && task.status === 'queued') {
           this.update(task.id, { status: 'failed', error: 'Worker 会话已归档或删除' })
-        } else if (event.type === 'item/upsert' && item?.type === 'userMessage' && item.clientId === task.id) {
-          this.update(task.id, { turnId: event.turnId, status: 'running' })
+        } else if (event.type === 'item/upsert' && item?.type === 'userMessage' && item.clientId === task.id &&
+                   event.turnId && !task.turnId && !['queued', 'creating'].includes(task.status)) {
+          const status = waitStatus(this.pendingFor(task.threadId, event.turnId))
+          this.update(task.id, { turnId: event.turnId, status })
+          this.schedule()
         } else if (task.turnId && task.turnId === event.turnId) {
-          if (event.type === 'item/upsert' && event.payload.completed && item?.type === 'agentMessage') {
+          if (event.type === 'item/upsert' && event.payload.completed && item?.type === 'agentMessage' &&
+              (!item.phase || item.phase === 'final_answer')) {
             this.update(task.id, { summary: shortText(item.text, 600) })
           }
-          if (event.type === 'turn/completed' && event.payload?.turn) this.applyTurn(task, event.payload.turn)
-          if (event.type === 'approval/requested') this.update(task.id, { status: 'awaiting_approval' })
-          if (event.type === 'approval/resolved' && task.status === 'awaiting_approval' &&
-              !this.hub.pendingApprovals().some(entry => entry.params?.turnId === task.turnId)) {
-            this.update(task.id, { status: 'running' })
+          if (event.type === 'turn/completed' && event.payload?.turn?.id === task.turnId) this.applyTurn(task, event.payload.turn)
+          if (event.type === 'approval/requested') {
+            const status = event.payload?.method === 'item/tool/requestUserInput' ? 'awaiting_input' : 'awaiting_approval'
+            this.update(task.id, { status })
+          }
+          if (event.type === 'approval/resolved' && waiting.has(task.status)) {
+            this.update(task.id, { status: waitStatus(this.pendingFor(task.threadId, task.turnId)) })
           }
         }
       }
@@ -257,10 +323,20 @@ export class RouterDispatcher {
 
   schedule() {
     if (this.closed || this.scheduled) return
+    if (this.sweeping) {
+      this.rescan = true
+      return
+    }
     this.scheduled = setTimeout(() => {
       this.scheduled = null
-      if (this.closed || this.sweeping) return
-      this.sweeping = this.sweep().catch(() => {}).finally(() => { this.sweeping = null })
+      if (this.closed) return
+      this.sweeping = this.sweep().catch(() => {}).finally(() => {
+        this.sweeping = null
+        if (this.rescan) {
+          this.rescan = false
+          this.schedule()
+        }
+      })
     }, 40)
     this.scheduled.unref()
   }
@@ -286,16 +362,16 @@ export class RouterDispatcher {
     for (const threadId of this.retained) {
       if (related.has(threadId)) continue
       this.retained.delete(threadId)
-      await this.hub.closeThread(threadId).catch(() => {})
+      await this.hub.closeThread(threadId, { routerWorker: true }).catch(() => {})
     }
   }
 
   async interrupt(id, expectedTurnId) {
     const task = this.get(id)
-    if (!task.turnId || task.turnId !== expectedTurnId || !['running', 'awaiting_approval'].includes(task.status)) {
+    if (!task.turnId || task.turnId !== expectedTurnId || (task.status !== 'running' && !waiting.has(task.status))) {
       throw new HubError('codex-cli/router-task', '待中断回合已经变化')
     }
-    const { detail } = await this.inspect(task)
+    const { detail } = await this.inspect(task, true)
     if (!detail.turns.some(turn => turn.id === expectedTurnId && turn.status === 'inProgress')) {
       throw new HubError('codex-cli/router-task', '目标回合已结束或不再关联')
     }
@@ -309,6 +385,6 @@ export class RouterDispatcher {
     clearInterval(this.timer)
     clearTimeout(this.scheduled)
     await this.sweeping
-    await Promise.allSettled([...this.retained].map(threadId => this.hub.closeThread(threadId)))
+    await Promise.allSettled([...this.retained].map(threadId => this.hub.closeThread(threadId, { routerWorker: true })))
   }
 }

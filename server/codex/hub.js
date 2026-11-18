@@ -46,6 +46,9 @@ export class CodexHub {
   #titles = null
   /** @type {Map<string, number>} threadId -> 订阅引用计数 */
   #subscriptions = new Map()
+  #routerSubscriptions = new Set()
+  #subscriptionLocks = new Map()
+  #subscribed = new Set()
   /** 本连接通过 thread/start 创建、已加载的线程：resume 会因没有 rollout 而失败，跳过。 */
   #owned = new Set()
   /** @type {{ at: number, value: object[] } | null} */
@@ -107,7 +110,7 @@ export class CodexHub {
         approvalTimeoutMs: this.config.approvalTimeoutMs,
       },
       capabilities: { subagentDetails: true },
-      subscriptions: [...this.#subscriptions.keys()],
+      subscriptions: this.#subscriptionIds(),
       pendingApprovals: this.#pendingApprovals.size,
       seq: this.bus.seq,
     }
@@ -189,9 +192,9 @@ export class CodexHub {
     )
 
     // 重连后恢复订阅
-    for (const threadId of this.#subscriptions.keys()) {
+    for (const threadId of this.#subscriptionIds()) {
       try {
-        await resumeThread(rpc, threadId, resolveCodexHome(this.config))
+        await this.ensureThreadSubscription(threadId)
       } catch (cause) {
         this.logger?.warn?.(`[codex-cli] 恢复订阅失败 ${threadId}：${describe(cause)}`)
       }
@@ -211,6 +214,7 @@ export class CodexHub {
     this.#transport = null
     this.#closed = null
     this.#owned.clear()
+    this.#subscribed.clear()
     this.#tokenUsage.clear()
     this.#clearApprovals('disconnected')
   }
@@ -500,7 +504,7 @@ export class CodexHub {
   }
 
   /** Internal Router operations are intentionally absent from the public RPC table. */
-  async routerReadWorker(threadId) {
+  async routerReadWorker(threadId, target) {
     if (typeof threadId !== 'string' || !threadId) throw new HubError('codex-cli/bad-request', 'threadId 不能为空')
     const rpc = this.#requireRpc()
     const snapshot = await rpc.request('thread/read', { threadId, includeTurns: false }, { timeoutMs: 15000 })
@@ -509,10 +513,22 @@ export class CodexHub {
     const active = thread.status?.type === 'active'
     let turns
     try {
-      const history = await rpc.request('thread/turns/list', {
-        threadId, limit: 30, sortDirection: 'desc', itemsView: 'full',
-      }, { timeoutMs: 15000 })
-      turns = Array.isArray(history?.data) ? [...history.data].reverse() : []
+      turns = []
+      let cursor
+      for (let page = 0; page < 20; page++) {
+        const history = await rpc.request('thread/turns/list', {
+          threadId, limit: 30, sortDirection: 'desc', itemsView: 'full', ...(cursor ? { cursor } : {}),
+        }, { timeoutMs: 15000 })
+        const data = history?.data ?? []
+        turns.push(...data)
+        const oldest = data.at(-1)?.startedAt
+        if (!target || !history?.nextCursor || history.nextCursor === cursor ||
+            data.some(turn => turn.id === target.turnId ||
+              turn.items?.some(item => item.type === 'userMessage' && item.clientId === target.clientId)) ||
+            (Number.isFinite(oldest) && Number.isFinite(target.since) && oldest * 1000 < target.since - 60000)) break
+        cursor = history.nextCursor
+      }
+      turns.reverse()
     } catch (error) {
       if (!this.#owned.has(threadId) || active || !/not materialized/i.test(error.message)) throw error
       turns = []
@@ -537,8 +553,18 @@ export class CodexHub {
   }
 
   async routerFindWorkerMessage(threadId, clientId) {
-    const result = await this.#requireRpc().request('thread/queue/list', { threadId, limit: 100 }, { timeoutMs: 12000 })
-    return result?.data?.find(message => message.clientUserMessageId === clientId) ?? null
+    const rpc = this.#requireRpc()
+    let cursor
+    for (let page = 0; page < 10; page++) {
+      const result = await rpc.request('thread/queue/list', {
+        threadId, limit: 100, ...(cursor ? { cursor } : {}),
+      }, { timeoutMs: 12000 })
+      const match = result?.data?.find(message => message.clientUserMessageId === clientId)
+      if (match) return match
+      if (!result?.nextCursor || result.nextCursor === cursor) break
+      cursor = result.nextCursor
+    }
+    return null
   }
 
   async routerStartWorkerMessage(threadId, queuedSubmissionId) {
@@ -764,14 +790,47 @@ export class CodexHub {
   // ── 订阅 ────────────────────────────────────────────────────────────────
 
   /** 打开线程：resume 并订阅事件；引用计数支持多个浏览器页签。 */
-  async openThread(threadId) {
+  async openThread(threadId, { routerWorker = false } = {}) {
     if (typeof threadId !== 'string' || threadId === '') {
       throw new HubError('codex-cli/bad-request', 'threadId 不能为空')
     }
+    return this.#withSubscription(threadId, async () => {
+      await this.#subscribeThread(threadId)
+      if (routerWorker) this.#routerSubscriptions.add(threadId)
+      else this.#subscriptions.set(threadId, (this.#subscriptions.get(threadId) ?? 0) + 1)
+      return { threadId, subscribers: this.#subscriptionCount(threadId) }
+    })
+  }
+
+  #subscriptionIds() {
+    return [...new Set([...this.#subscriptions.keys(), ...this.#routerSubscriptions])]
+  }
+
+  #subscriptionCount(threadId) {
+    return (this.#subscriptions.get(threadId) ?? 0) + Number(this.#routerSubscriptions.has(threadId))
+  }
+
+  #withSubscription(threadId, action) {
+    const previous = this.#subscriptionLocks.get(threadId) ?? Promise.resolve()
+    const pending = previous.catch(() => {}).then(action).finally(() => {
+      if (this.#subscriptionLocks.get(threadId) === pending) this.#subscriptionLocks.delete(threadId)
+    })
+    this.#subscriptionLocks.set(threadId, pending)
+    return pending
+  }
+
+  ensureThreadSubscription(threadId) {
+    return this.#withSubscription(threadId, async () => {
+      if (this.#subscriptionCount(threadId)) await this.#subscribeThread(threadId)
+    })
+  }
+
+  async #subscribeThread(threadId) {
     const rpc = this.#requireRpc()
-    const count = this.#subscriptions.get(threadId) ?? 0
-    if (count === 0 && !this.#owned.has(threadId)) {
+    if (this.#subscribed.has(threadId)) return
+    if (!this.#owned.has(threadId)) {
       const result = await resumeThread(rpc, threadId, resolveCodexHome(this.config))
+      if (this.#rpc !== rpc) throw new HubError('codex-cli/not-ready', '连接已断开')
       this.#threadSettings.set(threadId, {
         approvalPolicy: result?.approvalPolicy ?? null,
         approvalsReviewer: result?.approvalsReviewer ?? null,
@@ -779,8 +838,7 @@ export class CodexHub {
         collaborationMode: result?.collaborationMode ?? null,
       })
     }
-    this.#subscriptions.set(threadId, count + 1)
-    return { threadId, subscribers: count + 1 }
+    this.#subscribed.add(threadId)
   }
 
   /** 最近一次 resume 读到的会话权限设置。 */
@@ -789,24 +847,26 @@ export class CodexHub {
   }
 
   /** 关闭线程订阅。 */
-  async closeThread(threadId) {
-    const count = this.#subscriptions.get(threadId) ?? 0
-    if (count === 0) return { threadId, subscribers: 0 }
-    if (count === 1) {
-      this.#subscriptions.delete(threadId)
-      this.#tokenUsage.delete(threadId)
-      // A newly created thread may not have a rollout until its first turn.
-      // Keep it loaded so switching away and back does not make it unrecoverable.
-      if (this.#owned.has(threadId)) return { threadId, subscribers: 0 }
-      try {
-        await this.#rpc?.request('thread/unsubscribe', { threadId }, { timeoutMs: 10000 })
-      } catch {
-        // 断开时 unsubscribe 失败无所谓
+  async closeThread(threadId, { routerWorker = false } = {}) {
+    return this.#withSubscription(threadId, async () => {
+      const count = this.#subscriptions.get(threadId) ?? 0
+      if (routerWorker) {
+        if (!this.#routerSubscriptions.delete(threadId)) return { threadId, subscribers: this.#subscriptionCount(threadId) }
+      } else {
+        if (!count) return { threadId, subscribers: this.#subscriptionCount(threadId) }
+        if (count > 1) this.#subscriptions.set(threadId, count - 1)
+        else this.#subscriptions.delete(threadId)
       }
-    } else {
-      this.#subscriptions.set(threadId, count - 1)
-    }
-    return { threadId, subscribers: Math.max(count - 1, 0) }
+      const subscribers = this.#subscriptionCount(threadId)
+      if (subscribers) return { threadId, subscribers }
+      this.#tokenUsage.delete(threadId)
+      const subscribed = this.#subscribed.delete(threadId)
+      // An unused new thread may not have a rollout to resume later.
+      if (subscribed && !this.#owned.has(threadId)) {
+        await this.#rpc?.request('thread/unsubscribe', { threadId }, { timeoutMs: 10000 }).catch(() => {})
+      }
+      return { threadId, subscribers: 0 }
+    })
   }
 
   // ── 审批与用户输入 ──────────────────────────────────────────────────────
@@ -915,6 +975,7 @@ export class CodexHub {
       case 'thread/unarchived':
       case 'thread/deleted':
       case 'thread/closed':
+        if (method === 'thread/deleted' || method === 'thread/closed') this.#subscribed.delete(payload.threadId)
         this.#invalidateProjects()
         this.bus.publish(method, {}, { threadId: payload.threadId })
         return

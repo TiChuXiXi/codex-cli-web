@@ -8,8 +8,12 @@ import './router.css'
 
 const labels: Record<string, string> = {
   created: '已创建会话', queued: '已排队', creating: '正在创建会话', submitting: '正在提交', submitted: '已交给 Worker 队列',
-  running: '正在执行', awaiting_approval: '等待你的审批', completed: '已完成', failed: '失败',
+  running: '正在执行', awaiting_approval: '等待你的审批', awaiting_input: '等待你输入', completed: 'Worker 回合已结束', failed: '失败',
   interrupted: '已中断', unknown: '结果待核对',
+}
+
+const receiptLabels: Record<string, string> = {
+  pending: '等待 Router 回执', claimed: 'Router 正在汇报', unknown: 'Router 回执待核对', failed: 'Router 回执失败',
 }
 
 export function RouterView({ api, revision, onWorker }: { api: Api, revision: number, onWorker: (id: string) => void }) {
@@ -126,6 +130,7 @@ export function RouterView({ api, revision, onWorker }: { api: Api, revision: nu
     {!ready && !snapshot?.error && <p role="status" className="dsh-codex-router-empty">
       {snapshot?.enabled === false ? 'Router 未启用' : '正在连接 Router…'}
     </p>}
+    {snapshot?.receiptLimited && <p role="status" className="dsh-codex-router-meta">已达到自动回执限额，待回执任务将在额度恢复后处理。</p>}
     {tab === 'chat' && <>
       <div className="dsh-codex-messages-wrap">
       <div ref={log} className="dsh-codex-messages" role="log" aria-label="Router 对话"
@@ -225,10 +230,11 @@ function TaskCard({ task, onWorker, onDismiss }: {
   return <article className="dsh-codex-router-card">
     <h2>{task.project}</h2>
     <div className="dsh-codex-router-meta">{labels[task.status] ?? task.status} · {localTime(task.updatedAt)}</div>
+    {task.receiptStatus && receiptLabels[task.receiptStatus] && <div className="dsh-codex-router-meta">{receiptLabels[task.receiptStatus]}</div>}
     {task.summary && <p className="dsh-codex-router-text">{task.summary}</p>}
     {task.error && <p className="dsh-codex-router-text">{task.error}</p>}
     {task.threadId && <button type="button" className="dsh-codex-button" onClick={() => onWorker(task.threadId!)}>
-      {task.status === 'awaiting_approval' ? '打开会话处理审批' : '打开 Worker 会话'}
+      {task.status === 'awaiting_approval' ? '打开会话处理审批' : task.status === 'awaiting_input' ? '打开会话回答' : '打开 Worker 会话'}
     </button>}
     {task.status === 'unknown' && onDismiss && (confirm
       ? <div className="dsh-codex-router-alert">
