@@ -15,12 +15,15 @@ import { Composer, type Attachment, type ModelOption, type PermissionMode } from
 import { ItemCard } from './ItemCard'
 import { ToolGroup, groupActivity } from './ToolGroup'
 import { runningStartedAt } from '../running-time'
+import { collectSubagents, isSubagentActivity, type SubscribeSubagentEvents } from '../subagents'
+import { SubagentCard } from './SubagentCard'
 
 type SettingEvent = {id: string; turnId: string | null; itemId: string | null; text: string}
 
 export interface ThreadViewProps {
   provider: string
   api: Api
+  subscribeSubagentEvents?: SubscribeSubagentEvents
   detail: ThreadDetail | null
   loading: boolean
   selectedId: string | null
@@ -54,6 +57,7 @@ export interface ThreadViewProps {
 
 export function ThreadView({
   api,
+  subscribeSubagentEvents,
   provider,
   detail,
   loading,
@@ -301,6 +305,7 @@ export function ThreadView({
     return result
   }
   const items = orderedTurns.flatMap((turn) => turn.items ?? [])
+  const subagents = subscribeSubagentEvents ? collectSubagents(items, thread.id, thread.parentThreadId) : null
   const hasItems = items.length > 0
   // Async questions are answered as a user message, immediately steering a running turn.
   // A later user message closes older question forms, including after history reload.
@@ -374,13 +379,20 @@ export function ThreadView({
           {!hasItems && changes.length === 0 && <div className="dsh-codex-empty">{t('thread.noMessages')}</div>}
           {orderedTurns.map((turn) => (
               <React.Fragment key={turn.id}>
-                {groupActivity(insertChanges(turn).filter((item) => item.type !== 'reasoning')).map((entry) =>
-                  entry.kind === 'group' ? (
-                    <ToolGroup key={entry.key} items={entry.items} api={api} />
-                  ) : (
-                    <ItemCard key={thread.id + ':' + entry.item.id} item={entry.item} api={api} cwd={detail.thread.cwd ?? ''} onAnswer={thread.id === selectedId && openQuestionIds.has(entry.item.id) ? answerQuestion : undefined} />
-                  ),
-                )}
+                {groupActivity(insertChanges(turn).filter(item =>
+                  item.type !== 'reasoning' && (!subagents || !isSubagentActivity(item) || subagents.has(item.id)),
+                )).map(entry => {
+                  if (entry.kind === 'group') return <ToolGroup key={entry.key} items={entry.items} api={api} />
+                  const agents = subagents?.get(entry.item.id)
+                  if (agents && subscribeSubagentEvents) return agents.map(agent => (
+                    <SubagentCard key={thread.id + ':' + agent.id} agent={agent} parentThreadId={thread.id} parentRunning={activeTurnId !== null}
+                      api={api} subscribe={subscribeSubagentEvents} onExpand={() => {
+                        atBottomRef.current = false
+                        setShowJump(true)
+                      }} />
+                  ))
+                  return <ItemCard key={thread.id + ':' + entry.item.id} item={entry.item} api={api} cwd={thread.cwd ?? ''} onAnswer={thread.id === selectedId && openQuestionIds.has(entry.item.id) ? answerQuestion : undefined} />
+                })}
                 <TurnFooter turn={turn} />
               </React.Fragment>
             ))}

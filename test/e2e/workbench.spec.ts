@@ -20,6 +20,8 @@ test('login, conversation streaming, queue, refresh and logout',async({page})=>{
   await input.fill('你好，独立工作台');await input.press('Enter')
   await expect(page.getByText('已收到：你好，独立工作台',{exact:false}).last()).toBeVisible()
   await input.fill('慢速消息');await input.press('Enter')
+  await expect(page.locator('.dsh-codex-running-bar')).toBeVisible()
+  await expect(input).toHaveValue('')
   await input.fill('排队消息');await input.press('Enter')
   await expect(page.getByText('已收到：排队消息',{exact:false}).last()).toBeVisible({timeout:15000})
   await page.reload()
@@ -28,6 +30,70 @@ test('login, conversation streaming, queue, refresh and logout',async({page})=>{
   await expect(page.getByLabel('访问凭证',{exact:true})).toBeVisible()
   expect(errors).toEqual([])
 })
+test('subagent activity expands in place and reconciles parallel updates', async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options)
+        window.addEventListener('test-subagent-resync', () => this.onmessage?.call(this, new MessageEvent('message', {
+          data: JSON.stringify({ seq: 0, ts: Date.now(), type: 'resync', payload: {} }),
+        })))
+      }
+    }
+  })
+  await login(page)
+  await selectThread(page)
+  const input = page.locator('textarea').first()
+  await input.fill('请触发子代理执行')
+  await input.press('Enter')
+  const kepler = page.getByRole('region', { name: '子代理 · Kepler' })
+  const lorentz = page.getByRole('region', { name: '子代理 · Lorentz' })
+  const expand = (name: string) => page.getByRole('button', { name: new RegExp('子代理 · ' + name) })
+  await expect(kepler).toContainText('执行中')
+  await expect(lorentz).toContainText('执行中')
+  await expand('Kepler').focus()
+  await expand('Kepler').press('Enter')
+  await expand('Lorentz').click()
+  await expect(kepler.getByText('Kepler 开始检查')).toBeVisible()
+  await expect(lorentz.getByText('Lorentz 开始检查')).toBeVisible()
+  await kepler.getByRole('button', { name: /加载更早/ }).click()
+  await expect(kepler.getByText('Kepler 较早的记录 3')).toBeVisible()
+
+  const resync = page.waitForRequest(request => request.url().endsWith('/threads/subagent/get') && !request.postDataJSON().payload.metadataOnly)
+  await page.evaluate(() => window.dispatchEvent(new Event('test-subagent-resync')))
+  await resync
+  await expect(kepler.getByText('Kepler 执行结果')).toHaveCount(1)
+  await expect(lorentz.getByText('Lorentz 执行结果')).toBeVisible({ timeout: 9000 })
+  await expect(kepler).toContainText('已完成')
+  await expect(lorentz).toContainText('已完成')
+  await expect(kepler.getByText('Lorentz 执行结果')).toHaveCount(0)
+  await expect(lorentz.getByText('Kepler 执行结果')).toHaveCount(0)
+  await kepler.getByText('echo kepler-fixture', { exact: true }).first().click()
+  await expect(kepler.getByText('Kepler 命令输出')).toBeVisible()
+  await lorentz.getByText('fixture / snapshot', { exact: true }).click()
+  await expect(lorentz.getByText(/Lorentz 工具输出/)).toBeVisible()
+  await kepler.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('subagents-desktop.png') })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload()
+  await expect(expand('Kepler')).toHaveAttribute('aria-expanded', 'false')
+  await expect(lorentz).toContainText('已完成')
+  await page.getByRole('button', { name: '切换深色模式', exact: true }).click()
+  await expect(page.locator('.dsh-codex-root')).toHaveAttribute('data-codex-theme', 'dark')
+  await expand('Kepler').click()
+  await expect(kepler.getByText('Kepler 执行结果')).toBeVisible()
+  await expect(kepler).toContainText('已完成')
+  const width = await kepler.evaluate(card => ({
+    viewport: window.innerWidth, left: card.getBoundingClientRect().left, right: card.getBoundingClientRect().right,
+  }))
+  expect(width.left).toBeGreaterThanOrEqual(0)
+  expect(width.right).toBeLessThanOrEqual(width.viewport)
+  await kepler.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('subagents-mobile.png') })
+})
+
 test('command approval round trip',async({page})=>{
   await login(page);await selectThread(page)
   await page.locator('textarea').first().fill('请触发审批')

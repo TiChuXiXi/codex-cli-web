@@ -34,6 +34,7 @@ import type { RightTab } from './RightPanel'
 import { notifyWorkspace } from '../sidebar/workspace-events'
 declare const __CODEX_CLIENT_BUILD_ID__: string
 import { ThreadView } from './ThreadView'
+import type { SubscribeSubagentEvents } from '../subagents'
 import type { Attachment, ModelOption, PermissionMode } from './Composer'
 import { ThreadActions } from './ThreadActions'
 import { SettingsPage } from './SettingsPage'
@@ -155,6 +156,16 @@ export function ConsolePage(props: ConsolePageProps) {
   }
   const [error, setError] = React.useState<string | null>(null)
   const [streamState, setStreamState] = React.useState<StreamState>('connecting')
+  const subagentListeners = React.useRef(new Map<string, Set<(event: CodexEvent) => void>>())
+  const subscribeSubagentEvents = React.useCallback<SubscribeSubagentEvents>((threadId, listener) => {
+    const listeners = subagentListeners.current.get(threadId) ?? new Set()
+    subagentListeners.current.set(threadId, listeners)
+    listeners.add(listener)
+    return () => {
+      listeners.delete(listener)
+      if (listeners.size === 0) subagentListeners.current.delete(threadId)
+    }
+  }, [])
   const [followups, setFollowups] = React.useState<Record<string, FollowupSnapshot>>({})
   const updateFollowups = React.useCallback((snapshot: FollowupSnapshot) => {
     setFollowups(previous => {
@@ -391,6 +402,12 @@ export function ConsolePage(props: ConsolePageProps) {
     const close = openEventStream({
       onState: setStreamState,
       onEvent: (event) => {
+        const childId = event.type === 'thread/upsert' ? event.payload?.thread?.id : event.threadId
+        if (event.type === 'resync') {
+          for (const listeners of subagentListeners.current.values()) for (const listener of listeners) listener(event)
+        } else if (childId && subagentListeners.current.has(childId)) {
+          for (const listener of subagentListeners.current.get(childId)!) listener(event)
+        }
         switch (event.type) {
           case 'router/changed':
             setRouterEnabled(true)
@@ -956,6 +973,7 @@ export function ConsolePage(props: ConsolePageProps) {
           <ThreadView
             provider={detail?.thread.modelProvider ?? provider}
             api={api}
+            subscribeSubagentEvents={status?.capabilities?.subagentDetails ? subscribeSubagentEvents : undefined}
             detail={detail?.thread.id === selectedId ? detail : null}
             loading={detailLoading || (selectedId !== null && detail?.thread.id !== selectedId)}
             selectedId={selectedId}

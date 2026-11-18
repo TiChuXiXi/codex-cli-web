@@ -22,6 +22,68 @@ function finish(thread,turn,text,questions) {
     notify('turn/completed',{threadId:thread.id,turn})
   },120)
 }
+function spawnFixtureAgents(parent, turn, legacy) {
+  const spawn = (name, path) => {
+    const child = {
+      ...base, id: randomUUID(), name: null, parentThreadId: parent.id, agentNickname: name,
+      source: { subAgent: { thread_spawn: { parent_thread_id: parent.id, depth: 1 } } },
+      status: { type: 'active' }, turns: [],
+    }
+    const childTurn = {
+      id: randomUUID(), status: 'inProgress', startedAt: time(),
+      items: [{ id: randomUUID(), type: 'agentMessage', phase: 'commentary', text: name + ' 开始检查' }],
+    }
+    if (name === 'Kepler') {
+      child.turns.push(...[3, 2].map(offset => ({
+        id: randomUUID(), status: 'completed', startedAt: time() - offset,
+        items: [{ id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text: name + ' 较早的记录 ' + offset }],
+      })))
+    }
+    child.turns.push(childTurn)
+    threads.set(child.id, child)
+    const item = legacy
+      ? { id: randomUUID(), type: 'collabAgentToolCall', tool: 'spawnAgent', senderThreadId: parent.id,
+          receiverThreadIds: [child.id], prompt: name + ' 的委派任务', agentsStates: { [child.id]: { status: 'running' } } }
+      : { id: randomUUID(), type: 'subAgentActivity', agentThreadId: child.id, agentPath: '/root/' + path, kind: 'started' }
+    turn.items.push(item)
+    notify('item/completed', { threadId: parent.id, turnId: turn.id, item })
+    return { child, childTurn }
+  }
+  const first = spawn('Kepler', 'inspect')
+  const second = spawn('Lorentz', 'verify')
+  if (legacy) {
+    second.child.ephemeral = true
+    second.child.noHistory = true
+    return
+  }
+  later(() => {
+    const { child, childTurn } = first
+    const item = { id: randomUUID(), type: 'commandExecution', command: 'echo kepler-fixture', status: 'inProgress', aggregatedOutput: '' }
+    childTurn.items.push(item)
+    const meta = { threadId: child.id, turnId: childTurn.id }
+    notify('item/started', { ...meta, item })
+    later(() => {
+      item.aggregatedOutput = 'Kepler 命令输出'
+      notify('item/commandExecution/outputDelta', { ...meta, itemId: item.id, delta: item.aggregatedOutput })
+    }, 120)
+    later(() => {
+      item.status = 'completed'
+      item.exitCode = 0
+      notify('item/completed', { ...meta, item })
+      finish(child, childTurn, 'Kepler 执行结果')
+    }, 400)
+  }, 2400)
+  // This child is active on a different app-server connection. Its updates are visible by reading history.
+  later(() => {
+    const { child, childTurn } = second
+    childTurn.items.push({ id: randomUUID(), type: 'mcpToolCall', server: 'fixture', tool: 'snapshot', status: 'completed', result: { text: 'Lorentz 工具输出' } })
+    childTurn.items.push({ id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text: 'Lorentz 执行结果' })
+    childTurn.status = 'completed'
+    childTurn.completedAt = time()
+    child.status = { type: 'idle' }
+  }, 3400)
+  later(() => finish(parent, turn, '两个子代理均已完成。'), 5100)
+}
 async function handle(message) {
   if(message.id===undefined)return
   if(!message.method) {
@@ -33,9 +95,17 @@ async function handle(message) {
   const thread=threads.get(p.threadId) || base
   switch(method) {
     case 'initialize':return reply(id,{userAgent:'codex/0.167.0'})
-    case 'thread/list':return reply(id,{data:[...threads.values()].filter(t=>!t.ephemeral&&(!p.cwd||t.cwd===p.cwd)&&(!p.searchTerm||t.name?.includes(p.searchTerm))).map(({turns,...t})=>t),nextCursor:null})
-    case 'thread/read':return reply(id,{thread:{...thread,turns:p.includeTurns?thread.turns:undefined}})
-    case 'thread/turns/list':return reply(id,{data:[...thread.turns].reverse(),nextCursor:null})
+    case 'thread/list':return reply(id,{data:[...threads.values()].filter(t=>!t.ephemeral&&!t.parentThreadId&&(!p.cwd||t.cwd===p.cwd)&&(!p.searchTerm||t.name?.includes(p.searchTerm))).map(({turns,...t})=>t),nextCursor:null})
+    case 'thread/read':
+      if (p.includeTurns && thread.noHistory) return output({id,error:{code:-32600,message:'no rollout for ephemeral thread'}})
+      return reply(id,{thread:{...thread,turns:p.includeTurns?thread.turns:undefined}})
+    case 'thread/turns/list': {
+      if (thread.ephemeral && thread.parentThreadId) return output({id,error:{code:-32600,message:'list_turns is not supported for an ephemeral thread'}})
+      const start = Number(p.cursor ?? 0)
+      const turns = [...thread.turns].reverse()
+      const end = start + (p.limit ?? turns.length)
+      return reply(id,{data:turns.slice(start,end),nextCursor:end<turns.length?String(end):null})
+    }
     case 'thread/resume':return reply(id,{thread,model:'fixture-model',reasoningEffort:'medium',approvalPolicy:'on-request',sandbox:{type:'workspaceWrite'}})
     case 'thread/start': {
       const next={...base,id:randomUUID(),name:p.ephemeral?'hidden':null,cwd:p.cwd||cwd,ephemeral:!!p.ephemeral,turns:[]}
@@ -57,7 +127,9 @@ async function handle(message) {
       reply(id,{turn});notify('turn/started',{threadId:thread.id,turn})
       notify('item/completed',{threadId:thread.id,turnId:turn.id,item:turn.items[0]})
       if(thread.ephemeral){finish(thread,turn,'{"title":"自动标题夹具"}');return}
-      if(text==='请触发多题提问') {
+      if(text==='请触发子代理执行'||text==='请触发旧版子代理执行') {
+        spawnFixtureAgents(thread,turn,text==='请触发旧版子代理执行')
+      }else if(text==='请触发多题提问') {
         finish(thread,turn,'请选择两项设置。',[
           {title:'使用哪个环境？',options:['测试环境','生产环境']},
           {title:'使用哪种输出？',options:['简要','完整']},

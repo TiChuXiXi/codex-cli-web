@@ -106,6 +106,7 @@ export class CodexHub {
         codexHome: resolveCodexHome(this.config),
         approvalTimeoutMs: this.config.approvalTimeoutMs,
       },
+      capabilities: { subagentDetails: true },
       subscriptions: [...this.#subscriptions.keys()],
       pendingApprovals: this.#pendingApprovals.size,
       seq: this.bus.seq,
@@ -314,6 +315,56 @@ export class CodexHub {
         items: Array.isArray(turn?.items) ? turn.items.map(compactItem) : [],
       })),
       nextCursor: turns?.nextCursor ?? null,
+    }
+  }
+
+  /** Read a spawned thread without loading or subscribing to it on app-server. */
+  async getSubagent({ parentThreadId, agentThreadId, cursor = null, metadataOnly = false } = {}, signal) {
+    if (typeof parentThreadId !== 'string' || !parentThreadId.trim()
+      || typeof agentThreadId !== 'string' || !agentThreadId.trim() || agentThreadId === parentThreadId
+      || (cursor !== null && (typeof cursor !== 'string' || !cursor))) {
+      throw new HubError('codex-cli/bad-request', '子代理会话参数无效')
+    }
+    const rpc = this.#requireRpc()
+    const readOptions = { timeoutMs: 15000, signal }
+    const result = await rpc.request('thread/read', { threadId: agentThreadId, includeTurns: false }, readOptions)
+    const thread = result?.thread
+    const actualParent = thread?.parentThreadId ?? thread?.source?.subAgent?.thread_spawn?.parent_thread_id
+    if (thread?.id !== agentThreadId || actualParent !== parentThreadId) {
+      throw new HubError('codex-cli/subagent-not-found', '子代理不属于当前会话')
+    }
+    const snapshot = { thread: compactThread(thread), turns: [], nextCursor: null, historyAvailable: true }
+    const summaryOnly = metadataOnly === true
+    if (summaryOnly && thread.status?.type === 'active') return snapshot
+    const withHistory = (turns, nextCursor = null) => ({
+      ...snapshot,
+      turns: turns.map(turn => ({
+        ...turn,
+        items: Array.isArray(turn?.items) ? turn.items.map(compactItem) : [],
+      })),
+      nextCursor,
+    })
+    try {
+      const page = await rpc.request('thread/turns/list', {
+        threadId: agentThreadId, limit: summaryOnly ? 1 : 2, sortDirection: 'desc',
+        itemsView: summaryOnly ? 'notLoaded' : 'full',
+        ...(cursor === null || summaryOnly ? {} : { cursor }),
+      }, readOptions)
+      if (summaryOnly) return { ...snapshot, latestTurnStatus: page?.data?.[0]?.status ?? null }
+      return withHistory(Array.isArray(page?.data) ? [...page.data].reverse() : [], page?.nextCursor ?? null)
+    } catch (error) {
+      if (!(error instanceof JsonRpcError)) throw error
+      const cannotPage = error.code === -32601 || /ephemeral|not materialized|list_turns is not supported|no rollout/i.test(error.message)
+      if (!cannotPage) throw error
+      if (summaryOnly) return snapshot
+      if (cursor !== null) throw error
+      try {
+        const full = await rpc.request('thread/read', { threadId: agentThreadId, includeTurns: true }, readOptions)
+        if (Array.isArray(full?.thread?.turns)) return withHistory(full.thread.turns)
+      } catch (fallbackError) {
+        if (!(fallbackError instanceof JsonRpcError) || !/ephemeral|not materialized|no rollout|thread not found/i.test(fallbackError.message)) throw fallbackError
+      }
+      return { ...snapshot, historyAvailable: false }
     }
   }
 

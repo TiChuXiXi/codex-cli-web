@@ -110,7 +110,9 @@ export function upsertThread(list: CodexThread[], thread: CodexThread): CodexThr
  * 把一条 SSE 事件合并进当前打开的会话详情。
  * 只处理 M0/M1 需要的四类：回合、条目、文本增量、补丁更新。
  */
-export function applyDetailEvent(detail: ThreadDetail | null, event: CodexEvent): ThreadDetail | null {
+type EventThreadDetail = Pick<ThreadDetail, 'turns' | 'tokenUsage'> & { thread: Pick<CodexThread, 'id'> }
+
+export function applyDetailEvent<T extends EventThreadDetail>(detail: T | null, event: CodexEvent): T | null {
   if (detail === null) return null
   if (event.threadId !== undefined && event.threadId !== detail.thread.id) return detail
 
@@ -189,7 +191,7 @@ export function applyDetailEvent(detail: ThreadDetail | null, event: CodexEvent)
   }
 }
 
-function upsertItem(detail: ThreadDetail, turnId: string, item: CodexItem): ThreadDetail {
+function upsertItem<T extends EventThreadDetail>(detail: T, turnId: string, item: CodexItem): T {
   const turns = [...detail.turns]
   let turnIndex = turns.findIndex((candidate) => candidate.id === turnId)
   if (turnIndex === -1) {
@@ -211,7 +213,7 @@ function upsertItem(detail: ThreadDetail, turnId: string, item: CodexItem): Thre
   return { ...detail, turns }
 }
 
-function patchItem(detail: ThreadDetail, itemId: string, update: (item: CodexItem) => CodexItem): ThreadDetail {
+function patchItem<T extends EventThreadDetail>(detail: T, itemId: string, update: (item: CodexItem) => CodexItem): T {
   let touched = false
   const turns = detail.turns.map((turn) => {
     let turnTouched = false
