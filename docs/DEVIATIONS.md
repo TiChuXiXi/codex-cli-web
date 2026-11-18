@@ -15,6 +15,7 @@
 - 版本服务增加子进程、fetch 和计时器清理，并为探测与作业传递显式 CODEX_HOME。版本作业使用 close 事件结束失败状态，修复 spawn 失败永久 running；Linux 子进程组在退出时终止，包含挂起的诊断进程。新增 test/versions.test.mjs 覆盖。
 - SSE hello 增加应用 instanceId；实例变化或序号回退触发 resync，重新拉取当前详情与队列。新增 epoch 单元测试。
 - 浏览器相关 ID 兼容显式配置的 HTTP 局域网 origin，使用 getRandomValues 兜底。
+- 修复多题表单进入末题时提前提交的问题。点击「下一题」只切换题目，末题的「提交」统一发送答案。浏览器回归覆盖后续题已有默认选项、键盘翻页及返回修改。
 
 ## 文档冲突与失效测试
 

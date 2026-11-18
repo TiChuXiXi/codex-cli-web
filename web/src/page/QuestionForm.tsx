@@ -33,7 +33,7 @@ export function QuestionForm({ questions, defaultFirst = false, onSubmit }: {
   const setValue = (value: string) => setValues(previous => ({ ...previous, [question.id]: value }))
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (sending.current || !complete) return
+    if (sending.current || index !== questions.length - 1 || !complete) return
     sending.current = true
     setBusy(true)
     setError('')
@@ -84,7 +84,11 @@ export function QuestionForm({ questions, defaultFirst = false, onSubmit }: {
         <div className="dsh-codex-approval-actions">
           {index > 0 && <button className="dsh-codex-button" type="button" disabled={busy} onClick={() => setIndex(index - 1)}>{t('question.previous')}</button>}
           {index < questions.length - 1
-            ? <button className="dsh-codex-button primary" type="button" disabled={busy || current.trim() === ''} onClick={() => setIndex(index + 1)}>{t('question.next')}</button>
+            ? <button className="dsh-codex-button primary" type="button" disabled={busy || current.trim() === ''} onClick={event => {
+              // React may update this button to type="submit" before the click's default action.
+              event.preventDefault()
+              setIndex(index + 1)
+            }}>{t('question.next')}</button>
             : <button className="dsh-codex-button primary" type="submit" disabled={busy || !complete}>{busy ? t('question.sending') : t('approval.submit')}</button>}
         </div>
       </div>

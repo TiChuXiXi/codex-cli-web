@@ -36,6 +36,30 @@ test('command approval round trip',async({page})=>{
   await page.getByRole('button',{name:'允许',exact:true}).click()
   await expect(page.getByText('审批已处理。',{exact:false})).toBeVisible()
 })
+test('multi-question reply advances before sending all answers',async({page})=>{
+  await login(page)
+  await selectThread(page)
+  const input=page.locator('textarea').first()
+  await input.fill('请触发多题提问')
+  await input.press('Enter')
+
+  const form=page.locator('.dsh-codex-agent-questions').last()
+  await expect(form.getByRole('group',{name:'使用哪个环境？'})).toBeVisible()
+  await form.getByRole('radio',{name:'生产环境',exact:true}).check()
+  await form.getByRole('button',{name:'下一题',exact:true}).click()
+  await expect(form.getByRole('group',{name:'使用哪种输出？'})).toBeVisible()
+
+  await form.getByRole('radio',{name:'完整',exact:true}).check()
+  await form.getByRole('button',{name:'上一题',exact:true}).click()
+  await expect(form.getByRole('radio',{name:'生产环境',exact:true})).toBeChecked()
+  await form.getByRole('button',{name:'下一题',exact:true}).press('Enter')
+  await expect(form.getByRole('radio',{name:'完整',exact:true})).toBeChecked()
+
+  const reply=page.waitForRequest(request=>/\/turns\/(submit|steer)$/.test(request.url()))
+  await form.getByRole('button',{name:'提交',exact:true}).click()
+  expect((await reply).postDataJSON().payload.text).toBe('使用哪个环境？\n生产环境\n\n使用哪种输出？\n完整')
+  await expect(form.getByText('此提问已结束',{exact:true})).toBeVisible()
+})
 test('themes, responsive navigation and file workbench',async({page})=>{
   await login(page);await selectThread(page)
   await page.getByRole('button',{name:'切换深色模式',exact:true}).click()
