@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { createClientFilter, isLocalSetupRequest } from '../client-access.js'
 import { HubError } from '../codex/hub.js'
 import { createSettingsFirewall } from './settings-firewall.js'
+import { workerPermissions, workerModes } from '../../shared/worker-options.js'
 
 const fail=(code,message,details={})=>new HubError('codex-cli/settings-'+code,message,details)
 export class SettingsService {
@@ -17,6 +18,35 @@ export class SettingsService {
     this.path=(config.accessScope===undefined && config.configFile) || join(config.stateDir,'settings.json')
   }
   revision(){return createHash('sha256').update(JSON.stringify(this.config.allowedClients)).digest('hex').slice(0,20)}
+  workerDefaults() {
+    const { defaultModel, defaultEffort, defaultPermission, defaultExecutionMode } = this.config.codex
+    const values = { defaultModel, defaultEffort, defaultPermission, defaultExecutionMode }
+    return { ...values, revision: createHash('sha256').update(JSON.stringify(values)).digest('hex').slice(0,20) }
+  }
+  saveWorkerDefaults(payload, hub) {
+    const operation = this.#queue.then(async () => {
+      const {defaultModel, defaultEffort, defaultPermission, defaultExecutionMode, revision} = payload ?? {}
+      if (this.workerDefaults().revision !== revision) throw fail('conflict','默认设置已更新，请重新加载')
+      if (!['inherit',...workerPermissions].includes(defaultPermission) || !workerModes.includes(defaultExecutionMode))
+        throw fail('invalid','请选择有效的权限和执行模式')
+      const model = (await hub.models()).find(option => option.id === defaultModel)
+      if (!model?.supportedReasoningEfforts.some(entry => entry.reasoningEffort === defaultEffort))
+        throw fail('invalid','请选择 Worker 账号支持的模型和思考强度')
+      const values = { defaultModel, defaultEffort, defaultPermission, defaultExecutionMode }
+      const path = join(this.config.stateDir, 'worker-defaults.json')
+      const temp = path + '.' + randomUUID() + '.tmp'
+      await mkdir(dirname(path), { recursive:true, mode:0o700 })
+      try {
+        const handle = await open(temp,'wx',0o600)
+        try { await handle.writeFile(JSON.stringify(values)); await handle.sync() } finally { await handle.close() }
+        await this.renameFile(temp, path)
+      } finally { await unlink(temp).catch(()=>{}) }
+      Object.assign(this.config.codex, values)
+      return this.workerDefaults()
+    })
+    this.#queue=operation.catch(()=>{})
+    return operation
+  }
   read(request) {
     return {
       authMode:this.config.authMode,

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-test('Router restores a choice, confirms only the selected Worker and opens it from task status', async ({ page }, info) => {
+test('Router restores a choice and handles the selected Worker approval in chat', async ({ page }, info) => {
   let pending = true
   let accepted = false
   let workerFinished = false
@@ -23,6 +23,10 @@ test('Router restores a choice, confirms only the selected Worker and opens it f
       pending = false
       accepted = true
     }
+    if (request.method === 'router/interactions/respond') {
+      expect(request.payload).toEqual({ dispatchId: 'task-1', instanceId: 'instance-1', response: { decision: 'accept' } })
+      workerFinished = true
+    }
     if (request.method === 'router/read') value = {
       enabled: true, phase: 'ready', error: null, model: null, busy: false, messages, latestEventId: accepted ? 1 : 0,
       clarifications: pending ? [{ id: 'clarify-1', revision: 1, kind: 'session', label: '选择目标会话', candidates: [
@@ -32,18 +36,26 @@ test('Router restores a choice, confirms only the selected Worker and opens it f
       tasks: accepted ? [{ id: 'task-1', project: '验收项目', threadId: 'fixture-thread',
         status: workerFinished ? 'completed' : 'awaiting_approval',
         receiptStatus: workerFinished ? 'unknown' : null, updatedAt: Date.now(), summary: null, error: null }] : [],
+      interactions: accepted && !workerFinished ? [{ requestId: 7, instanceId: 'instance-1', dispatchId: 'task-1',
+        method: 'item/commandExecution/requestApproval', params: { command: 'touch approved.txt' },
+        worker: '验收项目 · 验收会话', instruction: '创建验收标记' }] : [],
     }
     await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } } })
   })
   await page.goto('/')
   await page.getByLabel('访问凭证', { exact: true }).fill('fixture-access-token-only-for-tests')
   await page.getByRole('button', { name: '登录工作台' }).click()
-  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
   await page.getByRole('textbox', { name: '给 Router 发送消息' }).fill('继续之前的修改')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(page.getByText('继续之前的修改', { exact: true })).toBeVisible()
   if (process.env.VISUAL === '1') await page.screenshot({ path: info.outputPath('router-desktop-light.png'), animations: 'disabled' })
   await page.setViewportSize({ width: 390, height: 844 })
+  const header = page.locator('.dsh-codex-workbench-header')
+  const title = await header.getByRole('heading', { name: 'Router' }).boundingBox()
+  const tabs = await header.getByRole('navigation', { name: 'Router 视图' }).boundingBox()
+  expect(tabs!.x).toBeGreaterThanOrEqual(title!.x + title!.width)
+  expect(Math.abs(tabs!.y + tabs!.height / 2 - title!.y - title!.height / 2)).toBeLessThan(2)
   await page.getByRole('button', { name: '切换深色模式' }).click()
   await expect(page.locator('.dsh-codex-root')).toHaveAttribute('data-codex-theme', 'dark')
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
@@ -51,20 +63,20 @@ test('Router restores a choice, confirms only the selected Worker and opens it f
   if (process.env.VISUAL === '1') await page.screenshot({ path: info.outputPath('router-mobile-dark.png'), animations: 'disabled' })
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.reload()
-  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
   const choice = page.getByRole('region', { name: '选择目标会话' })
   await choice.getByRole('listitem').filter({ hasText: '验收会话' }).getByRole('button', { name: '选择' }).click()
   expect(confirmation).toEqual({ id: 'clarify-1', revision: 1, candidateId: 'fixture-thread' })
   await expect(choice).toHaveCount(0)
   await page.getByRole('button', { name: '任务 · 有更新', exact: true }).click()
   await expect(page.getByText('等待你的审批', { exact: false })).toBeVisible()
-  await page.getByRole('button', { name: '打开会话处理审批' }).click()
-  await expect(page.locator('.dsh-codex-workbench-header h1')).toHaveText('验收会话')
-  await expect(page.getByRole('region', { name: 'Router' })).toHaveCount(0)
-
-  workerFinished = true
+  await page.getByRole('button', { name: '在 Router 中处理' }).click()
+  const card = page.getByRole('region', { name: '验收项目 · 验收会话' })
+  await expect(card.getByText('touch approved.txt')).toBeVisible()
+  await card.getByRole('button', { name: '允许', exact: true }).click()
+  await expect(card).toHaveCount(0)
   await page.reload()
-  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
   await page.getByRole('button', { name: '任务', exact: true }).click()
   await expect(page.getByText('Router 回执待核对', { exact: true })).toBeVisible()
   await expect(page.getByText('Worker 回合已结束', { exact: false })).toBeVisible()
@@ -109,14 +121,15 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
       busy = true
     }
     const value = request.method === 'router/read'
-      ? { enabled: true, phase: 'ready', error: null, model: 'gpt-6.1-terra', busy, messages,
+      ? { enabled: true, phase: 'ready', error: null, model: 'gpt-6.1-terra', effort: 'high',
+          models: [{ id: 'gpt-6.1-terra', displayName: 'GPT-6.1 Terra', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], busy, messages,
           clarifications: [], tasks: [], latestEventId: 0 } : {}
     await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } } })
   })
   await page.goto('/')
   await page.getByLabel('访问凭证', { exact: true }).fill('fixture-access-token-only-for-tests')
   await page.getByRole('button', { name: '登录工作台' }).click()
-  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
   const router = page.getByRole('region', { name: 'Router', exact: true })
   const input = page.getByRole('textbox', { name: '给 Router 发送消息' })
   const send = router.getByRole('button', { name: '发送', exact: true })
@@ -167,7 +180,7 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   await update()
   await expect(send).toBeEnabled()
   await page.reload()
-  await page.getByRole('button', { name: 'Router', exact: true }).click()
+  await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
   await expect(input).toHaveValue('尚未发送的草稿')
   await log.evaluate(el => { el.scrollTop = 0 })
   await page.screenshot({ path: info.outputPath('router-chat-desktop.png'), animations: 'disabled' })

@@ -231,10 +231,11 @@ export class RouterWakeScheduler {
     const answer = item?.phase || !staged ? item?.text : staged.text
     const fallback = source.batch.dispatchIds.map(id => {
       const task = this.router.dispatcher.get(id)
-      return '- ' + (executionLabels[task.executionStatus] ?? '回合状态待核对') + '（任务 ' + id + '）'
+      return '- ' + this.router.dispatcher.workerLabel(task) + '：' +
+        (task.error || task.summary || executionLabels[task.executionStatus] || '回合状态待核对')
     }).join('\n')
     this.commit(source, 'delivered', answer?.slice(0, 24000) ??
-      'Worker 回执未产生最终回复。已记录各任务的回合状态，可在任务面板查看。\n\n' + fallback)
+      'Worker 执行回执\n\n' + fallback)
   }
 
   retry(source) {

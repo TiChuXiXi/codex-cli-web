@@ -9,11 +9,12 @@ import { EventBus } from '../server/services/events.js'
 import { bootstrap } from '../server/bootstrap.js'
 import { loadConfig } from '../server/config.js'
 import { RouterService } from '../server/router/service.js'
+import { loadRouterProjects } from '../server/router/projects.js'
 import { RouterStore } from '../server/router/store.js'
 import { normalizeRouterConfig } from '../server/router/app-server.js'
 import { routerNamespace } from '../server/router/tools.js'
 
-async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
+async function fixture(t, { discover = false, resumeExistingPermissions = false, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'router-service-'))
   const cwd = join(root, 'worker')
   await mkdir(cwd)
@@ -23,6 +24,10 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
     thread: { id, cwd, name: index ? '同名测试乙' : '同名测试甲', status: { type: 'idle' } }, turns: [],
   }]))
   const submitted = []
+  const consumed = new Set()
+  bus.subscribe(event => {
+    if (event.type === 'item/upsert' && event.payload?.item?.type === 'userMessage') consumed.add(event.payload.item.clientId)
+  })
   const interrupts = []
   const retained = new Set()
   const routerHistory = []
@@ -33,6 +38,11 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
   let sandbox = { type: 'readOnly', networkAccess: false }
   let loseReply = false
   const hub = {
+    config: {defaultModel:'worker-default',defaultEffort:'medium',defaultPermission:'inherit',defaultExecutionMode:'default'},
+    models: async () => [{id:'worker-default',defaultReasoningEffort:'medium',supportedReasoningEfforts:[{reasoningEffort:'medium'},{reasoningEffort:'high'}]}],
+    configureWorker: async () => {},
+    routerQueueHead: async threadId => submitted.find(item => item.threadId === threadId && !consumed.has(item.clientUserMessageId) &&
+      !threads.get(threadId)?.turns.some(turn => turn.items?.some(entry => entry.clientId === item.clientUserMessageId))) ?? null,
     status: () => ({ phase: 'ready', codexVersion: '0.169.1' }),
     projects: async () => discover ? [{ cwd, name: 'Alpha', threadCount: 2 }] : [],
     listThreads: async () => ({ data: [...threads.values()].map(value => value.thread) }),
@@ -46,7 +56,7 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
       return thread
     },
     renameThread: async () => {},
-    routerWorkerSettings: async () => ({ cwd, approvalPolicy: policy, approvalsReviewer: 'user', sandbox }),
+    routerWorkerSettings: async id => ({ cwd: threads.get(id)?.thread.cwd, approvalPolicy: policy, approvalsReviewer: 'user', sandbox }),
     routerAddWorkerMessage: async (threadId, clientUserMessageId, text) => {
       const queued = { id: 'queued-' + clientUserMessageId, clientUserMessageId }
       submitted.push({ threadId, text, ...queued })
@@ -70,9 +80,16 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
   const connect = async options => {
     hooks = options
     const routerCwd = join(options.directory, 'workspace')
+    let defaultSelection = options.config.models?.[0] ?? { model: 'offline-fixture', effort: 'high' }
+    let selection = defaultSelection
     return {
       cwd: routerCwd,
-      selected: { model: 'offline-fixture' },
+      get selected() { return selection },
+      get defaultSelection() { return defaultSelection },
+      setDefault: value => { defaultSelection = value },
+      select: value => { selection = value ?? defaultSelection },
+      resolveSelection: value => value?.model === 'alternate' && value.effort === 'medium' ||
+        value?.model === 'offline-fixture' && value.effort === 'high' ? value : null,
       close() {},
       start: async () => { starts++; return { thread: { id: 'router-only', cwd: routerCwd } } },
       resume: async id => { resumes++; return { thread: { id, cwd: routerCwd } } },
@@ -84,7 +101,7 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
         return { data: structuredClone(routerHistory) }
       },
       send: async (threadId, text, requestId, { workerReceipt = false } = {}) => {
-        sent.push({ threadId, text, requestId, workerReceipt })
+        sent.push({ threadId, text, requestId, workerReceipt, selection })
         if (workerReceipt && wakeBehavior === 'rejected') throw Object.assign(Error('invalid params'), { code: -32602 })
         if (workerReceipt && wakeBehavior === 'unknown') throw new Error('lost reply')
         runtime = { threadId, turnId: 'router-turn-' + ++turnNumber }
@@ -109,7 +126,7 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
       },
     }
   }
-  const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: 'Alpha', cwd }] }
+  const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: 'Alpha', cwd, resumeExistingPermissions }] }
   async function boot() {
     router = new RouterService({ config, stateDir, hub, bus, connect, wakePolicy })
     router.start()
@@ -123,7 +140,7 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
   })
   await boot()
   return {
-    get router() { return router }, stateDir, cwd, threads, submitted, interrupts, bus, retained, sent, routerHistory,
+    get router() { return router }, hub, stateDir, cwd, threads, submitted, interrupts, bus, retained, sent, routerHistory,
     set wakeBehavior(value) { wakeBehavior = value },
     set nativeStatus(value) { nativeStatus = value },
     get starts() { return starts }, get resumes() { return resumes },
@@ -149,6 +166,151 @@ async function fixture(t, { discover = false, wakePolicy = { mergeMs: 60000, gap
 function args(requestId, threadId = 'worker-a') {
   return { projectId: 'alpha-project', threadId, mode: 'resume', instruction: 'untrusted replacement', requestId }
 }
+
+test('legacy dispatch options reach the chosen Worker without changing the original task or the workbench defaults', async t => {
+  const fx = await fixture(t)
+  const applied = []
+  fx.hub.configureWorker = async (id, options) => applied.push({id, options})
+  const requestId = 'legacy-options-request'
+  await fx.router.send({requestId,text:'先用计划模式分析布局'})
+  const instruction = '@worker ' + JSON.stringify({workerModel:'worker-default',workerEffort:'high',executionMode:'plan',workerPermission:'read'})
+  const task = await fx.tool('dispatch_task',{...args(requestId),instruction})
+  assert.equal(task.success,true)
+  await fx.router.dispatcher.sweep()
+  assert.deepEqual(applied[0], {id:'worker-a',options:{model:'worker-default',effort:'high',executionMode:'plan',permission:'read'}})
+  assert.equal(fx.submitted[0].text,'先用计划模式分析布局')
+  assert.equal(fx.hub.config.defaultExecutionMode,'default')
+  assert.equal(fx.hub.config.defaultEffort,'medium')
+})
+
+test('a requested permission outside the project grant waits for the user and invalid Worker options never dispatch', async t => {
+  const fx = await fixture(t)
+  const requestId = 'explicit-worker-permission'
+  await fx.router.send({requestId,text:'使用完全访问模式处理任务'})
+  assert.equal((await fx.tool('dispatch_task',{...args(requestId),workerModel:'unlisted'})).success,false)
+  assert.equal((await fx.tool('dispatch_task',{...args(requestId),workerEffort:'unknown'})).success,false)
+  assert.equal((await fx.tool('dispatch_task',{...args(requestId),instruction:'@worker {"threadId":"foreign"}'})).success,false)
+  const result = await fx.tool('dispatch_task',{...args(requestId),workerPermission:'full'})
+  assert.equal(result.value.status,'needs_confirmation')
+  assert.equal(fx.router.read().tasks.length,0)
+  const [question] = fx.router.read().clarifications
+  assert.equal(question.kind,'workerPermission')
+  await fx.router.confirm(question,true)
+  assert.equal(fx.submitted.length,0)
+})
+
+test('first-run directory setup can be deferred and resumes the original new project request after restart', async t => {
+  const fx = await fixture(t)
+  assert.equal(fx.router.status().promptProjectRoot, true)
+  assert.equal(fx.router.settings().projectRoot, '')
+  await fx.router.saveSettings({ model: { model: 'alternate', effort: 'medium' }, projectRoot: '', revision: 0 })
+  await fx.router.setupProjectRoot({ defer: true })
+  await fx.restart()
+  assert.equal(fx.router.status().promptProjectRoot, false)
+  await fx.router.send({ requestId: 'deferred-project-1', text: '创建示例项目' })
+  assert.equal((await fx.tool('list_projects', {})).success, true)
+  assert.equal(fx.router.read().clarifications.length, 0)
+  const create = () => fx.tool('create_session', { projectId: 'new:示例' })
+  const first = await create()
+  assert.equal(first.value.status, 'needs_confirmation')
+  assert.equal((await create()).value.id, first.value.id)
+  fx.finish()
+  await fx.restart()
+  const [question] = fx.router.read().clarifications
+  assert.equal(question.kind, 'projectRoot')
+  await assert.rejects(fx.router.setupProjectRoot({ projectRoot: 'relative' }), /绝对/)
+  assert.equal(fx.router.read().clarifications.length, 1)
+  let creates = 0
+  fx.hub.newThread = async ({ cwd }) => ({ id: 'thread-' + ++creates, cwd })
+  const root = join(fx.cwd, 'chosen')
+  await fx.router.setupProjectRoot({ projectRoot: root })
+  await fx.router.setupProjectRoot({ projectRoot: root })
+  for (let i = 0; i < 100 && !fx.router.read().messages.some(m => m.id === 'root-result:' + question.id); i++) await delay(10)
+  assert.equal(creates, 1)
+  assert.equal(fx.router.read().tasks[0].cwd, join(root, '示例'))
+  assert.equal(fx.router.read().clarifications.length, 0)
+  await fx.restart()
+  assert.equal(fx.router.status().promptProjectRoot, false)
+  assert.equal(fx.router.settings().projectRoot, root)
+  assert.equal(fx.router.settings().model.model, 'alternate')
+  await assert.rejects(fx.router.setupProjectRoot({ projectRoot: fx.cwd }), /已设置/)
+})
+
+test('saving a root in settings continues queued project work once and respects cancelled requests', async t => {
+  const fx = await fixture(t)
+  await fx.router.send({ requestId: 'cancel-before-setup', text: '创建旧项目' })
+  await fx.tool('create_session', { projectId: 'new:旧项目' })
+  const [cancel] = fx.router.read().clarifications
+  await fx.router.confirm(cancel, true)
+  assert.equal((await fx.tool('create_session', { projectId: 'new:旧项目' })).value.status, 'cancelled')
+  fx.finish()
+  const text = '创建新项目并检查界面'
+  const requestId = 'dispatch-after-setup'
+  await fx.router.send({ requestId, text })
+  await fx.tool('dispatch_task', { projectId: 'new:新项目', instruction: text, mode: 'new', requestId })
+  fx.finish()
+  fx.hub.newThread = async ({ cwd }) => {
+    const thread = { id: 'new-project-worker', cwd, status: { type: 'idle' } }
+    fx.threads.set(thread.id, { thread, turns: [] })
+    return thread
+  }
+  const root = join(fx.cwd, 'chosen')
+  await fx.router.saveSettings({ model: fx.router.settings().model, projectRoot: root, revision: 0 })
+  for (let i = 0; i < 100 && !fx.submitted.length; i++) await delay(10)
+  assert.equal(fx.submitted.length, 1)
+  assert.equal(fx.submitted[0].threadId, 'new-project-worker')
+  assert.ok(fx.submitted[0].text.endsWith(text))
+  assert.equal(fx.router.read().tasks.length, 1)
+  assert.equal(fx.router.read().tasks[0].cwd, join(root, '新项目'))
+  assert.equal(fx.router.read().clarifications.length, 0)
+})
+
+test('saved Router defaults and newly provisioned projects survive restart, collisions preserve existing directories', async t => {
+  const fx = await fixture(t)
+  const root = join(fx.cwd, 'projects')
+  const model = { model: 'alternate', effort: 'medium' }
+  const saved = await fx.router.saveSettings({ model, projectRoot: root, revision: 0 })
+  assert.deepEqual(fx.router.read().model, 'alternate')
+  await assert.rejects(fx.router.saveSettings({ model, projectRoot: root, revision: 0 }), /重新加载/)
+  fx.router.setModel({ model: 'offline-fixture', effort: 'high' })
+  await fx.router.saveSettings({ model, projectRoot: root, revision: saved.revision })
+  assert.equal(fx.router.read().model, 'offline-fixture')
+  fx.hub.newThread = async ({ cwd }) => ({ id: 'provisioned-thread', cwd })
+  await fx.router.send({ requestId: 'new-project-example', text: '新建项目 示例' })
+  const created = await fx.tool('create_session', { projectId: 'new:示例' })
+  assert.equal(created.success, true)
+  const project = fx.router.projects.get(created.value.projectId)
+  assert.equal(project.cwd, join(root, '示例'))
+  assert.equal(created.value.cwd, project.cwd)
+  assert.equal((await fx.tool('create_session', { projectId: 'new:示例' })).value.threadId, 'provisioned-thread')
+  fx.finish()
+  await fx.restart()
+  assert.equal(fx.router.settings().projectRoot, root)
+  assert.equal(fx.router.projects.get(project.id).cwd, project.cwd)
+  assert.ok(fx.router.includeNewProjects([]).some(row => row.cwd === project.cwd))
+  await assert.rejects(fx.router.openNewProject({ requestId: 'another-create-1', name: '示例' }), /已存在/)
+  await assert.rejects(fx.router.openNewProject({ requestId: 'another-create-2', name: '../outside' }), /单个目录名/)
+  await assert.rejects(fx.router.openNewProject({ requestId: 'another-create-3', repository: 'file:///etc' }), /HTTPS/)
+})
+
+test('Router model changes during a turn persist across resume and default reset', async t => {
+  const fx = await fixture(t)
+  await fx.router.send({ requestId: 'model-before-change', text: 'hello' })
+  const alternate = { model: 'alternate', effort: 'medium' }
+  fx.router.setModel(alternate)
+  assert.deepEqual(fx.sent.at(-1).selection, { model: 'offline-fixture', effort: 'high' })
+  fx.finish()
+  await fx.restart()
+  assert.equal(fx.router.read().usingDefaultModel, false)
+  await fx.router.send({ requestId: 'model-after-change', text: 'hello again' })
+  assert.deepEqual(fx.sent.at(-1).selection, alternate)
+  assert.throws(() => fx.router.setModel({ ...alternate, effort: 'invalid' }), /不可用/)
+  fx.router.setModel({ model: null, effort: null })
+  fx.finish()
+  await fx.restart()
+  assert.equal(fx.router.read().usingDefaultModel, true)
+  assert.equal(fx.router.read().effort, 'high')
+})
 
 test('discovered projects require explicit access approval and remember it across restart', async t => {
   const fx = await fixture(t, { discover: true })
@@ -184,12 +346,33 @@ test('Router chats and restores the same session and transcript', async t => {
   assert.equal(fx.router.read().messages.at(-1).text, '你好！')
 })
 
+test('first use of a discovered project authorizes the named Worker in one choice', async t => {
+  const fx = await fixture(t, { discover: true })
+  fx.policy = 'never'
+  fx.sandbox = { type: 'dangerFullAccess' }
+  const requestId = 'discovered-full-worker'
+  await fx.router.send({ requestId, text: '把验收发给 Alpha 的 worker-b' })
+  const [project] = (await fx.tool('list_projects', {})).value
+  await fx.tool('dispatch_task', { ...args(requestId, 'worker-b'), projectId: project.id })
+  const [card] = fx.router.read().clarifications
+  assert.match(card.candidates[0].name, /Alpha.*同名测试乙/)
+  assert.match(card.candidates[0].summary, /完全访问，免审批/)
+  assert.equal(fx.submitted.length, 0)
+  const task = await fx.router.confirm({ id: card.id, revision: card.revision, candidateId: project.id })
+  await fx.router.dispatcher.sweep()
+  assert.equal(task.threadId, 'worker-b')
+  assert.deepEqual(fx.router.read().clarifications, [])
+  assert.equal(fx.submitted.length, 1)
+  assert.equal(fx.router.store.get('worker-grant', 'worker-a'), null)
+})
+
 test('Router preserves original instructions and confirmation across restart, then uses selected Worker once', async t => {
   const fx = await fixture(t)
   const requestId = 'uncertain-0001'
   const text = '请派发给 Alpha 的同名测试，核对原始变更。'
   await fx.router.send({ requestId, text })
-  const first = await fx.tool('dispatch_task', args(requestId))
+  const first = await fx.tool('dispatch_task', { requestId, instruction: text, mode: 'resume',
+    candidateThreadIds: ['worker-a', 'worker-b'], reason: '是测试甲还是测试乙？' })
   assert.equal(first.value.status, 'needs_confirmation')
   fx.finish()
   assert.deepEqual(fx.submitted, [])
@@ -260,6 +443,91 @@ test('Router denies wrong scope and overrides, waits while busy, then refuses an
   assert.match(rejected.error, /必须启用按需审批/)
   assert.match(rejected.error, /沙箱不受 Router 支持/)
   assert.equal(fx.submitted.length, 0)
+})
+
+test('semantic evidence resumes the preauthorized full-access Worker with no confirmation or overrides', async t => {
+  const fx = await fixture(t, { resumeExistingPermissions: true })
+  const worker = fx.threads.get('worker-b')
+  worker.thread.preview = '储位看板验收'
+  worker.turns.push({ startedAt: 100, items: [
+    { type: 'userMessage', content: [{ type: 'text', text: 'Qt 离线储位颜色显示' }] },
+    { type: 'agentMessage', text: '保留灰色状态，待确认文案' },
+  ] })
+  fx.policy = 'never'
+  fx.sandbox = { type: 'dangerFullAccess' }
+  const requestId = 'semantic-existing-task'
+  const text = '昨天那个储位状态显示，再检查一次离线文案。'
+  await fx.router.send({ requestId, text })
+  assert.equal((await fx.tool('list_sessions', { query: '储位' })).value[0].id, 'worker-b')
+  const session = (await fx.tool('get_session', { threadId: 'worker-b' })).value
+  assert.match(session.recent[0].user, /Qt 离线储位/)
+  assert.match(session.recent[0].reply, /灰色/)
+  const result = await fx.tool('dispatch_task', args(requestId, session.id))
+  assert.equal(result.value.status, 'queued')
+  assert.deepEqual(fx.router.read().clarifications, [])
+  await fx.router.dispatcher.sweep()
+  assert.deepEqual(fx.submitted.map(row => [row.threadId, row.text]), [['worker-b', text]])
+  assert.equal(fx.threads.size, 2)
+})
+
+test('one conversational choice across projects resumes the selected thread with the original instruction', async t => {
+  const fx = await fixture(t)
+  const otherCwd = join(fx.cwd, '..', 'handset')
+  await mkdir(otherCwd)
+  const other = await loadRouterProjects([{ id: 'handset', name: '手持终端', cwd: otherCwd }], fx.router.directory)
+  fx.router.projects.set('handset', other.get('handset'))
+  fx.threads.get('worker-b').thread.cwd = otherCwd
+  const text = '接着改上次的 Qt 储位列表。'
+  const requestId = 'two-projects-ambiguous'
+  await fx.router.send({ requestId, text })
+  const offered = await fx.tool('dispatch_task', { requestId, mode: 'resume', instruction: text,
+    reason: '想改看板还是手持终端？', candidateThreadIds: ['worker-a', 'worker-b'] })
+  assert.equal(offered.value.status, 'needs_confirmation')
+  const [pending] = fx.router.read().clarifications
+  assert.equal(pending.label, '想改看板还是手持终端？')
+  assert.deepEqual(pending.candidates.map(row => row.project), ['Alpha', '手持终端'])
+  assert.equal(fx.submitted.length, 0)
+  fx.finish()
+  await fx.router.send({ requestId: 'reply-choose-handset', text: '手持终端那个' })
+  const choice = { ...args(requestId, 'worker-b'), projectId: 'handset' }
+  const result = await fx.tool('dispatch_task', choice)
+  assert.equal(result.value.status, 'queued')
+  assert.equal((await fx.tool('dispatch_task', choice)).value.id, result.value.id)
+  assert.deepEqual(fx.router.read().clarifications, [])
+  assert.equal((await fx.tool('dispatch_task', args('reply-choose-handset'))).success, false)
+  await fx.router.dispatcher.sweep()
+  assert.deepEqual(fx.submitted.map(row => [row.threadId, row.text]), [['worker-b', text]])
+})
+
+test('a single explicit Worker grant survives restart and is restricted to the selected configuration', async t => {
+  const fx = await fixture(t)
+  fx.policy = 'never'
+  fx.sandbox = { type: 'dangerFullAccess' }
+  const requestId = 'grant-worker-first'
+  await fx.router.send({ requestId, text: '继续储位验收' })
+  const first = await fx.tool('dispatch_task', args(requestId))
+  assert.equal(first.value.status, 'needs_confirmation')
+  const [grant] = fx.router.read().clarifications
+  assert.match(grant.candidates[0].summary, /完全访问，免审批/)
+  assert.equal(fx.submitted.length, 0)
+  const result = await fx.router.confirm({ id: grant.id, revision: grant.revision, candidateId: 'worker-a' })
+  fx.finish()
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.submitted.length, 1)
+  fx.threads.get('worker-a').turns.push({ id: 'worker-finished', status: 'completed',
+    items: [{ type: 'userMessage', clientId: result.id }] })
+  await fx.router.dispatcher.sweep()
+  await fx.restart()
+  await fx.router.send({ requestId: 'grant-worker-second', text: '继续核对离线文案' })
+  assert.equal((await fx.tool('dispatch_task', args('grant-worker-second'))).value.status, 'queued')
+  assert.deepEqual(fx.router.read().clarifications, [])
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.submitted.length, 2)
+  fx.finish()
+  fx.policy = 'on-request'
+  await fx.router.send({ requestId: 'grant-worker-changed', text: '再核对一次' })
+  assert.equal((await fx.tool('dispatch_task', args('grant-worker-changed'))).value.status, 'needs_confirmation')
+  assert.equal(fx.submitted.length, 2)
 })
 
 test('a second Router process cannot use the same SQLite state while its owner is active', async t => {
@@ -416,6 +684,8 @@ test('Worker receipts are persisted without a browser, merged while busy and rea
   await fx.router.wake.run()
   assert.equal(fx.sent.filter(send => send.workerReceipt).length, 0)
   assert.equal(fx.router.getTask(first.id).receiptStatus, 'pending')
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.router.read().messages.find(m => m.id === 'worker-result:' + first.id).text, '关联 Worker 的最终答复')
 
   fx.finish()
   await fx.router.wake.run()
@@ -439,6 +709,59 @@ test('Worker receipts are persisted without a browser, merged while busy and rea
   assert.equal(fx.router.getTask(second.id).receiptStatus, 'delivered')
   assert.equal(fx.router.read().messages.filter(message => message.text === '收到两项 Worker 回执').length, 1)
   assert.equal(fx.router.read().messages.some(message => message.text.includes('这是工作台发送')), false)
+})
+
+test('parallel native requests resolve only for their live instance, dispatch and worker turn', async t => {
+  const fx = await fixture(t)
+  const [a,b] = [await dispatch(fx, 'interaction-test-1'), await dispatch(fx, 'interaction-test-2', 'worker-b')]
+  const requests = new Map()
+  for (const [task, method] of [[a, 'item/commandExecution/requestApproval'], [b, 'item/tool/requestUserInput']]) {
+    const params = { threadId: task.threadId, turnId: 'turn-' + task.id }
+    fx.bus.publish('item/upsert', { item: { type: 'userMessage', clientId: task.id } }, params)
+    requests.set(task.id, { requestId: task.id, instanceId: 'live-' + task.id, method, params })
+  }
+  requests.set('unrelated', { requestId: 3, instanceId: 'unrelated', params: { threadId: a.threadId, turnId: 'other' } })
+  fx.hub.pendingApprovals = () => [...requests.values()]
+  fx.hub.respondApproval = (id, response) => { assert.ok(requests.delete(id)); return { id, response } }
+  const cards = fx.router.read().interactions
+  assert.equal(cards.length, 2)
+  const input = cards.find(card => card.dispatchId === b.id)
+  const payload = { dispatchId: b.id, instanceId: input.instanceId, response: { answers: { color: { answers: ['靛蓝'] } } } }
+  assert.throws(() => fx.router.respond({ ...payload, dispatchId: a.id }), /已失效/)
+  assert.deepEqual(fx.router.respond(payload), { id: b.id, response: payload.response })
+  requests.set(b.id, { ...input, instanceId: 'replacement' })
+  assert.throws(() => fx.router.respond(payload), /已失效/)
+  assert.ok(requests.has(a.id))
+  const child = { type: 'subAgentActivity', kind: 'started', agentThreadId: 'child-a', agentPath: '/root/test' }
+  fx.bus.publish('item/upsert', { item: child, completed: true }, { threadId: a.threadId, turnId: 'turn-' + a.id })
+  requests.set(4, { requestId: 4, instanceId: 'child-request', params: { threadId: 'child-a', turnId: 'child-turn' } })
+  assert.equal(fx.router.read().interactions.find(card => card.requestId === 4).dispatchId, a.id)
+  assert.throws(() => fx.router.respond({ dispatchId: b.id, instanceId: 'child-request', response: {} }), /失效/)
+  assert.deepEqual(fx.router.respond({ dispatchId: a.id, instanceId: 'child-request', response: { decision: 'decline' } }),
+    { id: 4, response: { decision: 'decline' } })
+})
+
+test('structured Worker questions steer their live turn or queue exactly one follow-up in the original thread', async t => {
+  const fx = await fixture(t)
+  const a = await dispatch(fx, 'structured-live-1')
+  const b = await dispatch(fx, 'structured-done-2', 'worker-b')
+  for (const task of [a,b]) {
+    const item = { id: 'question', type: 'agentMessage', questions: [{ title: '颜色', options: ['松绿', '靛蓝'] }] }
+    const turn = { id: 'turn-' + task.id, items: [{ type: 'userMessage', clientId: task.id }, item],
+      status: task.id === a.id ? 'inProgress' : 'completed' }
+    fx.threads.get(task.threadId).turns = [turn]
+    await fx.router.dispatcher.reconcile(fx.router.dispatcher.get(task.id))
+  }
+  await fx.restart()
+  const replies = []
+  fx.hub.steerTurn = async body => { replies.push(body) }
+  for (const task of [a,b]) {
+    const q = fx.router.read().messages.find(m => m.questions && m.id.includes(task.id))
+    await fx.router.answerQuestion({ id: q.id, text: '靛蓝' })
+    await assert.rejects(fx.router.answerQuestion({ id: q.id, text: '松绿' }), /失效/)
+  }
+  assert.deepEqual(replies, [{ threadId: a.threadId, turnId: 'turn-' + a.id, text: '靛蓝' }])
+  assert.equal(fx.router.dispatcher.list().filter(task => task.instruction === '靛蓝' && task.threadId === b.threadId).length, 1)
 })
 
 test('a missed Worker event is reconciled after restart and a lost Router acknowledgement uses native history', async t => {

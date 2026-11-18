@@ -24,6 +24,7 @@ export interface DirectoryListing {
 export interface DirectoryPickerDialogProps {
   open: boolean
   api: Api
+  selectParent?: boolean
   /** 确认某个目录：父级用它建项目会话，抛错则留在对话框里显示。 */
   onPick: (cwd: string) => Promise<void>
   onClose: () => void
@@ -39,8 +40,9 @@ function dirsOf(listing: DirectoryListing | null, showHidden: boolean): DirEntry
   )
 }
 
-export function DirectoryPickerDialog({ open, api, onPick, onClose }: DirectoryPickerDialogProps) {
+export function DirectoryPickerDialog({ open, api, selectParent = false, onPick, onClose }: DirectoryPickerDialogProps) {
   const t = useT()
+  const title = t(selectParent ? 'browse.parentTitle' : 'browse.title')
   const [listing, setListing] = React.useState<DirectoryListing | null>(null)
   const [child, setChild] = React.useState<DirectoryListing | null>(null)
   const [selected, setSelected] = React.useState<DirEntry | null>(null)
@@ -243,12 +245,12 @@ export function DirectoryPickerDialog({ open, api, onPick, onClose }: DirectoryP
         className="dsh-codex-dialog dsh-codex-browse"
         role="dialog"
         aria-modal="true"
-        aria-label={t('browse.title')}
+        aria-label={title}
         tabIndex={-1}
         ref={dialogRef}
       >
         <header className="dsh-codex-browse-head">
-          <div className="dsh-codex-browse-title">{t('browse.title')}</div>
+          <div className="dsh-codex-browse-title">{title}</div>
           {pathDraft === null ? (
             <>
               <div className="dsh-codex-browse-crumbs" role="navigation">
@@ -456,7 +458,7 @@ export function DirectoryPickerDialog({ open, api, onPick, onClose }: DirectoryP
               disabled={targetPath === null || loading || busy || creating}
               onClick={() => void confirmPick()}
             >
-              {busy ? t('browse.creating') : t('browse.open')}
+              {selectParent ? t('browse.useFolder') : busy ? t('browse.creating') : t('browse.open')}
             </button>
           </div>
         </footer>

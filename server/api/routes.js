@@ -12,7 +12,7 @@ import { pipeline } from 'node:stream/promises'
 import { saveUploadStream } from '../services/uploads.js'
 import { HubError } from '../codex/hub.js'
 import { readImage } from '../services/images.js'
-import { checkDirectory, createDirectory, gitDiff, gitStatus, listDirectory, readTextFile, runCommand, saveUpload } from '../services/fs.js'
+import { checkDirectory, computerRoots, createDirectory, gitDiff, gitStatus, listDirectory, readTextFile, runCommand, saveUpload } from '../services/fs.js'
 import { JsonRpcError } from '../codex/jsonrpc.js'
 
 const CHANNEL = '/codex-cli'
@@ -33,12 +33,21 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
     },
     'router/reconnect': () => { requireRouter().start(); return router.status() },
     'router/send': payload => requireRouter().send(payload),
+    'router/model/set': payload => requireRouter().setModel(payload),
+    'router/settings/read': () => requireRouter().settings(),
+    'router/settings/save': payload => requireRouter().saveSettings(payload),
+    'router/settings/project-root': payload => requireRouter().setupProjectRoot(payload),
+    'router/projects/create': payload => requireRouter().openNewProject(payload),
+    'router/interactions/respond': payload => requireRouter().respond(payload),
+    'router/questions/answer': payload => requireRouter().answerQuestion(payload),
     'router/clarifications/confirm': payload => requireRouter().confirm(payload),
     'router/clarifications/cancel': payload => requireRouter().confirm(payload, true),
     'router/tasks/list': payload => requireRouter().listTasks(payload),
     'router/tasks/get': payload => requireRouter().getTask(payload?.dispatchId),
     'router/tasks/dismiss-unknown': payload => requireRouter().dismissUnknown(payload),
     'settings/read': (_payload,_signal,context) => settings.read(context.request),
+    'settings/worker/read': () => settings.workerDefaults(),
+    'settings/worker/save': payload => settings.saveWorkerDefaults(payload,hub),
     'settings/whitelist': (payload,_signal,context) => settings.update(payload,context),
     'terminal/open': payload => terminal.open(payload),
     'terminal/read': (payload, signal) => terminal.read(payload, signal),
@@ -49,6 +58,7 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
     'workspace/upload': payload => workspace.upload(payload?.workspaceId, payload?.directory, payload?.name, payload?.dataBase64),
     'workspace/remove': payload => workspace.remove(payload?.workspaceId, payload?.path),
     'workspace/open': payload => workspace.register(payload?.cwd),
+    'fs/roots': () => computerRoots(),
     'workspace/info': payload => workspace.info(payload?.workspaceId, payload?.path),
     'workspace/list': payload => workspace.list(payload?.workspaceId, payload?.path),
     'workspace/search': (payload, signal) => workspace.search(payload?.workspaceId, payload?.query, signal),
@@ -64,8 +74,9 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
         ...(router ? { router: router.status() } : {}),
       }
     },
-    'projects/list'(payload) {
-      return hub.projects({ refresh: payload?.refresh === true, provider: payload?.provider })
+    async 'projects/list'(payload) {
+      const projects = await hub.projects({ refresh: payload?.refresh === true, provider: payload?.provider })
+      return router?.includeNewProjects(projects) ?? projects
     },
     'threads/list'(payload) {
       return hub.listThreads(payload ?? {})

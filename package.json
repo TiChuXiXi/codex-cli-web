@@ -26,6 +26,7 @@
     "docs/ROUTER.md",
     "docs/acceptance/router-a1.md",
     "docs/acceptance/router-a2.md",
+    "docs/acceptance/router-interactions.md",
     "scripts/prepare-router-codex.mjs",
     "scripts/router-launcher.sh"
   ],

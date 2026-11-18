@@ -71,7 +71,7 @@ export function ItemCard({ item, api, cwd = '', onAnswer, messageLabels }: {
   }
 }
 
-function AsyncQuestions({ item, onAnswer }: { item: CodexItem, onAnswer?: (text: string) => Promise<void> }) {
+export function AsyncQuestions({ item, onAnswer }: { item: Pick<CodexItem, 'questions'>, onAnswer?: (text: string) => Promise<void> }) {
   const t = useT()
   const [submitted, setSubmitted] = React.useState(false)
   const questions = (item.questions ?? []).map((question, index) => ({

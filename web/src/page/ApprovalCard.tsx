@@ -21,7 +21,7 @@ export function ApprovalStack({ approvals, onRespond }: ApprovalStackProps) {
   )
 }
 
-function ApprovalCard({
+export function ApprovalCard({
   approval,
   onRespond,
 }: {

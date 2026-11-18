@@ -22,6 +22,21 @@ async function fixture(t,options={}) {
   t.after(()=>service.dispose())
   return {root,path,config,service,applied,calls,context:{request:peer('192.168.1.80'),response:{}}}
 }
+test('Worker defaults persist independently of LAN config, reject stale updates and validate supported efforts',async t=>{
+  const f=await fixture(t)
+  const hub={models:async()=>[{id:'fixture-model',supportedReasoningEfforts:[{reasoningEffort:'high'}]}]}
+  const initial=f.service.workerDefaults()
+  const draft={...initial,defaultModel:'fixture-model',defaultEffort:'high',defaultPermission:'read',defaultExecutionMode:'plan'}
+  const saved=await f.service.saveWorkerDefaults(draft,hub)
+  assert.equal(f.config.codex.defaultModel,'fixture-model')
+  await assert.rejects(f.service.saveWorkerDefaults({...draft,defaultPermission:'full'},hub),/重新加载/)
+  await assert.rejects(f.service.saveWorkerDefaults({...saved,defaultEffort:'ultra'},hub),/支持的模型/)
+  const restarted=await loadConfig({configFile:f.path,stateDir:f.config.stateDir},{})
+  assert.equal(restarted.codex.defaultEffort,'high')
+  assert.equal(restarted.codex.defaultExecutionMode,'plan')
+  assert.equal(restarted.codex.defaultPermission,'read')
+})
+
 test('settings persist validated whitelist, preserve unrelated config and reload after restart',async t=>{
   const f=await fixture(t),before=f.service.read(f.context.request)
   const next=await f.service.update({revision:before.revision,allowedClients:['192.168.1.80','192.168.1.81','192.168.1.81']},f.context)

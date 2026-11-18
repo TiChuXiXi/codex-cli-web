@@ -7,7 +7,7 @@ import {
  FolderPlus, GitBranch, GitFork, Globe, History, ListTree, LoaderCircle,
  Maximize2, Menu, MessageSquare, Minimize2, Moon, PanelLeft, PanelRight,
  Paperclip, Pencil, Plus, RotateCw, Settings2, ShieldCheck, Sparkles, Square,
- Sun, Terminal, Trash2, WrapText, X,
+ Orbit, Search, Sun, Terminal, Trash2, WrapText, X,
 } from 'lucide-react'
 
 const icons = {
@@ -22,7 +22,7 @@ const icons = {
  maximize:Maximize2, menu:Menu, message:MessageSquare, minimize:Minimize2,
  moon:Moon, panelLeft:PanelLeft, panelRight:PanelRight, attachment:Paperclip,
  pencil:Pencil, plus:Plus, refresh:RotateCw, settings:Settings2, shield:ShieldCheck,
- model:Sparkles, stop:Square, sun:Sun, terminal:Terminal, trash:Trash2, wrap:WrapText, close:X,
+ model:Sparkles, orbit:Orbit, search:Search, stop:Square, sun:Sun, terminal:Terminal, trash:Trash2, wrap:WrapText, close:X,
 }
 export type IconName = keyof typeof icons
 export function Icon({name,size=18,...props}: Omit<React.SVGProps<SVGSVGElement>,'name'> & {name:IconName,size?:number}) {

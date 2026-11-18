@@ -75,6 +75,12 @@ export async function loadConfig(cli={}, env=process.env) {
     if(!['http:','https:'].includes(url.protocol)||url.origin!==config.publicOrigin)throw new Error('public-origin 必须为完整 HTTP(S) origin，不带路径')
   }
   config.codex=normalizeConfig(config)
+  try {
+    const saved=JSON.parse(await readFile(join(config.stateDir,'worker-defaults.json'),'utf8'))
+    for (const key of ['defaultModel','defaultEffort','defaultPermission','defaultExecutionMode']) {
+      if (typeof saved[key]==='string') config.codex[key]=saved[key]
+    }
+  } catch(error) { if(error.code!=='ENOENT') throw new Error('无法读取 Worker 默认设置') }
   if(config.router===undefined && config.accessScope!==undefined && !cli.registerRouterLauncher) {
     try {
       config.router=JSON.parse(await readFile(join(config.stateDir,'router-installation.json'),'utf8'))

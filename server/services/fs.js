@@ -11,6 +11,14 @@ const execFileAsync = promisify(execFile)
 /** 单层目录最多返回的行数（隐藏项计入），与 DSH 目录选择器一致。 */
 const MAX_LIST_ENTRIES = 1000
 
+export async function computerRoots() {
+  if (process.platform !== 'win32') return ['/']
+  const drives = Array.from('ABCDEFGHIJKLMNOPQRSTUVWXYZ', letter => letter + ':\\')
+  return (await Promise.all(drives.map(async drive => {
+    try { return (await stat(drive)).isDirectory() ? drive : null } catch { return null }
+  }))).filter(Boolean)
+}
+
 export async function checkDirectory(path) {
   if (typeof path !== 'string' || path.trim() === '') {
     throw new HubError('codex-cli/bad-request', 'path 不能为空')

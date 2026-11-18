@@ -1,6 +1,3 @@
-export const scoreThreshold = 90
-export const scoreLead = 15
-
 const normalize = value => String(value ?? '').normalize('NFKC').toLocaleLowerCase().trim()
 const tokens = value => normalize(value).split(/[^\p{L}\p{N}]+/u).filter(token => token.length >= 2)
 
@@ -12,14 +9,13 @@ function containsName(text, name) {
   return !/[a-z0-9_]/i.test(text[start - 1] ?? '') && !/[a-z0-9_]/i.test(text[end] ?? '')
 }
 
-export function rankCandidates(entries, query, { original = query, boundId, now = Date.now() } = {}) {
+export function rankCandidates(entries, query, { original = query, now = Date.now() } = {}) {
   const needle = normalize(query)
   const source = normalize(original)
   const queryTokens = tokens(needle)
   return entries.map(entry => {
     const names = [entry.id, entry.name, ...(entry.aliases ?? [])].map(normalize).filter(Boolean)
     const explicit = names.some(name => containsName(source, name))
-    const bound = entry.id === boundId
     const exact = names.includes(needle)
     const nameTokens = tokens(names.join(' '))
     const namesMatch = needle && (names.some(name => name.includes(needle)) ||
@@ -29,20 +25,13 @@ export function rankCandidates(entries, query, { original = query, boundId, now 
     const recent = Number.isFinite(entry.updatedAt) && now - entry.updatedAt < 7 * 86400000
     const reasons = []
     if (explicit) reasons.push('原文明确提到')
-    if (bound) reasons.push('已确认的会话关联')
     if (namesMatch && !explicit) reasons.push('名称或别名匹配')
     if (summaryMatch) reasons.push('摘要匹配')
     if (recent) reasons.push('近期活动')
-    const score = explicit || bound ? 100 : (exact ? 85 : namesMatch ? 60 : 0) +
+    const score = explicit ? 100 : (exact ? 85 : namesMatch ? 60 : 0) +
       (summaryMatch ? 10 : 0) + (recent ? 5 : 0)
-    return { ...entry, score, reasons, explicit, bound }
+    return { ...entry, score, reasons, explicit }
   }).filter(entry => !needle || entry.score > 5)
     .sort((left, right) => right.score - left.score ||
       (right.updatedAt ?? 0) - (left.updatedAt ?? 0) || left.id.localeCompare(right.id))
-}
-
-export function selectCandidate(ranked) {
-  const [first, second] = ranked
-  if (!first || (!first.explicit && !first.bound)) return null
-  return first.score >= scoreThreshold && first.score - (second?.score ?? 0) >= scoreLead ? first : null
 }

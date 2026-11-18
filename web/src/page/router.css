@@ -1,9 +1,8 @@
 .dsh-codex-root .dsh-codex-router { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; }
-.dsh-codex-root .dsh-codex-router-nav { margin:0 10px 8px; width:calc(100% - 20px); justify-content:flex-start; }
-.dsh-codex-root .dsh-codex-router-tabs { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 16px; border-bottom:1px solid var(--codex-border); }
+.dsh-codex-root .dsh-codex-router-tabs { display:flex; align-items:center; gap:4px; margin-inline-start:8px; white-space:nowrap; }
+.dsh-codex-root .dsh-codex-router-tabs .dsh-codex-button { min-height:30px; padding:3px 8px; }
 .dsh-codex-root .dsh-codex-router .dsh-codex-button { min-height:44px; }
-.dsh-codex-root .dsh-codex-router-tabs .dsh-codex-button[aria-pressed="true"],
-.dsh-codex-root .dsh-codex-router-nav[aria-pressed="true"] { background:var(--codex-selected); color:var(--codex-text); }
+.dsh-codex-root .dsh-codex-router-tabs .dsh-codex-button[aria-pressed="true"] { background:var(--codex-selected); color:var(--codex-text); }
 .dsh-codex-root .dsh-codex-router-scroll { flex:1; overflow:auto; min-height:0; width:min(100%, 900px); margin-inline:auto; padding:16px; box-sizing:border-box; }
 .dsh-codex-root .dsh-codex-router-empty,
 .dsh-codex-root .dsh-codex-router-meta { color:var(--codex-muted); font-size:13px; }

@@ -9,7 +9,7 @@ import { routerNamespace, toolNames } from '../server/router/tools.js'
 
 test('only Router defaults to Terra; explicit candidates remain authoritative', () => {
   const base = { enabled: true, launcher: '/fixture/router', launcherSha256: 'a'.repeat(64) }
-  assert.deepEqual(normalizeRouterConfig(base).models, [{ model: 'gpt-6.1-terra', effort: 'low' }])
+  assert.deepEqual(normalizeRouterConfig(base).models, [{ model: 'gpt-6.1-terra', effort: 'high' }])
   const models = [{ model: 'fixture-custom', effort: 'medium' }]
   assert.deepEqual(normalizeRouterConfig({ ...base, models }).models, models)
   assert.deepEqual(normalizeRouterConfig(), { enabled: false })
@@ -27,7 +27,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (id === undefined) return
   let result = { params }
   if (method === 'router/capabilities') result = { policyVersion: 1, tools: ${JSON.stringify(toolNames.map(name => routerNamespace + '/' + name))} }
-  if (method === 'model/list') result = { data: [{ model: 'gpt-6.1-terra', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }] }
+  if (method === 'model/list') result = { data: [{ model: 'gpt-6.1-terra', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] },
+    { model: 'other', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }] }
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
 })
 `
@@ -45,12 +46,23 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   assert.equal(resumed.approvalPolicy, 'never')
   const sent = (await app.send('previous-sol-thread', 'hello', 'request-id-1234')).params
   assert.equal(sent.model, 'gpt-6.1-terra')
-  assert.equal(sent.effort, 'low')
+  assert.equal(sent.effort, 'high')
   assert.match(sent.input[0].text, /当前 Router requestId/)
+  const context = sent.additionalContext?.['router-instructions']
+  assert.equal(context?.kind, 'application')
+  assert.equal(context.value, resumed.developerInstructions)
+  assert.match(context.value, /create_session.*new:项目名.*HTTPS/)
   const requestId = 'router-receipt:fixture-batch:1'
+  assert.equal(app.resolveSelection({ model: 'other', effort: 'high' }), null)
+  app.select(app.resolveSelection({ model: 'other', effort: 'low' }))
   const receipt = (await app.send('previous-sol-thread', 'Worker receipt fixture', requestId, { workerReceipt: true })).params
   assert.equal(receipt.threadId, 'previous-sol-thread')
+  assert.equal(receipt.model, 'other')
+  assert.equal(receipt.effort, 'low')
+  app.select(null)
+  assert.equal(app.selected.effort, 'high')
   assert.equal(receipt.clientUserMessageId, requestId)
   assert.equal(receipt.input[0].text, 'Worker receipt fixture')
+  assert.equal(receipt.additionalContext, undefined)
   assert.deepEqual(receipt.sandboxPolicy, { type: 'readOnly', networkAccess: false })
 })

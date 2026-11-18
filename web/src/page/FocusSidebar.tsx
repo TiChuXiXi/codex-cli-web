@@ -42,6 +42,7 @@ export interface FocusSidebarProps {
   onNewProject: () => void
   onSettings: () => void
   routerOpen?: boolean
+  routerPhase?: string
   onRouter?: () => void
   onRefresh: () => void
   onExit?: () => void
@@ -76,6 +77,7 @@ export function FocusSidebar({
   onNewProject,
   onSettings,
   routerOpen,
+  routerPhase,
   onRouter,
   onRefresh,
   onExit,
@@ -105,6 +107,8 @@ export function FocusSidebar({
   }, [orders])
   React.useEffect(() => { dragSource.current = null; setDrag(null) }, [provider, searchingKey(search)])
   const sortedProjects = sortProjects(projects, orders[provider] ?? [])
+  const routerReady = routerPhase === 'ready' && streamState === 'open'
+  const routerOffline = routerPhase === 'unavailable' || streamState === 'closed'
   const reorder = (source: string, target: string, position: 'before' | 'after') => {
     setOrders(previous => {
       const old = mergeProjectOrder(previous[provider] ?? [], projects.map(project => project.cwd))
@@ -181,19 +185,30 @@ export function FocusSidebar({
         <button type="button" className="dsh-codex-button primary" onClick={onNew}>
           <Icon name="plus" size={17}/>{t('newThread.open')}
         </button>
-        <button type="button" className="dsh-codex-button" title="设置" onClick={onSettings}>
-          设置
-        </button>
-        <IconButton icon="refresh" label={t('status.refresh')} onClick={onRefresh}/>
       </div>
 
-      {onRouter && <button type="button" className="dsh-codex-button dsh-codex-router-nav"
-        aria-pressed={routerOpen} onClick={onRouter}><Icon name="message" size={17}/>Router</button>}
+      {onRouter && <button type="button" className="dsh-codex-router-nav" aria-label={t('focus.routerName') + ' Router'}
+        aria-pressed={routerOpen} onClick={onRouter}>
+        <span className="router-nav-heading">
+          <span className="router-nav-icon"><Icon name="orbit" size={19}/></span>
+          <span className="router-nav-copy"><strong>{t('focus.routerName')}</strong><small>{t('focus.routerDescription')}</small></span>
+          <Icon name="chevronRight" size={16}/>
+        </span>
+        <span className="router-nav-status">
+          <span className="router-nav-badge" data-state={routerReady ? 'ready' : routerOffline ? 'offline' : 'connecting'}>
+            <Icon name={routerReady ? 'circleCheck' : routerOffline ? 'circleAlert' : 'loader'} size={12}/>
+            {t(routerReady ? 'focus.routerReady' : routerOffline ? 'focus.routerOffline' : 'status.connecting')}
+          </span>
+          <span>{t('focus.workerEvents')}</span>
+        </span>
+      </button>}
 
       <div className="dsh-codex-focus-search-row">
+        <Icon name="search" size={15}/>
         <input
           className="dsh-codex-search focus"
           type="search"
+          aria-label={t('focus.search')}
           value={search}
           placeholder={t('focus.search')}
           onChange={(event) => onSearch(event.target.value)}
@@ -208,11 +223,11 @@ export function FocusSidebar({
           <FolderPlusGlyph />
         </button>
       </div>
+      <div className="dsh-codex-project-heading">{t('focus.workProjects')}</div>
 
       <div className="dsh-codex-focus-tree">
         {searching ? (
           <>
-            <div className="dsh-codex-focus-section">{t('projects.title')}</div>
             {matchingProjects.length === 0 ? (
               <div className="dsh-codex-loading">{t('projects.noMatch')}</div>
             ) : (
@@ -348,7 +363,7 @@ export function FocusSidebar({
       </div>
 
       <div className="dsh-codex-focus-footer">
-        <div className="dsh-codex-sidebar-health"><span className={'dsh-codex-dot '+phaseClass}/><span>{t(`status.${phase}`)}</span><IconButton icon="settings" label="设置" onClick={onSettings}/></div>
+        <div className="dsh-codex-sidebar-health"><span className={'dsh-codex-dot '+phaseClass}/><span>{t(`status.${phase}`)}</span><IconButton icon="refresh" label={t('status.refresh')} onClick={onRefresh}/><IconButton icon="settings" label="设置" onClick={onSettings}/></div>
         <QuotaPopover quota={quota} loading={quotaLoading} now={now} t={t} />
         {onExit && <button type="button" className="dsh-codex-sidebar-exit" onClick={onExit}><Icon name="arrowLeft" size={16}/>退出 Web 登录</button>}
       </div>

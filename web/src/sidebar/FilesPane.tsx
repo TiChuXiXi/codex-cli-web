@@ -19,11 +19,13 @@ export function FilesPane({
   cwd,
   onOpen,
   directory = '.',
+  computer = false,
 }: {
   api: Api
   cwd: string
   onOpen: (path: string) => void
   directory?: string
+  computer?: boolean
 }) {
   const root=React.useRef<HTMLElement>(null)
   useDialogFocus(root)
@@ -47,6 +49,7 @@ export function FilesPane({
   const [registrationRevision, setRegistrationRevision] = React.useState(0)
   const workspaceCwd = React.useRef(cwd)
   const [error, setError] = React.useState('')
+  const [address,setAddress] = React.useState('')
   React.useEffect(
     () =>
       subscribeWorkspace((change) => {
@@ -99,7 +102,15 @@ export function FilesPane({
   return (
     <section ref={root} onContextMenu={e=>contextAt(e,null,directory)} aria-busy={busy} className="codex-sidebar-files">
       <div className="codex-sidebar-file-toolbar">
-        <code className="codex-sidebar-file-toolbar-title" title={directoryPath}>{directoryPath}</code>
+        {computer ? <form className="codex-computer-address" onSubmit={event=>{
+          event.preventDefault()
+          const path=address.trim()
+          if (!path) return
+          const drive=/^([a-z]):[\\/](.*)$/i.exec(path)
+          onOpen(cwd==='/' && drive ? '/mnt/'+drive[1].toLowerCase()+'/'+drive[2].replaceAll('\\','/') : path)
+        }}><input aria-label="打开文件或目录" value={address} placeholder={directoryPath+'　输入文件或目录路径'}
+          onChange={event=>setAddress(event.target.value)}/></form> :
+          <code className="codex-sidebar-file-toolbar-title" title={directoryPath}>{directoryPath}</code>}
         <button
           type="button"
           title="刷新工作区"

@@ -31,6 +31,9 @@ interface GitData {
 }
 
 export interface RightPanelProps {
+  computer?: boolean
+  roots?: string[]
+  onRootChange?: (root: string) => void
   api: Api
   cwd: string
   open: boolean

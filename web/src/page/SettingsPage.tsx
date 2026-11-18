@@ -3,10 +3,20 @@ import { Icon } from '../components/Icon'
 import type { Api } from '../rpc'
 import type { AccessSettings } from '../../../shared/contracts'
 import { VersionsPanel } from './VersionsPanel'
+import { RouterSettings } from './RouterSettings'
+import { WorkerSettings } from './WorkerSettings'
 import './settings.css'
 
-export function SettingsPage({api,onClose,onDirtyChange}:{api:Api;onClose:()=>void;onDirtyChange:(dirty:boolean)=>void}) {
-  const [tab,setTab]=React.useState<'versions'|'access'>('versions')
+export function SettingsPage({api,onClose,onDirtyChange,routerEnabled}:{api:Api;onClose:()=>void;onDirtyChange:(dirty:boolean)=>void;routerEnabled:boolean}) {
+  const [tab,setTab]=React.useState<'versions'|'access'|'worker'|'router'>('versions')
+  const [workerDirty,setWorkerDirty]=React.useState(false)
+  const [visitedWorker,setVisitedWorker]=React.useState(false)
+  const [accessDirty,setAccessDirty]=React.useState(false)
+  const [routerDirty,setRouterDirty]=React.useState(false)
+  const [visitedRouter,setVisitedRouter]=React.useState(false)
+  React.useEffect(()=>{onDirtyChange(accessDirty||routerDirty||workerDirty);return()=>onDirtyChange(false)},[accessDirty,routerDirty,workerDirty,onDirtyChange])
+  React.useEffect(()=>{if(tab==='worker')setVisitedWorker(true)},[tab])
+  React.useEffect(()=>{if(tab==='router')setVisitedRouter(true)},[tab])
   React.useEffect(()=>{
     const previous=document.activeElement
     document.getElementById('settings-tab-versions')?.focus()
@@ -14,11 +24,11 @@ export function SettingsPage({api,onClose,onDirtyChange}:{api:Api;onClose:()=>vo
   },[])
   return <section className="codex-settings" aria-label="应用设置">
     <header className="settings-page-header">
-      <p>管理 Codex 更新与内网访问权限</p>
+      <p>工作台设置</p>
       <button type="button" className="dsh-codex-button" onClick={onClose}><Icon name="arrowLeft" size={15}/>返回工作台</button>
     </header>
     <nav className="settings-nav" role="tablist" aria-label="设置分类">
-      {([{id:'versions',label:'版本与更新',icon:'download'},{id:'access',label:'访问白名单',icon:'shield'}] as const).map((entry,index,entries)=>
+      {([{id:'versions',label:'版本与更新',icon:'download'},{id:'access',label:'访问白名单',icon:'shield'},{id:'worker',label:'Worker',icon:'settings'},{id:'router',label:'中枢',icon:'orbit'}] as const).filter(entry=>entry.id!=='router'||routerEnabled).map((entry,index,entries)=>
         <button key={entry.id} type="button" role="tab" id={'settings-tab-'+entry.id} aria-controls={'settings-panel-'+entry.id} aria-selected={tab===entry.id} tabIndex={tab===entry.id?0:-1} onClick={()=>setTab(entry.id)} onKeyDown={event=>{
           if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)||event.nativeEvent.isComposing)return
           event.preventDefault()
@@ -30,8 +40,14 @@ export function SettingsPage({api,onClose,onDirtyChange}:{api:Api;onClose:()=>vo
       <VersionsPanel api={api}/>
     </div>
     <div id="settings-panel-access" role="tabpanel" aria-labelledby="settings-tab-access" hidden={tab!=='access'}>
-      <WhitelistSettings api={api} onDirtyChange={onDirtyChange}/>
+      <WhitelistSettings api={api} onDirtyChange={setAccessDirty}/>
     </div>
+    <div id="settings-panel-worker" role="tabpanel" aria-labelledby="settings-tab-worker" hidden={tab!=='worker'}>
+      {visitedWorker && <WorkerSettings api={api} onDirtyChange={setWorkerDirty}/>}
+    </div>
+    {routerEnabled && <div id="settings-panel-router" role="tabpanel" aria-labelledby="settings-tab-router" hidden={tab!=='router'}>
+      {visitedRouter && <RouterSettings api={api} onDirtyChange={setRouterDirty}/>}
+    </div>}
   </section>
 }
 function messageOf(error:unknown){return error instanceof Error?error.message:'请求失败，请重试'}

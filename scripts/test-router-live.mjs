@@ -118,7 +118,7 @@ try {
   report.dispatch = { result: 'checking', ms: reply.ms, tools: [...new Set(toolNames)] }
   assert.ok(toolNames.includes('list_projects'), 'Router did not call list_projects')
   assert.ok(toolNames.includes('dispatch_task'), 'Router did not call dispatch_task')
-  const task = await fixtureTask(reply.requestId, 'create')
+  const task = fixtureTask(reply.requestId)
   report.dispatch.result = 'passed'
 
   stage = 'worker-text-only'
@@ -152,12 +152,11 @@ try {
 
   stage = 'resume-worker'
   const callCount = router.store.list('tool-call').length
-  const followup = await message('请在 Router验收项目中找到会话 ' + completed.threadId +
-    '，继续这个已有 Worker 会话并派发纯文本任务：只回复 ROUTER_WORKER_OK。不调用工具。')
+  const followup = await message('请把这条纯文本验收任务交回刚才回复 ROUTER_WORKER_OK 的原 Worker 会话：' +
+    '由 Worker 再回复一次相同结果。Worker 不需要使用工具。')
   const followupTools = router.store.list('tool-call').slice(0, -callCount).map(call => call.tool)
-  assert.ok(followupTools.includes('list_sessions'), 'Router did not call list_sessions when finding an existing Worker')
   assert.ok(followupTools.includes('dispatch_task'), 'Router did not dispatch to an existing Worker')
-  const resumed = await fixtureTask(followup.requestId, completed.threadId)
+  const resumed = fixtureTask(followup.requestId)
   const resumedResult = await poll(() => {
     const current = router.getTask(resumed.id)
     return ['completed', 'failed', 'unknown', 'awaiting_approval', 'interrupted'].includes(current.status) ? current : null
@@ -210,17 +209,10 @@ try {
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }
 
-async function fixtureTask(requestId, workerChoice) {
-  let task = router.store.list('task').find(item => item.requestId === requestId)
-  // Resolve only choices pointing to the fixture in the current turn.
-  for (let step = 0; !task && step < 3; step++) {
-    const row = router.read().clarifications.find(item => item.id.startsWith(requestId + ':'))
-    assert.ok(row, 'Router did not create a task or a confirmation')
-    const choice = row.candidates.find(candidate => candidate.id === 'router-acceptance' || candidate.id === workerChoice)
-    assert.ok(choice?.projectId === 'router-acceptance', 'Clarification is outside the authorized fixture')
-    await router.confirm({ id: row.id, revision: row.revision, candidateId: choice.id })
-    task = router.store.list('task').find(item => item.requestId === requestId)
-  }
+function fixtureTask(requestId) {
+  assert.ok(!router.store.list('clarification').some(row => row.requestId === requestId),
+    'Unambiguous task requested an extra confirmation')
+  const task = router.store.list('task').find(item => item.requestId === requestId)
   assert.ok(task, 'Router did not hand off the authorized fixture task')
   assert.equal(task.projectId, 'router-acceptance')
   return task

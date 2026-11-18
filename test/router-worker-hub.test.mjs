@@ -37,6 +37,8 @@ test('Worker retains a separate Hub reference, restores it on reconnect, and rea
             calls.push({ ...message, index })
             const { method, params } = message
             let result = {}
+            if (method === 'thread/resume') result = { cwd: '/fixture', approvalPolicy: 'never',
+              approvalsReviewer: 'user', sandbox: { type: 'dangerFullAccess' } }
             if (method === 'thread/read') result = { thread: { id: threadId, status: { type: 'idle' } } }
             if (method === 'thread/turns/list') result = params.cursor
               ? { data: [{ id: 'older', status: 'completed', items: [{ type: 'userMessage', clientId: 'dispatch' }] }] }
@@ -53,6 +55,12 @@ test('Worker retains a separate Hub reference, restores it on reconnect, and rea
   t.after(async () => { await hub.stop(); bus.dispose() })
   hub.start()
   await waitUntil(() => hub.status().phase === 'ready')
+  const effective = await hub.routerWorkerSettings('candidate')
+  assert.equal(effective.approvalPolicy, 'never')
+  assert.equal(effective.sandbox.type, 'dangerFullAccess')
+  assert.deepEqual(calls.filter(call => call.params?.threadId === 'candidate').map(call => call.method),
+    ['thread/resume', 'thread/unsubscribe'])
+  calls.length = 0
   await Promise.all([hub.openThread(threadId), hub.openThread(threadId, { routerWorker: true })])
   assert.equal(calls.filter(call => call.method === 'thread/resume').length, 1)
   assert.equal((await hub.closeThread(threadId)).subscribers, 1)
@@ -68,6 +76,14 @@ test('Worker retains a separate Hub reference, restores it on reconnect, and rea
   assert.ok(events.some(event => event.type === 'turn/completed' && event.turnId === 'older'))
   assert.equal((await hub.routerReadWorker(threadId, { clientId: 'dispatch' })).turns[0].id, 'older')
   assert.equal((await hub.routerFindWorkerMessage(threadId, 'dispatch')).id, 'older-queue-entry')
+  await hub.routerAddWorkerMessage(threadId, 'dispatch', '复核离线颜色')
+  await hub.routerStartWorkerMessage(threadId, 'older-queue-entry')
+  assert.deepEqual(calls.find(call => call.method === 'thread/queue/add').params, {
+    threadId, clientUserMessageId: 'dispatch', input: [{ type: 'text', text: '复核离线颜色', text_elements: [] }],
+  })
+  assert.deepEqual(calls.find(call => call.method === 'thread/queue/start').params, {
+    threadId, queuedSubmissionId: 'older-queue-entry',
+  })
   assert.equal((await hub.closeThread(threadId, { routerWorker: true })).subscribers, 0)
   assert.equal(calls.filter(call => call.method === 'thread/unsubscribe').length, 1)
 })

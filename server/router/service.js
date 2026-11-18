@@ -1,27 +1,27 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, realpath, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { HubError } from '../codex/hub.js'
 import { connectRouterApp } from './app-server.js'
 import { RouterDispatcher } from './dispatcher.js'
-import { rankCandidates, selectCandidate } from './matching.js'
-import { checkProject, checkThread, loadRouterProjects, shortText } from './projects.js'
+import { rankCandidates } from './matching.js'
+import { checkProject, checkThread, describeWorkerSettings, loadRouterProjects, shortText, workerDispatchIssue, workerIdentityIssue } from './projects.js'
 import { RouterStore } from './store.js'
+import { makeProject, newProjectTarget, projectParent } from './new-project.js'
 import { routerNamespace, toolResult, validateTool } from './tools.js'
 import { RouterWakeScheduler } from './wake.js'
+import { permissionPayload } from '../../shared/worker-options.js'
 
 const lifetime = 24 * 60 * 60 * 1000
 const textLimit = 12000
-const mutation = /^(?:请\s*|帮我\s*)?(?:派发|交给|让|续接|继续|新建|创建|排队|在|把|将|dispatch\b|delegate\b|resume\b|enqueue\b|create\b)/i
-const discussion = /不要|不用|不必|请勿|如何|怎么|解释|示例|举例|假如|假设|do not|don't|what if|explain|how (?:to|do)/i
-const reference = /刚才那个|刚才的会话|继续上次|继续昨天|last (?:thread|task)|that session|yesterday/i
-const yesterday = /昨天|yesterday/i
-const risky = /删除|清空|强推|回滚|断开|中断|取消|提权|destroy|delete|force.push|rollback|interrupt|terminate|cancel/i
-
 function operationFingerprint(intent) {
-  return JSON.stringify([intent.kind, intent.projectId ?? null, intent.threadId ?? null,
+  const fields = [intent.kind, intent.projectId ?? null, intent.threadId ?? null,
     intent.mode ?? null, intent.title ?? null, intent.id ?? null, intent.turnId ?? null,
-    intent.instruction ?? null])
+    intent.instruction ?? null]
+  const overrides = [intent.workerModel, intent.workerEffort, intent.workerPermission, intent.executionMode]
+  if (overrides.some(Boolean)) fields.push(...overrides.map(value => value ?? null))
+  return JSON.stringify(fields)
 }
 
 function previousOperation(store, requestId, intent) {
@@ -40,6 +40,7 @@ export class RouterService {
     this.nativeBusy = false
     this.projects = new Map()
     this.confirming = new Map()
+    this.creatingProjects = new Map()
     this.deltas = new Map()
   }
 
@@ -79,11 +80,14 @@ export class RouterService {
         onReceipt: () => this.wake.kick(),
       })
       this.wake = new RouterWakeScheduler(this, this.wakePolicy)
+      this.publish()
     }
     const epoch = Symbol('router-connection')
     this.epoch = epoch
+    const defaults = this.store.get('settings', 'defaults')
     const app = await this.connect({
-      config: this.config, directory: this.directory, signal: this.connectionAbort.signal,
+      config: defaults?.model ? { ...this.config, models: [defaults.model, ...(this.config.models ?? [])] } : this.config,
+      directory: this.directory, signal: this.connectionAbort.signal,
       onEvent: (method, params) => { if (this.epoch === epoch) this.onEvent(method, params) },
       onTool: params => this.epoch === epoch ? this.onTool(params) : toolResult(false, { code: 'staleConnection' }),
       onClose: () => { if (this.epoch === epoch) this.disconnected() },
@@ -93,6 +97,7 @@ export class RouterService {
       let session = this.store.get('session', 'active')
       if (session) {
         try {
+          if (session.modelSelection) app.select(app.resolveSelection(session.modelSelection))
           const resumed = await app.resume(session.id)
           if (resumed.thread?.id !== session.id || resumed.thread.cwd !== app.cwd) throw new Error('Router 会话身份不匹配')
         } catch (error) {
@@ -102,6 +107,7 @@ export class RouterService {
         }
       }
       if (!session) {
+        app.select?.(null)
         const { thread } = await app.start()
         if (!thread?.id || thread.cwd !== app.cwd) throw new Error('Router 会话创建响应不匹配')
         session = this.store.put('session', 'active', { id: thread.id, materialized: false })
@@ -119,6 +125,7 @@ export class RouterService {
       this.publish()
       this.dispatcher.schedule()
       this.wake.kick()
+      this.resumeRootRequests()
       for (const row of this.store.list('clarification').filter(item => item.status === 'confirming')) {
         this.completeConfirmation(row).catch(error => this.logger?.warn?.('Router confirmation: ' + error.code))
       }
@@ -193,11 +200,12 @@ export class RouterService {
   }
 
   publish() {
-    this.bus.publish('router/changed', {})
+    this.bus.publish('router/changed', this.status())
   }
 
   status() {
-    return { enabled: this.config.enabled, phase: this.phase }
+    return { enabled: this.config.enabled, phase: this.phase,
+      promptProjectRoot: !!this.store && !this.closed && !this.settings().projectRoot && !this.store.get('settings', 'root-prompt-deferred') }
   }
 
   read() {
@@ -205,27 +213,44 @@ export class RouterService {
     const recentTasks = this.dispatcher ? this.dispatcher.list().map(task => this.task(task)) : []
     return {
       ...this.status(), error: this.error ?? null, model: this.app?.selected?.model ?? null,
+      effort: this.app?.selected?.effort ?? null, models: this.app?.models ?? [],
+      usingDefaultModel: !this.session?.modelSelection || !this.app?.resolveSelection?.(this.session.modelSelection),
       busy: Boolean(this.active) || this.nativeBusy,
       receiptLimited: this.wake?.limited() ?? false,
       messages: [
         ...(this.store?.list('message', 80).reverse().map(message =>
-          ({ id: message.id, role: message.role, text: message.text, status: message.status })) ?? []),
+          ({ id: message.id, role: message.role, label: message.label, text: message.text, status: message.status,
+            questions: message.questions })) ?? []),
         ...this.deltas.values(),
       ],
       clarifications: this.store?.list('clarification').filter(item => item.status === 'pending' && item.expiresAt > now)
         .map(({ id, revision, kind, label, candidates, original }) => ({
-          id, revision, kind, label, candidates: candidates.map(({ pendingProject, ...candidate }) => candidate), original,
+          id, revision, kind, label, candidates: candidates.map(({ pendingProject, grant, ...candidate }) => candidate), original,
         })) ?? [],
       tasks: recentTasks,
+      interactions: this.dispatcher?.interactions() ?? [],
       latestEventId: this.store?.events(1)[0]?.eventId ?? 0,
     }
   }
 
   task(task) {
     const { id, projectId, threadId, turnId, status, createdAt, updatedAt, summary, error } = task
-    return { id, projectId, project: this.projects.get(projectId)?.name ?? projectId, threadId, turnId,
+    const project = this.projects.get(projectId)
+    return { id, projectId, project: project?.name ?? projectId, threadId, turnId,
+      ...(task.worker ? {worker:task.worker} : {}),
+      ...(project?.createdAt ? { cwd: project.cwd } : {}),
       status, createdAt, updatedAt, summary: summary ?? null, error: error ?? null,
       receiptStatus: task.receiptConflict ? 'unknown' : this.store.receiptState(id) }
+  }
+
+  respond(payload) {
+    if (!this.dispatcher || this.closed) throw new HubError('codex-cli/router-unavailable', 'Worker 调度器未就绪')
+    return this.dispatcher.respond(payload)
+  }
+
+  answerQuestion(payload) {
+    if (!this.dispatcher || this.closed) throw new HubError('codex-cli/router-unavailable', 'Worker 调度器未就绪')
+    return this.dispatcher.answerQuestion(payload)
   }
 
   listTasks({ offset = 0, limit = 50 } = {}) {
@@ -255,6 +280,119 @@ export class RouterService {
     if (this.closed || this.phase !== 'ready' || !this.app) throw new HubError('codex-cli/router-unavailable', 'Router 未就绪')
   }
 
+  setModel(payload) {
+    this.requireReady()
+    const reset = payload?.model === null && payload?.effort === null
+    const selection = reset ? null : this.app.resolveSelection(payload)
+    if (!reset && !selection) throw new HubError('codex-cli/bad-request', '此 Router 模型或思考强度不可用')
+    this.session = this.store.put('session', 'active', { ...this.session, modelSelection: selection })
+    this.app.select(selection)
+    this.publish()
+    return this.app.selected
+  }
+
+  settings() {
+    const saved = this.store?.get('settings', 'defaults')
+    return { models: this.app?.models ?? [], model: this.app?.defaultSelection ?? saved?.model ?? this.config.models?.[0],
+      projectRoot: saved?.projectRoot ?? this.config.projectRoot ?? '', revision: saved?.revision ?? 0 }
+  }
+
+  async setupProjectRoot({ projectRoot, defer } = {}) {
+    if (!this.store || this.closed) throw new HubError('codex-cli/router-unavailable', '工作台正在启动')
+    if (defer === true) {
+      this.store.put('settings', 'root-prompt-deferred', { deferred: true })
+    } else {
+      const root = await projectParent(projectRoot, this.stateDir)
+      if (this.closed) throw new HubError('codex-cli/router-unavailable', '工作台正在关闭')
+      const current = this.settings()
+      if (current.projectRoot && current.projectRoot !== root) throw new HubError('codex-cli/router-stale', '父目录已设置，请在设置面板修改')
+      if (!current.projectRoot) this.store.put('settings', 'defaults', {
+        ...this.store.get('settings', 'defaults'), projectRoot: root, revision: current.revision + 1,
+      })
+      this.resumeRootRequests()
+    }
+    this.publish()
+    return this.settings()
+  }
+
+  resumeRootRequests() {
+    if (this.phase !== 'ready' || !this.settings().projectRoot) return
+    for (const row of this.store.list('clarification')) {
+      if (row.kind !== 'projectRoot' || row.status !== 'pending' || row.expiresAt <= Date.now()) continue
+      const next = this.store.put('clarification', row.id, { ...row, status: 'confirming' })
+      this.completeConfirmation(next).catch(error => this.logger?.warn?.('Router project setup: ' + error.code))
+    }
+  }
+
+  async saveSettings({ model, projectRoot, revision } = {}) {
+    this.requireReady()
+    const root = projectRoot === '' ? '' : await projectParent(projectRoot, this.stateDir)
+    this.requireReady()
+    const selected = this.app.resolveSelection(model)
+    if (!selected) throw new HubError('codex-cli/bad-request', '请选择账号支持的 Router 模型与思考强度')
+    if (revision !== this.settings().revision) throw new HubError('codex-cli/router-stale', '设置已更新，请重新加载')
+    this.store.put('settings', 'defaults', { model: selected, projectRoot: root, revision: revision + 1 })
+    this.app.setDefault(selected)
+    if (!this.app.resolveSelection(this.session?.modelSelection)) this.app.select(null)
+    this.resumeRootRequests()
+    this.publish()
+    return this.settings()
+  }
+
+  async provision(requestId, target) {
+    const previous = this.store.get('new-project', requestId)
+    if (previous) {
+      if (previous.target !== target) throw new HubError('codex-cli/router-conflict', '该请求已用于另一个项目')
+      return previous.id
+    }
+    if (this.store.get('operation', requestId)) throw new HubError('codex-cli/router-conflict', '该请求已执行')
+    const running = this.creatingProjects.get(requestId)
+    if (running) {
+      if (running.target !== target) throw new HubError('codex-cli/router-conflict', '正在创建另一个项目')
+      return running.promise
+    }
+    const promise = this.createProject(requestId, target).finally(() => this.creatingProjects.delete(requestId))
+    this.creatingProjects.set(requestId, { target, promise })
+    return promise
+  }
+
+  async createProject(requestId, target) {
+    const spec = newProjectTarget(target)
+    const root = this.settings().projectRoot
+    if (!root) throw new HubError('codex-cli/router-root-required', '请先设置默认新项目父目录')
+    const cwd = await makeProject(root, spec, this.stateDir)
+    const id = 'project-' + randomUUID()
+    const project = (await loadRouterProjects([{ id, cwd, name: spec.name }], this.directory)).get(id)
+    project.createdAt = Date.now()
+    this.store.transaction(() => {
+      this.store.put('approved-project', id, project)
+      this.store.put('new-project', requestId, { id, target })
+    })
+    this.projects.set(id, project)
+    this.bus.publish('projects/changed', { cwd })
+    return id
+  }
+
+  includeNewProjects(rows) {
+    const known = new Set(rows.map(row => row.cwd))
+    return [...rows, ...[...this.projects.values()].filter(p => p.createdAt && !known.has(p.cwd)).map(p => ({
+      cwd: p.cwd, name: p.name, lastUpdatedAt: Math.floor(p.createdAt / 1000), threadCount: 0, activeCount: 0,
+      models: [], git: null, latest: null,
+    }))]
+  }
+
+  async openNewProject({ requestId, name, repository } = {}) {
+    this.requireReady()
+    if (typeof requestId !== 'string' || !/^[\w-]{12,128}$/.test(requestId) ||
+        (repository ? typeof repository !== 'string' || !repository.startsWith('https://') || repository.length > 2048 :
+          typeof name !== 'string' || !name.trim())) throw new HubError('codex-cli/bad-request', '请填写项目名或 HTTPS 仓库地址')
+    const key = 'web-project-' + requestId
+    const projectId = await this.provision(key, repository || 'new:' + name.trim())
+    const task = await this.execute(key, { kind: 'create', projectId })
+    if (!task.threadId) throw new HubError('codex-cli/router-task', '项目已登记，初始会话状态待核对，可从项目列表进入')
+    return { cwd: this.projects.get(projectId).cwd, threadId: task.threadId }
+  }
+
   recordMessage(message) {
     this.store.put('message', message.id, message)
     this.publish()
@@ -278,7 +416,11 @@ export class RouterService {
     this.active = message
     this.recordMessage(message)
     try {
-      const { turn } = await app.send(this.session.id, text, requestId)
+      const worker = this.hub.config
+      const { turn } = await app.send(this.session.id, text, requestId, { workerDefaults: {
+        model: worker.defaultModel, effort: worker.defaultEffort,
+        permission: worker.defaultPermission, executionMode: worker.defaultExecutionMode,
+      } })
       if (!turn?.id) throw new Error('Router 回合未确认')
       if (this.active === message) {
         message.turnId = turn.id
@@ -458,13 +600,28 @@ export class RouterService {
           .map(({ aliases, pendingProject, ...row }) => row)
       case 'list_sessions': {
         const projects = args.projectId ? [this.projects.get(args.projectId)] : [...this.projects.values()]
-        const lists = await Promise.all(projects.slice(0, 20).map(project => this.sessions(project)))
+        const lists = []
+        for (let offset = 0; offset < projects.length; offset += 10) {
+          const page = await Promise.allSettled(projects.slice(offset, offset + 10).map(project => this.sessions(project)))
+          for (const result of page) {
+            if (result.status === 'fulfilled') lists.push(result.value)
+            else if (args.projectId) throw result.reason
+          }
+        }
+        const last = this.store.get('binding', 'last')
         return rankCandidates(lists.flat(), args.query, { original: source.text }).slice(0, limit)
+          .map(row => row.id === last?.threadId ? { ...row, lastDispatchedAt: last.at } : row)
       }
       case 'get_session': {
         const { project, detail } = await this.resolveThread(args.threadId)
-        const recent = detail.turns.slice(-2).flatMap(turn => turn.items ?? [])
-          .filter(item => item.type === 'agentMessage').slice(-2).map(item => shortText(item.text))
+        const recent = detail.turns.slice(-4).map(turn => ({
+          startedAt: turn.startedAt,
+          user: shortText(turn.items?.find(item => item.type === 'userMessage')?.content
+            ?.filter(part => part.type === 'text').map(part => part.text).join(' ')),
+          reply: shortText(turn.items?.findLast(item => item.type === 'agentMessage')?.text),
+        }))
+        source.inspected ??= []
+        if (!source.inspected.includes(detail.thread.id)) source.inspected.push(detail.thread.id)
         return { ...this.sessionRow(project, detail.thread), recent }
       }
       case 'get_task_status': return this.getTask(args.dispatchId)
@@ -482,7 +639,21 @@ export class RouterService {
       case 'create_session':
         return this.prepare(source, { kind: 'create', ...args })
       case 'dispatch_task':
-        if (args.requestId !== source.requestId) throw new HubError('codex-cli/router-conflict', '请求 ID 与当前用户消息不匹配')
+        if (args.requestId !== source.requestId) {
+          const pending = this.store.get('clarification', args.requestId + ':session')
+          const choice = pending?.candidates.find(row => row.id === args.threadId && row.projectId === args.projectId)
+          const selection = { kind: 'choice', id: pending?.id, threadId: args.threadId, projectId: args.projectId }
+          const old = previousOperation(this.store, source.requestId, selection)
+          if (old?.id) return old
+          if (!pending?.semanticChoice || (!old && pending.status !== 'pending') || !choice || choice.grant ||
+              !pending.sourceRouterTurnId || pending.sourceRouterTurnId === source.turnId) {
+            throw new HubError('codex-cli/router-conflict', '该消息不能确认此任务或代替用户授权')
+          }
+          this.saveOperation(source.requestId, selection, null)
+          const result = await this.confirm({ id: pending.id, revision: pending.revision, candidateId: choice.id })
+          this.saveOperation(source.requestId, selection, result)
+          return result
+        }
         return this.prepare(source, { kind: 'dispatch', ...args, instruction: source.text })
     }
   }
@@ -490,58 +661,71 @@ export class RouterService {
   async prepare(source, intent) {
     intent = { ...intent, sourceRouterTurnId: source.turnId }
     if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前 Router 回合已结束')
+    const waiting = this.store.get('clarification', source.requestId + ':projectRoot')
+    if (waiting) {
+      if (waiting.status === 'pending') return { status: 'needs_confirmation', id: waiting.id, requires: '设置默认新项目父目录' }
+      return waiting.result ?? { status: waiting.status, id: waiting.id }
+    }
+    const permissionQuestion = this.store.get('clarification', source.requestId + ':workerPermission')
+    if (permissionQuestion?.status === 'cancelled') return {status:'cancelled', id:permissionQuestion.id}
+    if ((intent.kind === 'create' || intent.mode === 'new') && /^(?:new:|https:\/\/)/.test(intent.projectId)) {
+      if (!this.settings().projectRoot && !this.store.get('new-project', source.requestId)) {
+        newProjectTarget(intent.projectId)
+        return { ...this.clarify(source, { kind: 'projectRoot', intent, candidates: [],
+          label: '新项目要放在哪个父目录？' }), requires: '设置默认新项目父目录' }
+      }
+      intent.projectId = await this.provision(source.requestId, intent.projectId)
+      if (this.closed || this.active !== source) throw new HubError('codex-cli/router-stale', '项目已登记，原调度回合已结束')
+    }
     const existing = previousOperation(this.store, source.requestId, intent)
     if (existing) return existing
-    const projectRows = await this.projectRows()
-    const registered = this.projects.get(intent.projectId)
-    const project = await checkProject(registered ?? projectRows.find(row => row.id === intent.projectId)?.pendingProject)
-    if (intent.threadId && registered) await this.resolveThread(intent.threadId, project.id)
-    const bindingTime = this.store.get('binding', 'last')
-    const storedDate = bindingTime ? new Date(bindingTime.at) : null
-    const previous = new Date()
-    previous.setDate(previous.getDate() - 1)
-    const binding = reference.test(source.text) && (!yesterday.test(source.text) ||
-      storedDate?.toDateString() === previous.toDateString()) ? bindingTime : null
-    const projects = rankCandidates(projectRows, '', { original: source.text, boundId: binding?.projectId })
-    if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前 Router 回合已结束')
-    const matchedProject = selectCandidate(projects)
-    if (matchedProject?.id !== project.id) {
-      return this.clarify(source, {
-        kind: 'project', label: '选择目标项目', intent,
-        candidates: projects.slice(0, 5).map(({ aliases, pendingProject, ...row }) => ({ ...row,
-          ...(pendingProject ? { name: `允许访问 ${row.name}（${pendingProject.cwd}）`, pendingProject } : {}),
-        })),
-      })
+    const pending = this.store.list('clarification').find(item => item.requestId === source.requestId &&
+      item.status === 'pending' && item.expiresAt > Date.now())
+    if (pending) return { status: 'needs_confirmation', id: pending.id }
+    if (intent.kind === 'dispatch' && intent.mode !== 'new' && !intent.threadId) {
+      // Older Router threads retain their original tool schema. They can nominate inspected sessions too.
+      const ids = intent.candidateThreadIds ?? source.inspected ?? []
+      if (ids.length < 2 || ids.length > 4) throw new HubError('codex-cli/router-target', '请选择 2 至 4 个真实候选会话')
+      const candidates = await Promise.all(ids.map(async id => {
+        const { project, detail } = await this.resolveThread(id)
+        return this.workerCandidate(project, detail.thread, intent.workerPermission)
+      }))
+      if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前回合已结束')
+      return this.clarify(source, { kind: 'session', semanticChoice: true,
+        label: intent.reason || '你想继续哪个任务？', intent, candidates })
     }
+
+    const registered = this.projects.get(intent.projectId)
+    const project = await checkProject(registered ?? (await this.projectRows()).find(row => row.id === intent.projectId)?.pendingProject)
+    let candidate
+    if (intent.threadId) {
+      const { thread } = await this.hub.routerReadWorker(intent.threadId)
+      await checkThread(project, thread, this.session.id)
+      if (thread.id !== intent.threadId) throw new HubError('codex-cli/router-thread', 'Worker 会话身份不匹配')
+      candidate = await this.workerCandidate(project, thread, intent.workerPermission)
+    }
+    if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前回合已结束')
     if (!registered) return this.clarify(source, {
-      kind: 'project', label: '确认允许 Router 使用此项目（只读）', intent,
-      candidates: [{ id: project.id, projectId: project.id, name: `${project.name}（${project.cwd}）`, pendingProject: project }],
+      kind: 'project', label: '允许 Router 使用此项目并继续当前任务？', intent,
+      candidates: [{ ...candidate, id: project.id, projectId: project.id, pendingProject: project,
+        name: project.name + '（' + project.cwd + '）' + (candidate ? ' · ' + candidate.name : ' · 新建只读会话') }],
     })
-    return this.prepareSession(source, intent, project, binding)
+    if (candidate?.grant) return this.clarify(source, {
+      kind: 'session', label: '允许 Router 按这个会话的现有权限续接？', intent, candidates: [candidate],
+    })
+    return this.execute(source.requestId, intent)
   }
 
-  async prepareSession(source, intent, project, binding, projectConfirmed = false) {
-    const userIntent = project.sandbox === 'read-only' && mutation.test(source.text.trim()) &&
-      !discussion.test(source.text) && !risky.test(source.text)
-    if (intent.kind === 'create' || intent.mode === 'new') {
-      if (userIntent && /新建|创建|create|new session/i.test(source.text)) return this.execute(source.requestId, intent)
-      return this.clarify(source, {
-        kind: 'create', label: '确认创建 Worker 会话', intent,
-        candidates: [{ id: 'create', name: '在 ' + project.name + ' 新建会话', projectId: project.id }],
-      })
-    }
-    const rows = rankCandidates(await this.sessions(project), '', {
-      original: source.text, boundId: binding?.projectId === project.id ? binding.threadId : null,
-    })
-    if (!projectConfirmed && this.active !== source) throw new HubError('codex-cli/router-stale', '当前 Router 回合已结束')
-    const match = selectCandidate(rows)
-    if (userIntent && match?.id === intent.threadId && !projectConfirmed) return this.execute(source.requestId, intent)
-    return this.clarify(source, {
-      kind: 'session', label: '选择要继续的 Worker 会话', intent,
-      candidates: rows.length ? rows.slice(0, 5) : [
-        { id: 'create', name: '没有匹配会话，在 ' + project.name + ' 新建', projectId: project.id },
-      ],
-    })
+  async workerCandidate(project, thread, requestedPermission) {
+    const row = this.sessionRow(project, thread)
+    const settings = await this.hub.routerWorkerSettings(thread.id)
+    const invalid = workerIdentityIssue(project, settings)
+    if (invalid) throw new HubError('codex-cli/router-worker-settings', invalid)
+    if (requestedPermission) return row // The requested policy is checked against the selected project before enqueue.
+    if (!workerDispatchIssue(project, settings, { existing: true, grant: this.store.get('worker-grant', thread.id) })) return row
+    const grant = { identity: project.identity, settings }
+    return { ...row, grant, summary: [row.summary, '选择即授权此会话沿用现有设置（' +
+      describeWorkerSettings(settings) + '）。后续相同设置可直接续接。'].filter(Boolean).join(' · ') }
   }
 
   clarify(source, value) {
@@ -552,7 +736,8 @@ export class RouterService {
     const row = {
       ...value, id, requestId: source.requestId, original: source.text,
       sourceRouterTurnId: source.turnId ?? null,
-      revision: (existing?.revision ?? 0) + 1, status: 'pending', expiresAt: Date.now() + lifetime,
+      revision: (existing?.revision ?? 0) + 1, status: 'pending',
+      expiresAt: value.kind === 'projectRoot' ? Number.MAX_SAFE_INTEGER : Date.now() + lifetime,
     }
     this.store.put('clarification', id, row)
     this.publish()
@@ -584,12 +769,23 @@ export class RouterService {
     const running = this.confirming.get(row.id)
     if (running) return running
     const pending = this.applyConfirmation(row).then(result => {
-      this.store.put('clarification', row.id, { ...row, status: 'confirmed', result })
+      this.store.transaction(() => {
+        this.store.put('clarification', row.id, { ...row, status: 'confirmed', result })
+        if (row.kind === 'projectRoot' && result.status !== 'needs_confirmation') this.store.put('message', 'root-result:' + row.id, {
+          id: 'root-result:' + row.id, role: 'assistant', status: 'completed',
+          text: result.cwd ? ('项目目录：' + result.cwd + (row.intent.kind === 'create' ? '，已创建会话。' : '，任务已排队。')) : '项目操作结果待核对，请查看任务。',
+        })
+      })
       this.publish()
       return result
     }).catch(error => {
       const status = error.code === 'codex-cli/router-unavailable' ? 'confirming' : 'expired'
-      this.store.put('clarification', row.id, { ...row, status })
+      this.store.transaction(() => {
+        this.store.put('clarification', row.id, { ...row, status })
+        if (row.kind === 'projectRoot' && status === 'expired') this.store.put('message', 'root-result:' + row.id, {
+          id: 'root-result:' + row.id, role: 'assistant', status: 'completed', text: '新建项目未完成：' + error.message,
+        })
+      })
       this.publish()
       throw error
     }).finally(() => this.confirming.delete(row.id))
@@ -599,6 +795,15 @@ export class RouterService {
 
   async applyConfirmation(row) {
     this.requireReady()
+    if (row.kind === 'workerPermission') {
+      const project = await checkProject(this.projects.get(row.intent.projectId))
+      if (row.projectIdentity !== project.identity) throw new HubError('codex-cli/router-stale', '项目身份已变化')
+      return this.execute(row.requestId, row.intent, row.worker)
+    }
+    if (row.kind === 'projectRoot') {
+      const projectId = await this.provision(row.requestId, row.intent.projectId)
+      return this.execute(row.requestId, { ...row.intent, projectId })
+    }
     const candidate = row.candidates.find(item => item.id === row.candidateId)
     if (row.kind === 'interrupt') return this.execute(row.requestId, { kind: 'interrupt', ...row.intent })
     let project = this.projects.get(candidate.projectId)
@@ -613,11 +818,18 @@ export class RouterService {
       }
     }
     await checkProject(project)
+    const threadId = row.kind === 'project' ? row.intent.threadId : candidate.id
+    if (candidate.grant) {
+      await this.resolveThread(threadId, project.id)
+      const effective = await this.hub.routerWorkerSettings(threadId)
+      if (candidate.grant.identity !== project.identity || !isDeepStrictEqual(effective, candidate.grant.settings)) {
+        throw new HubError('codex-cli/router-stale', 'Worker 执行配置已变化，请重新选择')
+      }
+      this.store.put('worker-grant', threadId, candidate.grant)
+    }
     if (row.kind === 'project') {
-      const intent = { ...row.intent, projectId: project.id }
-      return this.prepareSession({
-        requestId: row.requestId, text: row.original, turnId: row.sourceRouterTurnId,
-      }, intent, project, null, true)
+      if (threadId) await this.resolveThread(threadId, project.id)
+      return this.execute(row.requestId, { ...row.intent, projectId: project.id })
     }
     if (candidate.id === 'create') {
       return this.execute(row.requestId, { ...row.intent, projectId: project.id, threadId: undefined, mode: 'new' })
@@ -626,12 +838,28 @@ export class RouterService {
     return this.execute(row.requestId, { ...row.intent, projectId: project.id, threadId: candidate.id })
   }
 
-  async execute(requestId, intent) {
+  async execute(requestId, intent, approvedWorker) {
     this.requireReady()
     const old = previousOperation(this.store, requestId, intent)
     if (old) return old
     if (intent.kind === 'dispatch') {
-      const task = this.dispatcher.enqueue({ ...intent, requestId }, value => {
+      const project = this.projects.get(intent.projectId)
+      const worker = approvedWorker ?? await this.workerOptions(intent)
+      if (worker?.permission && !approvedWorker) {
+        const access = permissionPayload(worker.permission, true)
+        const desired = { cwd: project.cwd, approvalPolicy: access.approvalPolicy,
+          approvalsReviewer: access.approvalsReviewer, sandbox: access.sandboxPolicy }
+        const issue = workerDispatchIssue(project, desired)
+        const current = issue && intent.threadId ? await this.hub.routerWorkerSettings(intent.threadId) : null
+        const currentAuthorized = current && isDeepStrictEqual(current, desired) && !workerDispatchIssue(project, current,
+          {existing:true,grant:this.store.get('worker-grant', intent.threadId)})
+        if (issue && !currentAuthorized) return this.clarify({requestId, text:intent.instruction, turnId:intent.sourceRouterTurnId}, {
+          kind:'workerPermission', label:'允许此任务使用指定的 Worker 权限？', intent, worker, projectIdentity:project.identity,
+          candidates:[{id:'allow',name:project.name + ' · ' + describeWorkerSettings(desired),
+            summary:(intent.threadId ? '会话 ' + intent.threadId : '新建会话') + ' 将使用此权限执行任务。'}],
+        })
+      }
+      const task = this.dispatcher.enqueue({ ...intent, requestId, worker }, value => {
         this.saveOperation(requestId, intent, this.task(value))
       })
       return this.task(task)
@@ -653,6 +881,24 @@ export class RouterService {
     return result
   }
 
+  async workerOptions(intent) {
+    const config = this.hub.config
+    const model = intent.workerModel ?? config.defaultModel
+    let effort = intent.workerEffort ?? config.defaultEffort
+    if (intent.workerModel || intent.workerEffort) {
+      const catalog = await this.hub.models()
+      const entry = catalog.find(row => row.id === model)
+      if (!entry) throw new HubError('codex-cli/router-worker-model','可用的 Worker 模型：' + catalog.map(row=>row.id).join('、'))
+      if (!entry.supportedReasoningEfforts.some(level => level.reasoningEffort === effort)) {
+        if (intent.workerEffort) throw new HubError('codex-cli/router-worker-model',model + ' 支持的思考强度：' + entry.supportedReasoningEfforts.map(level=>level.reasoningEffort).join('、'))
+        effort = entry.defaultReasoningEffort
+      }
+    }
+    const permission = intent.workerPermission ?? (intent.mode === 'new' ? config.defaultPermission : null)
+    return {model, effort, executionMode:intent.executionMode ?? config.defaultExecutionMode,
+      ...(permission && permission !== 'inherit' ? {permission} : {})}
+  }
+
   saveOperation(requestId, intent, result) {
     this.store.put('operation', requestId, { kind: intent.kind, fingerprint: operationFingerprint(intent), result, at: Date.now() })
     if (result?.projectId && result.threadId) {
@@ -669,6 +915,7 @@ export class RouterService {
     clearTimeout(this.reconnectTimer)
     await this.opening
     await Promise.allSettled(this.confirming.values())
+    await Promise.allSettled([...this.creatingProjects.values()].map(row => row.promise))
     await this.wake?.close()
     await this.dispatcher?.close()
     this.store?.close()

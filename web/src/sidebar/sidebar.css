@@ -125,6 +125,8 @@
   border-bottom: 1px solid var(--dsw-alias-border-l3, #ddd);
   z-index: 1;
 }
+.codex-computer-address { flex: 1; min-width: 0; }
+.codex-computer-address input { box-sizing: border-box; width: 100%; font: inherit; color: inherit; background: var(--codex-bg); border: 1px solid var(--codex-border); border-radius: 5px; padding: 4px 8px; }
 .codex-sidebar-file-toolbar code {
   flex: 1;
   min-width: 0;

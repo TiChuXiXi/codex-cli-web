@@ -28,7 +28,9 @@ import { applyDetailEvent, messageOf, threadTitle, upsertThread } from '../utils
 import { activeTurnIdOf } from '../running-time'
 import { FocusSidebar } from './FocusSidebar'
 import { ProjectPickerDialog } from './ProjectPickerDialog'
+import { NewProjectDialog } from './NewProjectDialog'
 import { DirectoryPickerDialog } from './DirectoryPickerDialog'
+import { ProjectRootDialog } from './ProjectRootDialog'
 import { SidebarWorkspace as RightPanel } from '../sidebar/SidebarWorkspace'
 import type { RightTab } from './RightPanel'
 import { notifyWorkspace } from '../sidebar/workspace-events'
@@ -221,15 +223,26 @@ export function ConsolePage(props: ConsolePageProps) {
     }
   })
   const [dirPickerOpen, setDirPickerOpen] = React.useState(false)
+  const [newProjectOpen, setNewProjectOpen] = React.useState(false)
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   const [routerOpen, setRouterOpen] = React.useState(false)
-  const [routerEnabled, setRouterEnabled] = React.useState(false)
+  const [computerRoots, setComputerRoots] = React.useState<string[]>([])
+  const [computerRoot, setComputerRoot] = React.useState('')
+  React.useEffect(() => {
+    if (!routerOpen || computerRoot) return
+    let active = true
+    api<string[]>('fs/roots').then(roots => { if (active) { setComputerRoots(roots); setComputerRoot(roots[0] ?? '') } })
+      .catch(cause => { if (active) setError(messageOf(cause)) })
+    return () => { active = false }
+  }, [api, routerOpen, computerRoot])
+  const [routerStatus, setRouterStatus] = React.useState<HubStatus['router']>()
   const [routerRevision, setRouterRevision] = React.useState(0)
+  const [routerNav, setRouterNav] = React.useState<HTMLElement | null>(null)
   const settingsDirty = React.useRef(false)
   const onSettingsDirty = React.useCallback((dirty:boolean)=>{settingsDirty.current=dirty},[])
   const showSettings = () => {setRouterOpen(false);setSettingsOpen(true);appearance.closeNav()}
   const goToWorkspace = (action:()=>void = ()=>{}) => {
-    if(settingsOpen && settingsDirty.current && !window.confirm('白名单更改尚未保存，确定离开设置吗？'))return
+    if(settingsOpen && settingsDirty.current && !window.confirm('设置更改尚未保存，确定离开吗？'))return
     setSettingsOpen(false);setRouterOpen(false);action()
   }
   const restoredRef = React.useRef(selectedId !== null)
@@ -327,7 +340,7 @@ export function ConsolePage(props: ConsolePageProps) {
       ])
       if (providerRef.current !== provider) return
       setStatus(nextStatus)
-      setRouterEnabled(nextStatus.router?.enabled === true)
+      setRouterStatus(nextStatus.router)
       if (nextStatus.router?.enabled !== true) setRouterOpen(false)
       setProjects(nextProjects)
     } catch (cause) {
@@ -410,8 +423,11 @@ export function ConsolePage(props: ConsolePageProps) {
         }
         switch (event.type) {
           case 'router/changed':
-            setRouterEnabled(true)
+            if (typeof event.payload?.phase === 'string') setRouterStatus({ enabled: true, phase: event.payload.phase, promptProjectRoot: event.payload.promptProjectRoot })
             setRouterRevision(value => value + 1)
+            break
+          case 'projects/changed':
+            void refresh()
             break
           case 'hello':
             setRouterRevision(value => value + 1)
@@ -421,6 +437,7 @@ export function ConsolePage(props: ConsolePageProps) {
             notifyWorkspace(event.payload)
             break
           case 'connection':
+            setRouterRevision(value => value + 1)
             setStatus(event.payload as HubStatus)
             void refreshPending()
             break
@@ -464,6 +481,7 @@ export function ConsolePage(props: ConsolePageProps) {
             if (event.threadId === selectedIdRef.current) setSelectedId(null)
             break
           case 'approval/requested': {
+            setRouterRevision(value => value + 1)
             const request = event.payload as PendingApproval | null
             if (request === null || request === undefined) break
             setPending((previous) =>
@@ -474,6 +492,7 @@ export function ConsolePage(props: ConsolePageProps) {
             break
           }
           case 'approval/resolved': {
+            setRouterRevision(value => value + 1)
             const requestId = event.payload?.requestId
             setPending((previous) => previous.filter((entry) => String(entry.requestId) !== String(requestId)))
             break
@@ -786,11 +805,11 @@ export function ConsolePage(props: ConsolePageProps) {
     setPickerOpen(true)
   }, [currentCwd, createThread])
 
-  // 「新建项目」：直接打开目录浏览器，默认从宿主家目录（~）起步。
   const openNewProject = React.useCallback(() => {
     setPickerOpen(false)
-    setDirPickerOpen(true)
-  }, [])
+    if (routerStatus?.enabled) setNewProjectOpen(true)
+    else setDirPickerOpen(true)
+  }, [routerStatus?.enabled])
 
   const exportThread = React.useCallback(async () => {
     if (selectedId === null) return
@@ -893,11 +912,12 @@ export function ConsolePage(props: ConsolePageProps) {
 
   return (
     <I18nContext.Provider value={t}>
-      <div ref={rootRef} onDragOverCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} onDropCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} style={{'--codex-nav-width': navWidth + 'px'} as React.CSSProperties} className={'dsh-codex-root'+(navResizing?' is-nav-resizing':'')+(appearance.collapsed?' is-nav-collapsed':'')+(appearance.navOpen?' is-nav-open':'')+(rightOpen&&!settingsOpen&&!routerOpen?' has-right':'')} data-codex-theme={appearance.theme} data-client-build={__CODEX_CLIENT_BUILD_ID__}>
+      <div ref={rootRef} onDragOverCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} onDropCapture={event => {if (Array.from(event.dataTransfer.types).includes('Files')) event.preventDefault()}} style={{'--codex-nav-width': navWidth + 'px'} as React.CSSProperties} className={'dsh-codex-root'+(navResizing?' is-nav-resizing':'')+(appearance.collapsed?' is-nav-collapsed':'')+(appearance.navOpen?' is-nav-open':'')+(rightOpen&&!settingsOpen?' has-right':'')} data-codex-theme={appearance.theme} data-client-build={__CODEX_CLIENT_BUILD_ID__}>
         <ToastHost />
         <header className="dsh-codex-workbench-header">
           <IconButton icon="panelLeft" label="展开或折叠项目栏" aria-expanded={appearance.navOpen||!appearance.collapsed} aria-controls="dsh-codex-project-nav" onClick={appearance.toggleNav}/>
           <h1>{settingsOpen?'设置':routerOpen?'Router':detail?threadTitle(detail.thread):'Codex 工作台'}</h1>
+          {routerOpen && !settingsOpen && <nav ref={setRouterNav} className="dsh-codex-router-tabs" aria-label="Router 视图"/>}
           <span className="dsh-codex-spacer"/>
           <IconButton icon={appearance.theme==='dark'?'sun':'moon'} label={appearance.theme==='dark'?'切换浅色模式':'切换深色模式'} aria-disabled={appearance.busy} onClick={appearance.toggleTheme}/>
           {detail&&!settingsOpen&&!routerOpen&&<ThreadActions api={api} thread={detail.thread}
@@ -905,7 +925,7 @@ export function ConsolePage(props: ConsolePageProps) {
             onArchived={()=>{setSelectedId(null);void loadThreads(null)}}
             onForked={thread=>{if(thread?.id)setSelectedId(thread.id)}}
             onDeleted={()=>handleThreadDeleted(detail.thread.id)}/>}
-          {!settingsOpen&&!routerOpen&&<IconButton icon="panelRight" label={rightOpen?t('right.hide'):t('right.show')} aria-expanded={rightOpen} className={rightOpen?'is-selected':''} onClick={()=>setRightOpen(value=>!value)}/>}
+          {!settingsOpen&&<IconButton icon="panelRight" label={rightOpen?t('right.hide'):t('right.show')} aria-expanded={rightOpen} className={rightOpen?'is-selected':''} onClick={()=>setRightOpen(value=>!value)}/>}
         </header>
         {appearance.navOpen&&<button type="button" className="dsh-codex-nav-backdrop" aria-label="关闭项目导航" onClick={appearance.closeNav}/>}
 
@@ -940,10 +960,11 @@ export function ConsolePage(props: ConsolePageProps) {
           onSelectThread={id=>goToWorkspace(()=>{setSelectedId(id);appearance.closeNav()})}
           onLoadMore={() => void loadThreads(nextCursor)}
           onNew={handleNew}
-          onNewProject={openNewProject}
+          onNewProject={() => goToWorkspace(openNewProject)}
           onSettings={showSettings}
           routerOpen={routerOpen}
-          onRouter={routerEnabled ? () => goToWorkspace(() => {setRouterOpen(true);appearance.closeNav()}) : undefined}
+          routerPhase={routerStatus?.phase}
+          onRouter={routerStatus?.enabled ? () => goToWorkspace(() => {setRouterOpen(true);appearance.closeNav()}) : undefined}
           onRefresh={() => void refresh()}
           onExit={onExit}
           onThreadRenamed={handleThreadRenamed}
@@ -951,8 +972,8 @@ export function ConsolePage(props: ConsolePageProps) {
           onThreadDeleted={handleThreadDeleted}
         />
         <main className="dsh-codex-main">
-          {settingsOpen ? <SettingsPage api={api} onClose={()=>goToWorkspace()} onDirtyChange={onSettingsDirty}/> : routerOpen ?
-            <RouterView api={api} revision={routerRevision} onWorker={id => goToWorkspace(() => {setSelectedId(id);appearance.closeNav()})}/> : <>
+          {settingsOpen ? <SettingsPage api={api} onClose={()=>goToWorkspace()} onDirtyChange={onSettingsDirty} routerEnabled={!!routerStatus?.enabled}/> : routerOpen ?
+            <RouterView api={api} cwd={computerRoot} revision={routerRevision} nav={routerNav} onWorker={id => goToWorkspace(() => {setSelectedId(id);appearance.closeNav()})}/> : <>
           {error !== null ? (
             <div className="dsh-codex-error">
               {error}
@@ -1006,15 +1027,16 @@ export function ConsolePage(props: ConsolePageProps) {
           </>}
         </main>
 
-        <RightPanel
+        {(!routerOpen || computerRoot) && <RightPanel
           api={api}
-          cwd={detail?.thread.cwd ?? selectedCwd ?? ''}
-          open={rightOpen&&!settingsOpen&&!routerOpen}
+          computer={routerOpen} roots={computerRoots} onRootChange={setComputerRoot}
+          cwd={routerOpen ? computerRoot : detail?.thread.cwd ?? selectedCwd ?? ''}
+          open={rightOpen&&!settingsOpen}
           requestId={rightRequest}
-          tab={rightTab}
+          tab={routerOpen && rightTab==='git' ? 'files' : rightTab}
           onTabChange={setRightTab}
           onClose={() => setRightOpen(false)}
-        />
+        />}
 
         <ProjectPickerDialog
           open={pickerOpen}
@@ -1023,6 +1045,16 @@ export function ConsolePage(props: ConsolePageProps) {
           onNewProject={openNewProject}
           onClose={() => setPickerOpen(false)}
         />
+        {routerStatus?.promptProjectRoot && <ProjectRootDialog api={api} initialSetup
+          onSaved={() => setRouterStatus(current => current && ({ ...current, promptProjectRoot: false }))}
+          onClose={() => setRouterStatus(current => current && ({ ...current, promptProjectRoot: false }))}/>}
+        {newProjectOpen && <NewProjectDialog api={api} onClose={() => setNewProjectOpen(false)}
+          onExisting={() => {setNewProjectOpen(false);setDirPickerOpen(true)}}
+          onCreated={(cwd,id) => {
+            setNewProjectOpen(false);setSelectedCwd(cwd);setSelectedId(id);setSearch('');setRouterOpen(false)
+            if (searchTimer.current !== null) clearTimeout(searchTimer.current)
+            queryRef.current={cwd,search:''};void refresh();void loadThreads(null,{cwd,search:''});appearance.closeNav()
+          }}/>}
         <DirectoryPickerDialog
           open={dirPickerOpen}
           api={api}

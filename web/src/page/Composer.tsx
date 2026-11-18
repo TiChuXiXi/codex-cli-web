@@ -17,18 +17,9 @@ import type { Api } from '../rpc'
 import { readDraft, saveDraft } from '../drafts'
 import { uploadFile, MAX_UPLOAD_BYTES, type UploadProgress } from '../uploads'
 
-export interface EffortOption {
-  reasoningEffort: string
-  description?: string | null
-}
-
-export interface ModelOption {
-  id: string
-  displayName: string
-  description?: string | null
-  defaultReasoningEffort?: string | null
-  supportedReasoningEfforts?: EffortOption[]
-}
+import { ModelPicker, type ModelMenu } from './ModelPicker'
+import type { ModelOption } from '../../../shared/contracts'
+export type { ModelOption, EffortOption } from '../../../shared/contracts'
 
 export interface Attachment {
   name: string
@@ -73,7 +64,6 @@ export interface ComposerProps {
   onExport: () => void
 }
 
-type Menu = null | 'root' | 'model' | 'effort' | 'more'
 type CommandId = 'skill' | 'model' | 'effort' | 'permission' | 'plan' | 'attach' | 'project' | 'compact' | 'diff' | 'export' | 'init' | 'review' | 'new'
 
 const COMMANDS: Array<{ id: CommandId, label: string, desc: string }> = [
@@ -90,15 +80,6 @@ const COMMANDS: Array<{ id: CommandId, label: string, desc: string }> = [
   { id: 'init', label: 'cmd.init', desc: 'cmd.initDesc' },
   { id: 'review', label: 'cmd.review', desc: 'cmd.reviewDesc' },
   { id: 'new', label: 'cmd.new', desc: 'cmd.newDesc' },
-]
-
-const FALLBACK_EFFORTS: EffortOption[] = [
-  { reasoningEffort: 'low', description: 'Fast responses with lighter reasoning' },
-  { reasoningEffort: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
-  { reasoningEffort: 'high', description: 'Greater reasoning depth for complex problems' },
-  { reasoningEffort: 'xhigh', description: 'Extra high reasoning depth for complex problems' },
-  { reasoningEffort: 'max', description: 'Maximum reasoning depth for the hardest problems' },
-  { reasoningEffort: 'ultra', description: 'Maximum reasoning with automatic task delegation' },
 ]
 
 export function Composer({
@@ -134,7 +115,7 @@ export function Composer({
   const [text, setText] = React.useState(initialDraft.text)
   const [busy, setBusy] = React.useState(false)
   const [sendError, setSendError] = React.useState(false)
-  const [menu, setMenu] = React.useState<Menu>(null)
+  const [menu, setMenu] = React.useState<ModelMenu>(null)
   const [plusOpen, setPlusOpen] = React.useState(false)
   const [permissionOpen, setPermissionOpen] = React.useState(false)
   const [confirmFull, setConfirmFull] = React.useState(false)
@@ -283,18 +264,6 @@ export function Composer({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [plusOpen, permissionOpen, confirmFull, menu])
-
-  const currentModel = models.find((entry) => entry.id === model)
-  const modelLabel = currentModel?.displayName ?? (model === '' ? t('composer.defaultModel') : model)
-  const efforts = currentModel?.supportedReasoningEfforts?.length
-    ? currentModel.supportedReasoningEfforts
-    : FALLBACK_EFFORTS
-  const defaultEffort = currentModel?.defaultReasoningEffort ?? null
-  const topEfforts = efforts.slice(0, 4)
-  const moreEfforts = efforts.slice(4)
-  const effortIndex = Math.max(0, efforts.findIndex(option => option.reasoningEffort === (effort || defaultEffort)))
-  const effortLabel = labelForEffort(t, efforts[effortIndex]?.reasoningEffort ?? effort)
-  const effortProgress = efforts.length > 1 ? effortIndex / (efforts.length - 1) * 100 : 0
 
   const slashMatch = text.match(/^\/(\w*)$/)
   const slashQuery = slashMatch?.[1]?.toLowerCase() ?? null
@@ -734,23 +703,9 @@ export function Composer({
           <div className="dsh-codex-composer-spacer" />
           <div className="dsh-codex-composer-trailing">
             <ContextUsage usage={tokenUsage} />
-            <button
-              type="button"
-              className="dsh-codex-model-trigger"
-              aria-haspopup="menu"
-              aria-expanded={menu !== null}
-              title={`${modelLabel} · ${effortLabel}`}
-              onClick={() => {
-                setMenu(menu === null ? 'root' : null)
-                setPlusOpen(false)
-                setPermissionOpen(false)
-              }}
-            >
-              <ModelGlyph />
-              <span className="dsh-codex-model-label">{modelLabel}</span>
-              <span className="dsh-codex-model-effort">· {effortLabel}</span>
-              <ChevronGlyph />
-            </button>
+            <ModelPicker models={models} model={model} effort={effort} menu={menu} setMenu={setMenu}
+              onModelChange={onModelChange} onEffortChange={onEffortChange}
+              onToggle={() => { setPlusOpen(false); setPermissionOpen(false) }}/>
             {activeTurnId !== null ? (
               <button
                 type="button"
@@ -799,92 +754,7 @@ export function Composer({
           </>
         ) : null}
 
-        {menu !== null ? (
-          <>
-            <div className="dsh-codex-menu-backdrop" onPointerDown={closeAll} />
-            <div className="dsh-codex-menu" role="menu">
-              {menu === 'root' ? (
-                <>
-                  <button type="button" className="dsh-codex-menu-cell" onClick={() => setMenu('model')}>
-                    <span className="dsh-codex-menu-cell-label">{t('composer.model')}</span>
-                    <strong className="dsh-effort-current" aria-label={t('composer.effort')}>{effortLabel}</strong>
-                    <span className="dsh-codex-menu-cell-value">{modelLabel}</span>
-                    <ChevronRightGlyph />
-                  </button>
-                  <div className="dsh-effort-inline">
-                    <div className="dsh-effort-track" style={{'--effort-progress': effortProgress + '%', '--effort-offset': (13 - effortProgress * .26) + 'px', '--effort-color': `hsl(211 82% ${42 + effortProgress * .18}%)`} as React.CSSProperties}>
-                      <div className="dsh-effort-fill"/>
-                      <div className="dsh-effort-dots" aria-hidden="true">{efforts.map((option, index) => <i key={option.reasoningEffort} className={index < effortIndex ? 'is-active' : ''}/>)}</div>
-                      <span className="dsh-effort-thumb" aria-hidden="true"/>
-                      <input type="range" min={0} max={Math.max(0, efforts.length - 1)} step={1}
-                        disabled={efforts.length < 2} value={effortIndex}
-                        aria-label={t('composer.effort')} aria-valuetext={effortLabel}
-                        onChange={event => onEffortChange(efforts[Number(event.target.value)].reasoningEffort)}/>
-                    </div>
-                  </div>
-                </>
-              ) : null}
 
-              {menu === 'model' ? (
-                <>
-                  <MenuBack label={t('composer.model')} onClick={() => setMenu('root')} />
-                  <div className="dsh-codex-menu-list model-name-list">
-                    {models.map((entry) => (
-                      <button
-                        type="button"
-                        key={entry.id}
-                        role="menuitemradio"
-                        aria-checked={entry.id === model}
-                        className={`dsh-codex-menu-item ${entry.id === model ? 'selected' : ''}`}
-                        onClick={() => {
-                          onModelChange(entry.id)
-                          setMenu('root')
-                        }}
-                      >
-                        <span className="dsh-codex-menu-check">{entry.id === model ? <CheckGlyph /> : null}</span>
-                        <span className="dsh-codex-menu-meta">
-                          <span className="dsh-codex-menu-name">{entry.displayName}</span>
-
-                        </span>
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={model === ''}
-                      className={`dsh-codex-menu-item ${model === '' ? 'selected' : ''}`}
-                      onClick={() => {
-                        onModelChange('')
-                        setMenu('root')
-                      }}
-                    >
-                      <span className="dsh-codex-menu-check">{model === '' ? <CheckGlyph /> : null}</span>
-                      <span className="dsh-codex-menu-meta">
-                        <span className="dsh-codex-menu-name">{t('composer.defaultModel')}</span>
-                      </span>
-                    </button>
-                  </div>
-                </>
-              ) : null}
-
-              {menu === 'effort' || menu === 'more' ? (
-                <>
-                  <MenuBack label={t('composer.effort')} onClick={() => setMenu('root')} />
-                  <div className="dsh-effort-slider">
-                    <strong>{effortLabel}</strong>
-                    <span>{modelLabel}</span>
-                    <input type="range" min={0} max={Math.max(0, efforts.length - 1)} step={1}
-                      disabled={efforts.length < 2}
-                      value={Math.max(0, efforts.findIndex(option => option.reasoningEffort === (effort || defaultEffort)))}
-                      aria-label={t('composer.effort')} aria-valuetext={effortLabel}
-                      onChange={event => onEffortChange(efforts[Number(event.target.value)].reasoningEffort)}/>
-                    <div className="dsh-effort-ticks">{efforts.map(option => <span key={option.reasoningEffort}>{labelForEffort(t, option.reasoningEffort)}</span>)}</div>
-                  </div>
-                </>
-              ) : null}
-            </div>
-          </>
-        ) : null}
 
         {confirmFull ? (
           <div
@@ -929,54 +799,6 @@ function PlusItem({ icon, label, hint, onClick }: { icon: React.ReactNode, label
   )
 }
 
-function EffortRow({
-  option,
-  selected,
-  isDefault,
-  onSelect,
-}: {
-  option: EffortOption
-  selected: boolean
-  isDefault: boolean
-  onSelect: () => void
-}) {
-  const t = useT()
-  return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={selected}
-      className={`dsh-codex-menu-item ${selected ? 'selected' : ''}`}
-      onClick={onSelect}
-    >
-      <span className="dsh-codex-menu-check">{selected ? <CheckGlyph /> : null}</span>
-      <span className="dsh-codex-menu-meta">
-        <span className="dsh-codex-menu-name">
-          {labelForEffort(t, option.reasoningEffort)}
-          {isDefault ? <span className="dsh-codex-menu-tag">{t('composer.defaultTag')}</span> : null}
-          {selected ? <span className="dsh-codex-menu-tag current">{t('composer.currentTag')}</span> : null}
-        </span>
-        {option.description ? <span className="dsh-codex-menu-desc">{option.description}</span> : null}
-      </span>
-    </button>
-  )
-}
-
-function MenuBack({ label, onClick }: { label: string, onClick: () => void }) {
-  return (
-    <button type="button" className="dsh-codex-menu-back" onClick={onClick}>
-      <ChevronLeftGlyph />
-      <span>{label}</span>
-    </button>
-  )
-}
-
-function labelForEffort(t: (key: string) => string, value: string): string {
-  const key = `composer.effort.${value}`
-  const text = t(key)
-  return text === key ? value : text
-}
-
 function AttachmentPreview({attachment, api}: {attachment: Attachment, api: Api}) {
   const [src, setSrc] = React.useState<string | null>(null)
   React.useEffect(() => {
@@ -1005,14 +827,6 @@ function ShieldGlyph(){return <Icon name="shield" size={16}/>}
 function PaperclipGlyph(){return <Icon name="attachment" size={16}/>}
 
 function FolderGlyph(){return <Icon name="folder" size={16}/>}
-
-function ModelGlyph(){return <Icon name="model" size={16}/>}
-
-function ChevronGlyph(){return <Icon name="chevronDown" size={16}/>}
-
-function ChevronRightGlyph(){return <Icon name="chevronRight" size={16}/>}
-
-function ChevronLeftGlyph(){return <Icon name="chevronLeft" size={16}/>}
 
 function SendGlyph(){return <Icon name="arrowUp" size={16}/>}
 

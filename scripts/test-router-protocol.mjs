@@ -256,7 +256,7 @@ async function checkWorkerHub({ command, root, env }) {
   const { normalizeConfig } = await import('../server/codex/config.js')
   const { StdioTransport } = await import('../server/codex/transport/stdio.js')
   const { EventBus } = await import('../server/services/events.js')
-  const { canDispatch } = await import('../server/router/projects.js')
+  const { workerDispatchIssue } = await import('../server/router/projects.js')
   const cwd = join(root, 'worker-mvp')
   const codexHome = join(root, 'worker-mvp-codex')
   await Promise.all([mkdir(cwd), mkdir(codexHome)])
@@ -292,7 +292,7 @@ async function checkWorkerHub({ command, root, env }) {
     const firstRead = await hub.routerReadWorker(thread.id)
     assert.deepEqual(firstRead.turns, [])
     await hub.openThread(thread.id)
-    assert.ok(canDispatch({ cwd, sandbox: 'read-only' }, await hub.routerWorkerSettings(thread.id)))
+    assert.equal(workerDispatchIssue({ cwd, sandbox: 'read-only' }, await hub.routerWorkerSettings(thread.id)), null)
     const clientId = 'router-worker-hub-fixture'
     fixture.enqueue(assistantMessage('Worker Hub fixture OK.'))
     const submission = await hub.routerAddWorkerMessage(thread.id, clientId, 'Verify the router worker connection; reply only.')
@@ -308,8 +308,8 @@ async function checkWorkerHub({ command, root, env }) {
     const writable = await hub.newThread({ cwd, sandbox: 'workspace-write', approvalPolicy: 'on-request' }, { routerWorker: true })
     const writableSettings = await hub.routerWorkerSettings(writable.id)
     assert.equal(writableSettings.sandbox?.type, 'workspaceWrite')
-    assert.ok(canDispatch({ cwd, sandbox: 'workspace-write' }, writableSettings))
-    assert.equal(canDispatch({ cwd, sandbox: 'read-only' }, writableSettings), false)
+    assert.equal(workerDispatchIssue({ cwd, sandbox: 'workspace-write' }, writableSettings), null)
+    assert.ok(workerDispatchIssue({ cwd, sandbox: 'read-only' }, writableSettings))
     return { newWorker: true, verifiedSettings: true, queued: true, completed: true, historyCorrelated: true, workspaceWriteBounded: true }
   } catch (error) {
     error.message += '\nRecent Worker Hub events: ' + JSON.stringify(

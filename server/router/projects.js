@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { realpath, stat } from 'node:fs/promises'
 import { HubError } from '../codex/hub.js'
 
@@ -13,6 +14,7 @@ export async function loadRouterProjects(config, directory) {
     if (!entry || typeof entry.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(entry.id) ||
         typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > 120 ||
         typeof entry.cwd !== 'string' || !isAbsolute(entry.cwd) || projects.has(entry.id) ||
+        (entry.resumeExistingPermissions !== undefined && typeof entry.resumeExistingPermissions !== 'boolean') ||
         (entry.aliases !== undefined && (!Array.isArray(entry.aliases) || entry.aliases.some(alias =>
           typeof alias !== 'string' || !alias.trim() || alias.length > 120)))) {
       throw new Error('Router 项目登记格式无效或项目 ID 重复')
@@ -28,6 +30,7 @@ export async function loadRouterProjects(config, directory) {
     roots.add(cwd)
     projects.set(entry.id, {
       id: entry.id, name: entry.name, aliases: entry.aliases ?? [], cwd, identity: identity(info), sandbox: sandboxLimit,
+      resumeExistingPermissions: entry.resumeExistingPermissions === true,
     })
   }
   return projects
@@ -46,7 +49,7 @@ export async function checkProject(project) {
 
 export async function checkThread(project, thread, routerThreadId) {
   if (!thread || thread.id === routerThreadId || thread.archived === true ||
-      thread.ephemeral === true || typeof thread.cwd !== 'string') {
+      thread.ephemeral === true || thread.parentThreadId || typeof thread.cwd !== 'string') {
     throw new HubError('codex-cli/router-thread', '目标会话不可调度')
   }
   let belongs = false
@@ -55,8 +58,20 @@ export async function checkThread(project, thread, routerThreadId) {
   return thread
 }
 
-export function workerDispatchIssue(project, settings) {
+export function workerIdentityIssue(project, settings) {
   if (settings?.cwd !== project.cwd) return 'Worker 的工作目录与登记项目不一致'
+  const sandbox = settings.sandbox
+  if (!['dangerFullAccess', 'workspaceWrite', 'readOnly'].includes(sandbox?.type) ||
+      !['never', 'on-request', 'on-failure', 'untrusted'].includes(settings.approvalPolicy) ||
+      !['user', 'auto_review'].includes(settings.approvalsReviewer)) return '无法核实 Worker 当前执行配置'
+  return null
+}
+
+export function workerDispatchIssue(project, settings, { existing = false, grant } = {}) {
+  const invalid = workerIdentityIssue(project, settings)
+  if (invalid) return invalid
+  if (existing && (project.resumeExistingPermissions ||
+      (grant?.identity === project.identity && isDeepStrictEqual(grant.settings, settings)))) return null
   const sandbox = settings.sandbox
   const issues = []
   if (settings.approvalPolicy !== 'on-request' || settings.approvalsReviewer !== 'user') {
@@ -72,4 +87,15 @@ export function workerDispatchIssue(project, settings) {
     issues.push('所选 Worker 的网络或写入范围超出项目权限')
   }
   return issues.length ? issues.join('。') : null
+}
+
+export function describeWorkerSettings({ sandbox, approvalPolicy, approvalsReviewer }) {
+  const access = { readOnly: '只读', workspaceWrite: '工作区写入', dangerFullAccess: '完全访问' }
+  const policy = { never: '免审批', 'on-request': '按需审批', 'on-failure': '失败时审批', untrusted: '不可信操作需审批' }
+  const details = [access[sandbox.type], policy[approvalPolicy]]
+  if (approvalsReviewer === 'auto_review') details.push('自动审查')
+  if (sandbox.networkAccess) details.push('可联网')
+  if (sandbox.writableRoots?.length) details.push('可写目录 ' + sandbox.writableRoots.join('、'))
+  if (sandbox.type === 'workspaceWrite' && (!sandbox.excludeTmpdirEnvVar || !sandbox.excludeSlashTmp)) details.push('可写临时目录')
+  return details.join('，')
 }

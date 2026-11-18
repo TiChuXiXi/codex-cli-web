@@ -13,7 +13,9 @@
 import {resolveSkillInputs} from '../services/skills.js'
 import { readContextUsage } from '../services/context-usage.js'
 import { ThreadTitles } from '../services/thread-titles.js'
+import { permissionPayload } from '../../shared/worker-options.js'
 import { basename } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { JsonRpcClient, JsonRpcError, SKIP_RESPONSE } from './jsonrpc.js'
 import { openCodexTransport, resolveCodexHome } from './transport/index.js'
@@ -444,8 +446,15 @@ export class CodexHub {
   }
   async models() {
     const rpc = this.#requireRpc()
-    const result = await rpc.request('model/list', {}, { timeoutMs: 20000 })
-    return (result?.data ?? []).map((model) => ({
+    const catalog = []
+    let cursor
+    for (let page = 0; page < 20; page++) {
+      const result = await rpc.request('model/list', { limit:100, ...(cursor ? {cursor} : {}) }, { timeoutMs: 20000 })
+      catalog.push(...(result?.data ?? []))
+      if (!result?.nextCursor || result.nextCursor === cursor) break
+      cursor = result.nextCursor
+    }
+    return catalog.map((model) => ({
       id: model.id ?? model.model,
       displayName: model.displayName ?? model.model ?? model.id,
       description: model.description ?? null,
@@ -479,6 +488,16 @@ export class CodexHub {
     if (typeof params.cwd === 'string' && params.cwd !== '') request.cwd = params.cwd
     if (typeof params.model === 'string' && params.model !== '') request.model = params.model
     if (typeof params.effort === 'string' && params.effort !== '') request.effort = params.effort
+    // thread/start reads its reasoning effort from the config override.
+    request.config = { model_reasoning_effort: request.effort }
+    const permission = !routerWorker && !params.sandbox && !params.approvalPolicy && this.config.defaultPermission
+    if (permission && permission !== 'inherit') {
+      const policy = permissionPayload(permission)
+      request.approvalPolicy = policy.approvalPolicy
+      request.approvalsReviewer = policy.approvalsReviewer
+      request.sandbox = {read:'read-only', ask:'workspace-write', approve:'workspace-write', full:'danger-full-access'}[permission]
+      if (permission === 'approve') request.config['sandbox_workspace_write.network_access'] = true
+    }
     if (params.approvalPolicy !== undefined && params.approvalPolicy !== null) request.approvalPolicy = params.approvalPolicy
     if (typeof params.sandbox === 'string' && params.sandbox !== '') request.sandbox = params.sandbox
     if (params.ephemeral === true) request.ephemeral = true
@@ -486,6 +505,7 @@ export class CodexHub {
       request.approvalsReviewer = 'user'
       if (request.sandbox === 'workspace-write') {
         request.config = {
+          ...request.config,
           'sandbox_workspace_write.writable_roots': [],
           'sandbox_workspace_write.network_access': false,
           'sandbox_workspace_write.exclude_tmpdir_env_var': true,
@@ -497,7 +517,10 @@ export class CodexHub {
     const thread = compactThread({ ...result?.thread, model: result?.model ?? result?.thread?.model, reasoningEffort: result?.reasoningEffort ?? result?.thread?.reasoningEffort })
     if (thread?.id) {
       this.#owned.add(thread.id)
-      if (routerWorker) this.#threadSettings.set(thread.id, workerSettings(result))
+      this.#threadSettings.set(thread.id, { ...workerSettings(result), collaborationMode: result?.collaborationMode ?? null })
+      if (!routerWorker && this.config.defaultExecutionMode === 'plan') {
+        await this.configureWorker(thread.id, { model: request.model, effort: request.effort, executionMode: 'plan' })
+      }
       this.#invalidateProjects()
     }
     return thread
@@ -537,11 +560,25 @@ export class CodexHub {
   }
 
   async routerWorkerSettings(threadId) {
-    if (this.#owned.has(threadId) && this.#threadSettings.has(threadId)) return this.#threadSettings.get(threadId)
-    const snapshot = await this.#requireRpc().request('thread/resume', {
-      threadId, excludeTurns: true,
-    }, { timeoutMs: 20000 })
-    return workerSettings(snapshot)
+    if (this.#owned.has(threadId) && this.#threadSettings.has(threadId)) return workerSettings(this.#threadSettings.get(threadId))
+    return this.#withSubscription(threadId, async () => {
+      const rpc = this.#requireRpc()
+      const snapshot = await rpc.request('thread/resume', { threadId, excludeTurns: true }, { timeoutMs: 20000 })
+      // Reading effective settings attaches this client. Release only a temporary inspection.
+      if (!this.#subscriptionCount(threadId) && !this.#owned.has(threadId) && !this.#subscribed.has(threadId)) {
+        await rpc.request('thread/unsubscribe', { threadId }, { timeoutMs: 10000 }).catch(() => {})
+      }
+      return workerSettings(snapshot)
+    })
+  }
+
+  async configureWorker(threadId, { model, effort, executionMode, permission }) {
+    const collaborationMode = { mode: executionMode, settings: { model, reasoning_effort: effort, developer_instructions: null } }
+    const access = permission ? permissionPayload(permission, true) : {}
+    await this.#requireRpc().request('thread/settings/update', { threadId, model, effort, collaborationMode, ...access })
+    const old = this.#threadSettings.get(threadId)
+    if (old) this.#threadSettings.set(threadId, { ...old, collaborationMode,
+      ...(permission ? { approvalPolicy: access.approvalPolicy, approvalsReviewer: access.approvalsReviewer, sandbox: access.sandboxPolicy } : {}) })
   }
 
   async routerAddWorkerMessage(threadId, clientUserMessageId, text) {
@@ -550,6 +587,11 @@ export class CodexHub {
     }, { timeoutMs: 15000 })
     this.#owned.delete(threadId)
     return result?.queuedSubmission
+  }
+
+  async routerQueueHead(threadId) {
+    const { data } = await this.#requireRpc().request('thread/queue/list', { threadId, limit: 1 })
+    return data?.[0] ?? null
   }
 
   async routerFindWorkerMessage(threadId, clientId) {
@@ -876,6 +918,7 @@ export class CodexHub {
     const key = String(request.id)
     const pending = {
       id: request.id,
+      instanceId: randomUUID(),
       method: request.method,
       params: request.params ?? {},
       createdAt: Date.now(),
@@ -921,6 +964,7 @@ export class CodexHub {
   pendingApprovals() {
     return [...this.#pendingApprovals.values()].map((pending) => ({
       requestId: pending.id,
+      instanceId: pending.instanceId,
       method: pending.method,
       params: pending.params,
       createdAt: pending.createdAt,
@@ -960,6 +1004,14 @@ export class CodexHub {
     const payload = params !== null && typeof params === 'object' ? params : {}
     if (this.#titles?.notification(method, payload)) return
     switch (method) {
+      case 'thread/settings/updated': {
+        const settings = payload.threadSettings
+        if (settings && (this.#owned.has(payload.threadId) || this.#subscriptionCount(payload.threadId))) {
+          this.#threadSettings.set(payload.threadId, { ...workerSettings({ ...settings, sandbox:settings.sandboxPolicy }),
+            collaborationMode:settings.collaborationMode ?? null })
+        }
+        return
+      }
       case 'thread/started':
         this.#invalidateProjects()
         this.bus.publish('thread/upsert', { thread: compactThread(payload.thread) })

@@ -46,7 +46,7 @@ function read(cwd: string) {
 }
 
 export function SidebarWorkspace(props: RightPanelProps) {
-  return <Workspace key={props.cwd} {...props} />
+  return <Workspace key={(props.computer ? 'computer:' : 'project:') + props.cwd} {...props} />
 }
 function Workspace({
   api,
@@ -55,8 +55,10 @@ function Workspace({
   tab,
   requestId,
   onClose,
+  computer, roots, onRootChange,
 }: RightPanelProps) {
-  const saved = React.useMemo(() => read(cwd), [cwd])
+  const layoutId = computer ? 'computer:' + cwd : cwd
+  const saved = React.useMemo(() => read(layoutId), [layoutId])
   const controller = React.useMemo(() => createSidebar(saved), [saved])
   const { state } = React.useSyncExternalStore(
     controller.subscribe,
@@ -89,30 +91,30 @@ function Workspace({
   React.useEffect(() => {
     if (!cwd) return
     try {
-      localStorage.setItem(layoutKey(cwd), serializeLayout(state, width))
+      localStorage.setItem(layoutKey(layoutId), serializeLayout(state, width))
     } catch {}
-  }, [cwd, state, width])
+  }, [cwd, layoutId, state, width])
   const openKind = React.useCallback(
     (kind: string, paneId?: PaneId) => {
       const multiple = kind === 'terminal'
       controller.openContent({
         kind,
         contentId: multiple ? randomId() : kind,
-        title: TITLES[kind],
+        title: computer && kind === 'files' ? '本机文件' : TITLES[kind],
         paneId,
       })
     },
-    [controller],
+    [controller, computer],
   )
   React.useEffect(() => {
     const openFile = (event: Event) => {
       const path = (event as CustomEvent<unknown>).detail
-      if (typeof path !== 'string' || !path.startsWith('/')) return
+      if (typeof path !== 'string' || (!path.startsWith('/') && !(computer && /^[a-z]:[\\/]/i.test(path)))) return
       controller.openContent({ kind: 'document', contentId: path, title: path.split('/').at(-1) || path })
     }
     window.addEventListener('dsh-codex-open-file', openFile)
     return () => window.removeEventListener('dsh-codex-open-file', openFile)
-  }, [controller])
+  }, [controller, computer])
   const initialized = React.useRef(false)
   const lastRequest = React.useRef(requestId)
   const previousOpen = React.useRef(open)
@@ -160,8 +162,8 @@ function Workspace({
       if (record.kind === 'guide')
         return (
           <div className="codex-sidebar-guide">
-            <h3><Icon name="panelRight"/>工作区工具</h3>
-            {['files', 'git', 'terminal'].map((kind) => (
+            <h3><Icon name="panelRight"/>{computer ? '本机工具' : '工作区工具'}</h3>
+            {(computer ? ['files','terminal'] : ['files', 'git', 'terminal']).map((kind) => (
               <button
                 key={kind}
                 type="button"
@@ -172,12 +174,12 @@ function Workspace({
                   controller.closeTab(record.id)
                 }}
               >
-                <Icon name={kind==='files'?'folder':kind==='git'?'git':kind==='terminal'?'terminal':'globe'} size={20}/><strong>{TITLES[kind]}</strong>
+                <Icon name={kind==='files'?'folder':kind==='git'?'git':kind==='terminal'?'terminal':'globe'} size={20}/><strong>{computer && kind==='files' ? '本机文件' : TITLES[kind]}</strong>
                 <span>
                   {
                     (
                       {
-                        files: '浏览工作区文件',
+                        files: computer ? '浏览本机文件和文档' : '浏览工作区文件',
                         git: '查看分支与变更',
                         terminal: '运行命令',
                       } as any
@@ -194,6 +196,7 @@ function Workspace({
           <FilesPane
             api={api}
             cwd={cwd}
+            computer={computer}
             onOpen={(path) =>
               controller.openContent({
                 kind: 'document',
@@ -205,24 +208,28 @@ function Workspace({
             }
           />
         )
-      if (record.kind === 'document')
-        return <DocumentPane key={record.contentId} api={api} cwd={cwd} path={record.contentId} onOpen={(path) =>
+      if (record.kind === 'document') {
+        const documentRoot = computer && roots?.find(root => /^[a-z]:/i.test(root) && record.contentId.slice(0,2).toLowerCase()===root.slice(0,2).toLowerCase())
+        return <DocumentPane key={record.contentId} api={api} cwd={documentRoot || cwd} path={record.contentId} onOpen={(path) =>
           controller.openContent({
             kind: 'document',
-            contentId: path,
+            contentId: documentRoot && !/^[a-z]:/i.test(path) ? documentRoot + path : path,
             title: path.split('/').at(-1) || path,
             paneId: findTabPane(controller.getSnapshot().state, record.id).id,
           })
         } />
+      }
       if (record.kind === 'git') return <GitTab api={api} cwd={cwd} />
       return <TerminalTab api={api} cwd={cwd} />
     },
-    [api, cwd, controller, openKind],
+    [api, cwd, controller, openKind, computer, roots],
   )
   // Keep the retained tree mounted when collapsed; no duplicate body/PTY on reopening.
   const fullscreen = state.mode === 'fullscreen' || narrow
   const chrome = (
     <>
+      {computer && roots && roots.length > 1 && <select aria-label="选择磁盘" value={cwd}
+        onChange={event => onRootChange?.(event.target.value)}>{roots.map(root=><option key={root}>{root}</option>)}</select>}
       <button
         type="button"
         className="codex-sidebar-control"
@@ -257,7 +264,7 @@ function Workspace({
           ? undefined
           : { width: Math.min(width, window.innerWidth - 80) }
       }
-      aria-label="工作区工具"
+      aria-label={computer ? '本机工具' : '工作区工具'}
     >
       {!fullscreen && (
         <div

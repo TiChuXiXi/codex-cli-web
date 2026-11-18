@@ -11,6 +11,7 @@ export interface SubagentReadRequest {
 }
 
 export interface RouterTask {
+  worker?: {model:string; effort:string; executionMode:'default'|'plan'; permission?:string}
   id: string
   projectId: string
   project: string
@@ -27,10 +28,23 @@ export interface RouterTask {
 export interface RouterClarification {
   id: string
   revision: number
-  kind: 'project' | 'session' | 'create' | 'interrupt'
+  kind: 'project' | 'session' | 'create' | 'interrupt' | 'projectRoot' | 'workerPermission'
   label: string
   original?: string
   candidates: { id: string; name: string; project?: string; summary?: string; updatedAt?: number; reasons?: string[] }[]
+}
+
+export interface EffortOption {
+  reasoningEffort: string
+  description?: string | null
+}
+
+export interface ModelOption {
+  id: string
+  displayName: string
+  description?: string | null
+  defaultReasoningEffort?: string | null
+  supportedReasoningEfforts?: EffortOption[]
 }
 
 export interface RouterSnapshot {
@@ -39,8 +53,18 @@ export interface RouterSnapshot {
   error: string | null
   model: string | null
   busy: boolean
+  effort: string | null
+  models: ModelOption[]
+  usingDefaultModel: boolean
   receiptLimited?: boolean
-  messages: { id: string; role: 'user' | 'assistant'; text: string; status: string }[]
+  messages: {
+    id: string; role: 'user' | 'assistant'; label?: string; text: string; status: string
+    questions?: { title: string; options?: string[] | null }[]
+  }[]
+  interactions: {
+    requestId: string | number; instanceId: string; method: string; params: Record<string, unknown>
+    createdAt: number; dispatchId: string; worker: string; instruction: string
+  }[]
   clarifications: RouterClarification[]
   tasks: RouterTask[]
   latestEventId: number
