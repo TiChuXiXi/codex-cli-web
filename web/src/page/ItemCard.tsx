@@ -14,11 +14,17 @@ import { Markdown } from '../markdown'
 import { formatClock, isCompacting, itemText } from '../utils'
 import { QuestionForm } from './QuestionForm'
 
-export function ItemCard({ item, api, cwd = '', onAnswer }: { item: CodexItem, api: Api, cwd?:string, onAnswer?: (text: string) => Promise<void> }) {
+export function ItemCard({ item, api, cwd = '', onAnswer, messageLabels }: {
+  item: CodexItem
+  api: Api
+  cwd?: string
+  onAnswer?: (text: string) => Promise<void>
+  messageLabels?: { user: string, progress: string, answer: string }
+}) {
   const t = useT()
   switch (item.type) {
     case 'userMessage':
-      return <Message cwd={cwd} kind="user" label={t('item.user')} text={itemText(item)} time={formatClock(item.startedAtMs)} api={api} attachments={(item.content ?? []).filter(part => typeof part.path === 'string' && (part.type === 'localImage' || part.type === 'local_image' || part.type === 'mention')).map(part => ({path:part.path as string, name:part.name, image:part.type !== 'mention'}))} />
+      return <Message cwd={cwd} kind="user" label={messageLabels?.user ?? t('item.user')} text={itemText(item)} time={formatClock(item.startedAtMs)} api={api} attachments={(item.content ?? []).filter(part => typeof part.path === 'string' && (part.type === 'localImage' || part.type === 'local_image' || part.type === 'mention')).map(part => ({path:part.path as string, name:part.name, image:part.type !== 'mention'}))} />
     case 'agentMessage':
       return (
         <>
@@ -26,7 +32,7 @@ export function ItemCard({ item, api, cwd = '', onAnswer }: { item: CodexItem, a
           api={api}
           cwd={cwd}
           kind="assistant"
-          label={t('item.assistant')}
+          label={messageLabels ? (item.phase === 'commentary' ? messageLabels.progress : messageLabels.answer) : t('item.assistant')}
           text={typeof item.text === 'string' ? item.text : ''}
           muted={item.phase === 'commentary'}
           time={formatClock(item.startedAtMs)}
@@ -82,7 +88,7 @@ function AsyncQuestions({ item, onAnswer }: { item: CodexItem, onAnswer?: (text:
   </section>
 }
 
-function Message({
+export function Message({
   api,
   cwd = '',
   kind,

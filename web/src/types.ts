@@ -97,6 +97,11 @@ export interface ThreadDetail {
   nextCursor: string | null
 }
 
+export interface SubagentDetail extends ThreadDetail {
+  historyAvailable: boolean
+  latestTurnStatus?: string | null
+}
+
 export interface Project {
   cwd: string
   name: string
@@ -117,6 +122,7 @@ export interface HubStatus {
   connectedAt: number | null
   reconnects: number
   config: { transport: string, codexHome: string, approvalTimeoutMs: number }
+  capabilities?: { subagentDetails?: boolean }
   subscriptions?: string[]
   pendingApprovals?: number
   seq?: number

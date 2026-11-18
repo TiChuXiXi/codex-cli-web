@@ -57,6 +57,9 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
     'threads/get'(payload) {
       return hub.getThread(payload?.threadId, payload ?? {})
     },
+    'threads/subagent/get'(payload, signal) {
+      return hub.getSubagent(payload ?? {}, signal)
+    },
     'threads/open'(payload) {
       return hub.openThread(payload?.threadId)
     },
