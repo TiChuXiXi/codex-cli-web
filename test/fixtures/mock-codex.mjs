@@ -9,9 +9,9 @@ function output(message){process.stdout.write(JSON.stringify(message)+'\n')}
 const notify=(method,params)=>output({method,params})
 const reply=(id,result)=>output({id,result})
 function later(fn,delay){const timer=setTimeout(()=>{timers.delete(timer);fn()},delay);timers.add(timer);return timer}
-function finish(thread,turn,text) {
+function finish(thread,turn,text,questions) {
   if(turn.status!=='inProgress')return
-  const item={id:randomUUID(),type:'agentMessage',text:'',phase:'final_answer'}
+  const item={id:randomUUID(),type:'agentMessage',text:'',phase:'final_answer',questions}
   turn.items.push(item)
   notify('item/started',{threadId:thread.id,turnId:turn.id,item})
   later(()=>{item.text=text;notify('item/agentMessage/delta',{threadId:thread.id,turnId:turn.id,itemId:item.id,delta:text.slice(0,8)})},30)
@@ -57,7 +57,12 @@ async function handle(message) {
       reply(id,{turn});notify('turn/started',{threadId:thread.id,turn})
       notify('item/completed',{threadId:thread.id,turnId:turn.id,item:turn.items[0]})
       if(thread.ephemeral){finish(thread,turn,'{"title":"自动标题夹具"}');return}
-      if(text.includes('审批')) {
+      if(text==='请触发多题提问') {
+        finish(thread,turn,'请选择两项设置。',[
+          {title:'使用哪个环境？',options:['测试环境','生产环境']},
+          {title:'使用哪种输出？',options:['简要','完整']},
+        ])
+      }else if(text.includes('审批')) {
         const requestId='approval-'+randomUUID()
         waiting.set(requestId,{thread,turn})
         later(()=>output({id:requestId,method:'item/commandExecution/requestApproval',params:{threadId:thread.id,turnId:turn.id,itemId:randomUUID(),command:'echo fixture',cwd,reason:'夹具审批'}}),80)
