@@ -28,7 +28,7 @@ export interface RouterTask {
 export interface RouterClarification {
   id: string
   revision: number
-  kind: 'project' | 'session' | 'create' | 'interrupt' | 'projectRoot' | 'workerPermission'
+  kind: 'project' | 'session' | 'create' | 'interrupt' | 'projectRoot' | 'workerPermission' | 'psmMemory' | 'psmAccess'
   label: string
   original?: string
   candidates: { id: string; name: string; project?: string; summary?: string; updatedAt?: number; reasons?: string[] }[]
@@ -48,6 +48,8 @@ export interface ModelOption {
 }
 
 export interface RouterSnapshot {
+  primaryThreadId?: string
+  previousThreads?: string[]
   enabled: boolean
   phase: 'idle' | 'disabled' | 'connecting' | 'ready' | 'unavailable'
   error: string | null

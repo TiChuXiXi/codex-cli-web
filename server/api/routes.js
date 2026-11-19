@@ -46,6 +46,13 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
     'router/reconnect': () => { requireRouter().start(); return router.status() },
     'router/send': payload => requireRouter().send(payload),
     'router/model/set': payload => requireRouter().setModel(payload),
+    'router/psm/status': () => requireRouter().psm?.status() ?? {enabled:false,phase:'disabled'},
+    'router/psm/control': payload => requireRouter().psm.control(payload),
+    'router/psm/search': payload => requireRouter().psm.search(payload),
+    'router/psm/profile': payload => requireRouter().psm.profile(payload.projectId),
+    'router/psm/correct': payload => requireRouter().psm.correct(payload),
+    'router/history/read': payload => requireRouter().history(payload),
+    'router/psm/get': payload => requireRouter().psm.get(payload.ref),
     'router/settings/read': () => requireRouter().settings(),
     'router/settings/save': payload => requireRouter().saveSettings(payload),
     'router/settings/project-root': payload => requireRouter().setupProjectRoot(payload),
@@ -121,7 +128,10 @@ export function createRoutes({ hub, bus, connection, config, logger, versions, r
       return hub.unarchiveThread(payload ?? {})
     },
     'threads/delete'(payload) {
-      return hub.deleteThread(payload ?? {})
+      return hub.deleteThread(payload ?? {}).then(result=>{
+        router?.psm?.sync?.event({type:'thread/deleted',threadId:result.threadId})
+        return result
+      })
     },
     'threads/fork'(payload) {
       return hub.forkThread(payload ?? {})

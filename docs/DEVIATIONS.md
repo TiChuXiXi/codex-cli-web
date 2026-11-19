@@ -110,3 +110,7 @@ Router 主线程输入新增 SQLite FIFO。Web 在 Router 忙时可继续提交�
 微信设置仅在启用中枢时可用。使用腾讯 3.0.0-beta-0 协议基线及本地 QR 编码；直接回复、Worker 结果、受控待办独立选择投递目标。Web 通用审批 RPC 的提交需携带当前卡片的 `instanceId`，升级前已打开的 Worker 页面可刷新取得新版卡片。用户所选的私密题远程回答会在微信聊天中留痕。
 
 Web 可同时展示多项原生请求。微信用持久化队列逐项展示审批、选择和输入题，支持直接作答、暂缓和回看。两端共用原请求的实例与版本。
+
+## feature/router 的 Project & Session Memory
+
+启用中枢后，PSM 默认开启并在后台同步，已有开关和暂停设置优先。PSM 使用现有 Worker Hub、Router SQLite、事件总线及授权机制。L1 全文索引位于状态目录的单独派生数据库。Node 工作线程执行 SQLite 和分词操作；现有 Router 模型按需解释候选、读原文及提议语义记忆。专用 Rust overlay 与工作台同时支持策略 v2。设置、协议边界、原始数据与派生数据操作见 [Router 使用说明](ROUTER.md)。本项为 Router 分支扩展，[本轮验收记录](acceptance/psm.md)独立于原 38 项基线。

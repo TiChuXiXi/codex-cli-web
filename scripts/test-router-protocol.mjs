@@ -396,7 +396,7 @@ async function checkCompiledPolicy({ policyPath, connect, close, cwd, model, roo
   try {
     const policy = await app.request('router/capabilities', {})
     assert.deepEqual([...policy.tools].sort(), expected)
-    assert.equal(policy.policyVersion, 1)
+    assert.equal(policy.policyVersion, 2)
     await assert.rejects(app.request('fs/readFile', { path: join(cwd, 'synthetic.txt') }), /Unsupported Router method/)
     await assert.rejects(app.request('command/exec', {}), /Unsupported Router method/)
     const started = await app.request('thread/start', {

@@ -7,6 +7,8 @@ import { connectRouterApp } from './app-server.js'
 import { finalAnswer, RouterDispatcher } from './dispatcher.js'
 import { rankCandidates } from './matching.js'
 import { checkProject, checkThread, describeWorkerSettings, loadRouterProjects, shortText, workerDispatchIssue, workerIdentityIssue } from './projects.js'
+import { RouterSessionUpgrade } from './psm-migration.js'
+import { ProjectSessionMemory } from './psm.js'
 import { RouterStore } from './store.js'
 import { makeProject, newProjectTarget, projectParent } from './new-project.js'
 import { routerNamespace, toolResult, validateTool } from './tools.js'
@@ -77,11 +79,14 @@ export class RouterService {
         project: id => this.projects.get(id),
         routerThreadId: () => this.session?.id ?? this.store.get('session', 'active')?.id,
         isReady: () => !this.closed && this.phase === 'ready',
+        targetIssue:(project,id)=>this.psm.targetIssue(project,id),
         onReceipt: () => this.wake.kick(),
         onTerminal: (task, receipt) => this.wechat?.terminal(task, receipt),
       })
+      this.psm = new ProjectSessionMemory(this)
       this.wake = new RouterWakeScheduler(this, this.wakePolicy)
       this.wechat = this.createChannel?.(this)
+      this.upgrade = new RouterSessionUpgrade(this)
       this.publish()
     }
     const epoch = Symbol('router-connection')
@@ -103,7 +108,10 @@ export class RouterService {
           const resumed = await app.resume(session.id)
           if (resumed.thread?.id !== session.id || resumed.thread.cwd !== app.cwd) throw new Error('Router 会话身份不匹配')
         } catch (error) {
-          if (session.materialized || this.store.list('message', 1).length ||
+          const hasInputs=this.store.list('router-history',1).length
+            ? this.store.db.prepare("SELECT 1 FROM router_records WHERE kind='message' AND json_extract(value,'$.routerThreadId')=? LIMIT 1").get(session.id)
+            : this.store.list('message',1).length
+          if (session.materialized || hasInputs ||
               !/no rollout found|thread not found/i.test(error.message)) throw error
           session = null
         }
@@ -112,7 +120,7 @@ export class RouterService {
         app.select?.(null)
         const { thread } = await app.start()
         if (!thread?.id || thread.cwd !== app.cwd) throw new Error('Router 会话创建响应不匹配')
-        session = this.store.put('session', 'active', { id: thread.id, materialized: false })
+        session = this.store.put('session', 'active', { id: thread.id, materialized: false, policyVersion:app.policyVersion ?? 1 })
       }
       if (this.closed || this.epoch !== epoch) { app.close(); return }
       this.session = session
@@ -149,7 +157,8 @@ export class RouterService {
   }
 
   async recoverMessages(app) {
-    const pending = this.store.messagesWithStatus('sending','accepted','unknown').filter(message => message.role === 'user')
+    const pending = this.store.messagesWithStatus('sending','accepted','unknown').filter(message => message.role === 'user' &&
+      (!message.routerThreadId || message.routerThreadId===this.session.id))
     if (!pending.length) return
     let nativeStatus
     for (const message of pending) {
@@ -214,6 +223,7 @@ export class RouterService {
 
   read() {
     const now = Date.now()
+    const previousThreads=this.store?.list('router-history').map(s=>s.id) ?? []
     const recentTasks = this.dispatcher ? this.dispatcher.list().map(task => this.task(task)) : []
     return {
       ...this.status(), error: this.error ?? null, model: this.app?.selected?.model ?? null,
@@ -221,9 +231,10 @@ export class RouterService {
       usingDefaultModel: !this.session?.modelSelection || !this.app?.resolveSelection?.(this.session.modelSelection),
       busy: Boolean(this.active) || this.nativeBusy,
       receiptLimited: this.wake?.limited() ?? false,
+      primaryThreadId:this.session?.id, previousThreads,
       queuedCount: this.store?.queuedInputCount.get().count ?? 0,
       messages: [
-        ...(this.store?.list('message', 80).reverse().map(message =>
+        ...(this.store?.list('message', 80).filter(m=>!previousThreads.length || m.routerThreadId===this.session?.id || (m.dispatchId && this.store.get('task',m.dispatchId)?.routerThreadId===this.session?.id)).reverse().map(message =>
           ({ id: message.id, role: message.role, label: message.label, text: message.text, status: message.status,
             questions: message.questions, dispatchId: message.dispatchId, interactionMethod: message.interactionMethod })) ?? []),
         ...this.deltas.values(),
@@ -236,6 +247,14 @@ export class RouterService {
       interactions: this.dispatcher?.interactions() ?? [],
       latestEventId: this.store?.events(1)[0]?.eventId ?? 0,
     }
+  }
+
+  async history({threadId,cursor}={}) {
+    if(!this.store?.get('router-history',threadId) || !this.app || (cursor!=null && typeof cursor!=='string')) throw new HubError('codex-cli/router-history','旧中枢会话不可用')
+    const page=await this.app.request('thread/turns/list',{threadId,cursor,limit:10,sortDirection:'desc',itemsView:'full'})
+    return {nextCursor:page.nextCursor ?? null,messages:page.data.flatMap(turn=>(turn.items ?? []).filter(i=>i.type==='userMessage'||i.type==='agentMessage').map(i=>({
+      id:i.id,role:i.type==='userMessage'?'user':'assistant',text:i.type==='userMessage'?(i.content ?? []).filter(p=>p.type==='text').map(p=>p.text).join(' '):i.text,
+    })))}
   }
 
   task(task) {
@@ -399,7 +418,7 @@ export class RouterService {
   }
 
   recordMessage(message) {
-    this.store.put('message', message.id, message)
+    this.store.put('message', message.id, {routerThreadId:this.session?.id,...message})
     this.publish()
   }
 
@@ -422,6 +441,7 @@ export class RouterService {
   }
 
   async send(payload) {
+    await this.upgrade?.running
     const accepted = this.admit(payload)
     await this.drainInput()
     if (this.closed) throw new HubError('codex-cli/router-unavailable', '工作台正在关闭')
@@ -433,7 +453,7 @@ export class RouterService {
   }
 
   async drainInput() {
-    if (this.closed || this.phase !== 'ready' || !this.app || this.active || this.nativeBusy) return
+    if (this.upgrade?.running || this.closed || this.phase !== 'ready' || !this.app || this.active || this.nativeBusy) return
     const row = this.store.nextInput.get()
     if (!row) return
     const message = JSON.parse(row.value)
@@ -586,7 +606,11 @@ export class RouterService {
     const byCwd = new Map(discovered.map(item => [item.cwd, item]))
     const registeredByPath = new Map([...this.projects.values()].map(project => [project.cwd, project]))
     const candidates = new Map()
-    for (const item of discovered.slice(0, 100)) {
+    const inventory=new Map(discovered.slice(0,100).map(row=>[row.cwd,row]))
+    if(this.psm?.preference.enabled) for(const project of this.store.list('psm-project')) {
+      if(!inventory.has(project.cwd)) inventory.set(project.cwd,{cwd:project.cwd})
+    }
+    for (const item of inventory.values()) {
       if (typeof item.cwd !== 'string') continue
       try {
         const cwd = await realpath(item.cwd)
@@ -632,6 +656,13 @@ export class RouterService {
       ? [this.session.id, source.turnId, source.batch.requestId, params.callId]
       : [this.session.id, source.turnId, params.callId])
     const existing = this.store.get('tool-call', key)
+    if (existing?.refresh && existing.tool===params.tool && existing.inputHash===createHash('sha256').update(JSON.stringify(params.arguments) ?? '').digest('hex')) {
+      try {
+        const args=validateTool(params.tool,params.arguments)
+        return toolResult(true,params.tool==='psm_search'?await this.psm.search(args):await this.psm.get(args.ref))
+      }
+      catch {return toolResult(false,{code:'sourceUnavailable'})}
+    }
     if (existing) return existing.response ?? toolResult(false, { code: 'toolResultUnknown' })
     const count = source.calls ?? 0
     if (count >= 32) return toolResult(false, { code: 'toolLimit' })
@@ -648,7 +679,12 @@ export class RouterService {
         message: error instanceof HubError ? error.message : '操作暂不可用，请检查工作台状态',
       })
     }
-    if (!this.closed) this.store.put('tool-call', key, { tool: params.tool, at: Date.now(), response })
+    if (!this.closed) {
+      const readOnly=response.success && ['psm_search','psm_get'].includes(params.tool) &&
+        JSON.parse(response.contentItems[0].text)?.status!=='needs_confirmation'
+      this.store.put('tool-call',key,{tool:params.tool,at:Date.now(),...(readOnly ? {refresh:true,
+        inputHash:createHash('sha256').update(JSON.stringify(params.arguments)).digest('hex')} : {response})})
+    }
     return response
   }
 
@@ -667,6 +703,34 @@ export class RouterService {
     }
     const limit = args.limit ?? 12
     switch (name) {
+      case 'psm_search': return this.psm.search(args)
+      case 'psm_get': {
+        this.psm.requireEnabled()
+        if(args.ref.startsWith('project:') && !(await this.psm.allowed(args.ref.slice(8))).size) {
+          const candidate=(await this.projectRows()).find(row=>row.id===args.ref.slice(8) && row.pendingProject)
+          if(!candidate) throw new HubError('codex-cli/router-project','未发现此项目')
+          return this.clarify(source,{kind:'psmAccess',label:'允许 Router 阅读此项目的会话历史？',
+            candidates:[{id:candidate.id,projectId:candidate.id,name:candidate.name,pendingProject:candidate.pendingProject}]})
+        }
+        return this.psm.get(args.ref)
+      }
+      case 'psm_save':
+      case 'psm_update':
+      case 'psm_remove': {
+        const proposal=await this.psm.proposal(name,args,source)
+        if(this.active!==source) throw new HubError('codex-cli/router-stale','回合已结束')
+        if(args.confirmation==='request' || proposal.previous) {
+          const session=proposal.threadId && await this.psm.sync.db.call('source',proposal.threadId)
+          if(this.active!==source) throw new HubError('codex-cli/router-stale','回合已结束')
+          const project=this.projects.get(proposal.projectId) ?? this.store.get('psm-read-grant',proposal.projectId)
+          return this.clarify(source,{
+            kind:'psmMemory',proposal,label:proposal.state==='revoked'?'撤销这条项目记忆？':'确认这条记忆及其目标？',
+            candidates:[{id:proposal.id,name:proposal.value,projectId:proposal.projectId,threadId:proposal.threadId,
+              project:project.name,summary:session ? [session.title,session.id].filter(Boolean).join(' · ') : project.cwd}],
+          })
+        }
+        return this.psm.apply(proposal,'model_inferred')
+      }
       case 'list_projects':
         return rankCandidates(await this.projectRows(), args.query, { original: source.text }).slice(0, limit)
           .map(({ aliases, pendingProject, ...row }) => row)
@@ -722,7 +786,7 @@ export class RouterService {
             throw new HubError('codex-cli/router-conflict', '该消息不能确认此任务或代替用户授权')
           }
           this.saveOperation(source.requestId, selection, null)
-          const result = await this.confirm({ id: pending.id, revision: pending.revision, candidateId: choice.id })
+          const result = await this.confirm({ id: pending.id, revision: pending.revision, candidateId: choice.id }, false, false)
           this.saveOperation(source.requestId, selection, result)
           return result
         }
@@ -771,6 +835,8 @@ export class RouterService {
     const project = await checkProject(registered ?? (await this.projectRows()).find(row => row.id === intent.projectId)?.pendingProject)
     let candidate
     if (intent.threadId) {
+      const issue=await this.psm.targetIssue(project,intent.threadId)
+      if(issue) throw new HubError('codex-cli/router-thread',issue)
       const { thread } = await this.hub.routerReadWorker(intent.threadId)
       await checkThread(project, thread, this.session.id)
       if (thread.id !== intent.threadId) throw new HubError('codex-cli/router-thread', 'Worker 会话身份不匹配')
@@ -801,8 +867,9 @@ export class RouterService {
   }
 
   clarify(source, value) {
-    const id = source.requestId + ':' + value.kind
-    if (this.store.get('operation', source.requestId)) return { status: 'alreadyHandled' }
+    const memory = value.kind === 'psmMemory' || value.kind === 'psmAccess'
+    const id = source.requestId + ':' + value.kind + (memory ? ':' + value.candidates[0].id : '')
+    if (!memory && this.store.get('operation', source.requestId)) return { status: 'alreadyHandled' }
     const existing = this.store.get('clarification', id)
     if (existing?.status === 'pending' && existing.expiresAt > Date.now()) return { status: 'needs_confirmation', id }
     const row = {
@@ -816,7 +883,7 @@ export class RouterService {
     return { status: 'needs_confirmation', id }
   }
 
-  async confirm({ id, revision, candidateId } = {}, cancel = false) {
+  async confirm({ id, revision, candidateId } = {}, cancel = false, explicit = true) {
     this.requireReady()
     if (typeof id !== 'string' || !Number.isSafeInteger(revision)) throw new HubError('codex-cli/bad-request', '确认请求无效')
     const row = this.store.get('clarification', id)
@@ -830,7 +897,7 @@ export class RouterService {
     const candidate = row.candidates.find(item => item.id === candidateId)
     if (!cancel && !candidate) throw new HubError('codex-cli/router-stale', '该目标不在待确认列表中')
     const next = this.store.put('clarification', id, {
-      ...row, status: cancel ? 'cancelled' : 'confirming', candidateId,
+      ...row, status: cancel ? 'cancelled' : 'confirming', candidateId, explicit,
     })
     this.publish()
     if (cancel) return { status: 'cancelled' }
@@ -842,6 +909,12 @@ export class RouterService {
     if (running) return running
     const pending = this.applyConfirmation(row).then(result => {
       this.store.transaction(() => {
+        if(row.semanticChoice && row.explicit && this.psm.preference.enabled && row.kind==='session') {
+          const target=row.candidates.find(c=>c.id===row.candidateId)
+          const project=this.projects.get(target?.projectId)
+          const uid=project && this.psm.identity(project)
+          if(uid && target.id!=='create') this.psm.recordChoice({uid,projectId:project.id,threadId:target.id,row})
+        }
         this.store.put('clarification', row.id, { ...row, status: 'confirmed', result })
         if (row.kind === 'projectRoot' && result.status !== 'needs_confirmation') this.store.put('message', 'root-result:' + row.id, {
           id: 'root-result:' + row.id, role: 'assistant', status: 'completed',
@@ -867,6 +940,24 @@ export class RouterService {
 
   async applyConfirmation(row) {
     this.requireReady()
+    if (row.kind === 'psmMemory') {
+      this.psm.requireEnabled()
+      const draft=row.proposal
+      const result=this.store.get('psm-entry',draft.id)
+      if(result?.confirmation===row.id && result.revision===draft.previous+1) return {ref:'entry:'+draft.id,revision:result.revision}
+      const allowed=await this.psm.allowed(draft.projectId)
+      if(!allowed.has(draft.uid) || (draft.state!=='revoked' && draft.threadId && (await this.psm.source(draft.threadId,allowed)).state!=='active')) {
+        throw new HubError('codex-cli/router-stale','来源已失效')
+      }
+      if(draft.evidenceRef!==('user:'+draft.requestId)) await this.psm.get(draft.evidenceRef)
+      return this.psm.apply(draft,'user_confirmed',row.id)
+    }
+    if (row.kind === 'psmAccess') {
+      const project=await checkProject(row.candidates[0].pendingProject)
+      this.psm.requireEnabled()
+      this.store.put('psm-read-grant',project.id,project)
+      return {projectId:project.id,status:'authorized'}
+    }
     if (row.kind === 'workerPermission') {
       const project = await checkProject(this.projects.get(row.intent.projectId))
       if (row.projectIdentity !== project.identity) throw new HubError('codex-cli/router-stale', '项目身份已变化')
@@ -931,7 +1022,8 @@ export class RouterService {
             summary:(intent.threadId ? '会话 ' + intent.threadId : '新建会话') + ' 将使用此权限执行任务。'}],
         })
       }
-      const task = this.dispatcher.enqueue({ ...intent, requestId, worker }, value => {
+      const psmProjectUid=this.psm?.preference.enabled ? this.psm.identity(project) : null
+      const task = this.dispatcher.enqueue({ ...intent, requestId, worker, psmProjectUid }, value => {
         this.saveOperation(requestId, intent, this.task(value))
       })
       return this.task(task)
@@ -989,6 +1081,8 @@ export class RouterService {
     await this.opening
     await Promise.allSettled(this.confirming.values())
     await Promise.allSettled([...this.creatingProjects.values()].map(row => row.promise))
+    await this.upgrade?.close()
+    await this.psm?.close()
     await this.wechat?.close()
     await this.wake?.close()
     await this.dispatcher?.close()

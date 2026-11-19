@@ -25,6 +25,10 @@ export class FollowupQueue {
     return state
   }
 
+  hasPending() {
+    return this.#locks.size>0 || [...this.#states.values()].some(state=>state.entries.length>0)
+  }
+
   list(threadId) {
     const state = this.#state(threadId)
     return structuredClone({ instanceId: this.#instanceId, threadId, revision: state.revision, paused: state.paused, entries: state.entries })

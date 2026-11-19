@@ -4,6 +4,13 @@ import { workerPermissions, workerModes } from '../../shared/worker-options.js'
 export const routerNamespace = 'codex_web_router'
 
 const fields = {
+  ref: {type:'string',minLength:1,maxLength:2048},
+  entryId: {type:'string',minLength:1,maxLength:128},
+  evidenceRef: {type:'string',minLength:1,maxLength:2048},
+  kind: {type:'string',enum:['description','alias','topic','decision','constraint','progress']},
+  value: {type:'string',minLength:1,maxLength:1200},
+  revision: {type:'integer',minimum:1,maximum:Number.MAX_SAFE_INTEGER},
+  confirmation: {type:'string',enum:['request']},
   query: { type: 'string', maxLength: 512 },
   limit: { type: 'integer', minimum: 1, maximum: 25 },
   projectId: { type: 'string', minLength: 1, maxLength: 2048 },
@@ -22,6 +29,11 @@ const fields = {
 }
 
 const definitions = {
+  psm_search: ['搜索已授权项目的工作经历、语义记忆和历史消息。可换用更短的关键词。', ['query'], ['projectId','limit']],
+  psm_get: ['读取证据引用。project: 加发现项目 ID 可请求项目访问。', ['ref'], []],
+  psm_save: ['保存有来源的项目语义。用户确认时传 confirmation=request。', ['kind','value','projectId'], ['threadId','evidenceRef','confirmation']],
+  psm_update: ['申请纠正已有语义，须指定当前修订。', ['entryId','revision','value'], ['projectId','threadId','evidenceRef']],
+  psm_remove: ['申请撤销错误的语义记忆。', ['entryId','revision'], []],
   list_projects: ['查找已登记与自动发现的项目。requiresApproval 为 true 的项目需用户先授权。', [], ['query', 'limit']],
   list_sessions: ['按名称、预览和最近活动检索 Worker。省略 projectId 可跨项目查找，省略 query 可浏览最近会话。', [], ['projectId', 'query', 'limit']],
   get_session: ['读取一个候选会话的有限摘要。', ['threadId'], []],
@@ -44,6 +56,7 @@ const schemas = Object.fromEntries(Object.entries(definitions).map(([name, [desc
 }]))
 
 export const toolNames = Object.keys(schemas)
+export const legacyTools = toolNames.filter(name=>!name.startsWith('psm_'))
 export const dynamicTools = [{
   type: 'namespace',
   name: routerNamespace,

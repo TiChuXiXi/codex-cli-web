@@ -58,7 +58,7 @@ export class RouterWakeScheduler {
     const router = this.router
     const threadId = router.session?.id
     const app = router.app
-    if (!threadId || !app || router.phase !== 'ready' || router.closed || this.closed) return
+    if (router.upgrade?.running || !threadId || !app || router.phase !== 'ready' || router.closed || this.closed) return
     const active = router.active
     if (active?.source === 'worker_receipt' && active.turnId) {
       const turn = await this.findTurn(app, active.batch)
@@ -79,7 +79,7 @@ export class RouterWakeScheduler {
     if (!pending.length && !router.nativeBusy) return
     if (pending.length && !router.nativeBusy && this.budget(threadId, now).limit) return
     const idle = await router.readThreadStatus(app, threadId) === 'idle'
-    if (router.app !== app || router.active || router.phase !== 'ready' || router.closed || this.closed) return
+    if (router.upgrade?.running || router.app !== app || router.active || router.phase !== 'ready' || router.closed || this.closed) return
     const nativeBusy = !idle
     if (router.nativeBusy !== nativeBusy) {
       router.nativeBusy = nativeBusy

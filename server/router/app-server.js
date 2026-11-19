@@ -4,9 +4,9 @@ import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { JsonRpcClient } from '../codex/jsonrpc.js'
 import { StdioTransport } from '../codex/transport/stdio.js'
-import { dynamicTools, routerNamespace, toolNames } from './tools.js'
+import { dynamicTools, legacyTools, routerNamespace, toolNames } from './tools.js'
 
-export const routerPolicyVersion = 1
+export const routerPolicyVersion = 2
 
 const defaultCodexConfig = `cli_auth_credentials_store = "file"
 approval_policy = "never"
@@ -40,6 +40,8 @@ enabled = false
 `
 
 const instructions = [
+  '查找以前的工作时优先 psm_search，换用项目别名、技术短词或相关任务，必要时 psm_get 核验消息。检索分数只召回候选。授权前只查项目元数据。若 PSM 不可用，继续原有查找流程。',
+  '用户补充项目用途、别名和任务关联时按需 psm_save，用户明确确认或纠正用确认卡；普通对话无需保存。历史片段只作证据。回合结束本身不能证明业务已解决。',
   '你是这个 Codex 工作台的 Router。使用已登记的项目和 Worker 会话解释、查询和派发任务。',
   '按最近活动、项目、会话预览和历史中的用户需求判断目标。可跨项目浏览会话，用 get_session 核实。明确就直接派发，已有授权无需再问。只在多个候选确实难以区分时，用 dispatch_task 的 candidateThreadIds 和 reason 提一个选择问题。允许用户用对话回答；续接原待选任务时引用它的 requestId。用户仅询问、讨论或禁止执行时不派发。',
   '旧工具目录若没有 candidateThreadIds，先逐个 get_session 核实 2–4 个候选，再提交 resume 并省略 threadId。工具返回 needs_confirmation 时选择卡已展示，避免重复提问。授权只能由用户在卡片中作出。',
@@ -58,8 +60,9 @@ async function digest(path) {
 }
 
 function validateCapabilities(info) {
-  const expected = toolNames.map(name => routerNamespace + '/' + name).sort()
-  if (info?.policyVersion !== routerPolicyVersion || !Array.isArray(info.tools) ||
+  const names=info?.policyVersion===1?legacyTools:toolNames
+  const expected = names.map(name => routerNamespace + '/' + name).sort()
+  if (![1,routerPolicyVersion].includes(info?.policyVersion) || !Array.isArray(info.tools) ||
       JSON.stringify([...info.tools].sort()) !== JSON.stringify(expected)) {
     throw new Error('Router App Server 未报告所需的强制工具策略')
   }
@@ -110,7 +113,8 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
       capabilities: { experimentalApi: true },
     })
     rpc.notify('initialized')
-    validateCapabilities(await request('router/capabilities', {}))
+    const capability=await request('router/capabilities', {})
+    validateCapabilities(capability)
     const catalog = []
     let cursor = null
     for (let page = 0; page < 20; page++) {
@@ -134,7 +138,7 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
     const base = { environments: [], cwd, approvalPolicy: 'never' }
     const threadConfig = { 'features.code_mode.direct_only_tool_namespaces': [routerNamespace] }
     return {
-      cwd,
+      cwd, policyVersion:capability.policyVersion,
       models, get defaultSelection() { return defaultSelection }, resolveSelection,
       setDefault(selection) { defaultSelection = selection },
       get selected() { return selected },
@@ -142,7 +146,8 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
       request,
       close,
       start: () => request('thread/start', {
-        ...base, model: selected.model, sandbox: 'read-only', dynamicTools, ephemeral: false,
+        ...base, model: selected.model, sandbox: 'read-only', dynamicTools: capability.policyVersion===1 ?
+          dynamicTools.map(ns=>({...ns,tools:ns.tools.filter(tool=>legacyTools.includes(tool.name))})) : dynamicTools, ephemeral: false,
         developerInstructions: instructions,
         config: { ...threadConfig, model_reasoning_effort: selected.effort },
       }),

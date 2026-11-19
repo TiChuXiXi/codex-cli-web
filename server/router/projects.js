@@ -29,7 +29,7 @@ export async function loadRouterProjects(config, directory) {
     }
     roots.add(cwd)
     projects.set(entry.id, {
-      id: entry.id, name: entry.name, aliases: entry.aliases ?? [], cwd, identity: identity(info), sandbox: sandboxLimit,
+      id: entry.id, name: entry.name, aliases: entry.aliases ?? [], cwd, identity: identity(info), birth: String(info.birthtimeNs), sandbox: sandboxLimit,
       resumeExistingPermissions: entry.resumeExistingPermissions === true,
     })
   }
@@ -40,8 +40,10 @@ export async function checkProject(project) {
   if (!project) throw new HubError('codex-cli/router-project', '仅可调度登记项目')
   let valid = false
   try {
-    valid = await realpath(project.cwd) === project.cwd &&
-      identity(await stat(project.cwd, { bigint: true })) === project.identity
+    const info = await stat(project.cwd, { bigint: true })
+    valid = await realpath(project.cwd) === project.cwd && identity(info) === project.identity &&
+      (!project.birth || project.birth === String(info.birthtimeNs))
+    if (valid && !project.birth) project.birth = String(info.birthtimeNs)
   } catch {}
   if (!valid) throw new HubError('codex-cli/router-project', '项目目录已改变，需要重新核验')
   return project

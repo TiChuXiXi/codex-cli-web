@@ -230,3 +230,42 @@ test('WeChat settings bind locally, show the first-message boundary and independ
   await page.getByRole('button',{name:'断开连接'}).click()
   await expect(page.getByRole('button',{name:'恢复连接'})).toBeVisible()
 })
+
+test('Router settings expose PSM progress, pause, resume and distinct rebuild controls',async ({page})=>{
+  let enabled=false,paused=false
+  const actions:string[]=[]
+  await page.route('**/codex-cli/status',async route=>{
+    const response=await route.fetch(),body=await response.json()
+    body.result.value.router={enabled:true,phase:'ready'}
+    await route.fulfill({response,json:body})
+  })
+  await page.route('**/codex-cli/router/**',async route=>{
+    const {rpcId,method,payload}=route.request().postDataJSON()
+    let value:unknown={}
+    if(method==='router/settings/read') value={models:[],model:{model:'test',effort:'medium'},projectRoot:'',revision:0}
+    if(method==='router/psm/profile')value={projects:[{id:'p',name:'aaa'}],entries:[]}
+    if(method==='router/psm/control') {
+      actions.push(payload.action)
+      if(payload.action==='enable')enabled=true
+      paused=payload.action==='pause'
+    }
+    if(method==='router/psm/status'||method==='router/psm/control')value={
+      enabled,paused,policy:1,phase:enabled?(paused?'paused':'indexing'):'disabled',indexed:1,total:2,pending:1,projects:1}
+    await route.fulfill({json:{type:'server-response',rpcId,result:{ok:true,value}}})
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证',{exact:true}).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button',{name:'登录工作台'}).click()
+  await page.getByRole('button',{name:'设置',exact:true}).first().click()
+  await page.getByRole('tab',{name:'中枢',exact:true}).click()
+  const panel=page.getByRole('region',{name:'项目与会话记忆'})
+  await panel.getByRole('button',{name:'启用 PSM'}).click()
+  await expect(panel).toContainText('已索引 1/2')
+  await expect(panel).toContainText('当前服务器上的中枢程序仅支持旧版工具')
+  await panel.getByRole('button',{name:'暂停索引'}).click()
+  await expect(panel).toContainText('已暂停')
+  await panel.getByRole('button',{name:'恢复索引'}).click()
+  page.once('dialog',dialog=>dialog.accept())
+  await panel.getByRole('button',{name:'重建 L1 索引'}).click()
+  await expect.poll(()=>actions).toEqual(['enable','pause','resume','rebuild'])
+})

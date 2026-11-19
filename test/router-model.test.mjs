@@ -26,7 +26,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   const { id, method, params } = JSON.parse(line)
   if (id === undefined) return
   let result = { params }
-  if (method === 'router/capabilities') result = { policyVersion: 1, tools: ${JSON.stringify(toolNames.map(name => routerNamespace + '/' + name))} }
+  if (method === 'router/capabilities') result = { policyVersion: 2, tools: ${JSON.stringify(toolNames.map(name => routerNamespace + '/' + name))} }
   if (method === 'model/list') result = { data: [{ model: 'gpt-6.1-terra', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] },
     { model: 'other', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }] }
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')

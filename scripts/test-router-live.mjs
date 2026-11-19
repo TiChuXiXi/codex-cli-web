@@ -12,6 +12,7 @@ import { RouterService } from '../server/router/service.js'
 
 const stock = process.env.CODEX_WEB_CODEX_PATH
 const policy = process.env.CODEX_WEB_ROUTER_POLICY_PATH
+const legacyPolicy = process.env.CODEX_WEB_ROUTER_LEGACY_POLICY_PATH
 const authHome = process.env.CODEX_WEB_ROUTER_AUTH_HOME
 const model = process.env.CODEX_WEB_ROUTER_LIVE_MODEL
 const effort = process.env.CODEX_WEB_ROUTER_LIVE_EFFORT
@@ -70,8 +71,10 @@ try {
   const launcher = join(root, 'router-launcher')
   const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
   const proxyExports = Object.entries(proxy).map(([key, value]) => 'export ' + key + '=' + quote(value))
-  const launch = ['#!/bin/sh', 'export CODEX_HOME=' + quote(routerHome), ...proxyExports,
-    'exec ' + quote(policy) + ' app-server --stdio --strict-config', ''].join('\n')
+  if (legacyPolicy && (!isAbsolute(legacyPolicy) || process.env.CODEX_WEB_PSM_LIVE!=='1')) throw Error('Legacy upgrade requires an explicit PSM target')
+  const launchFor = binary => ['#!/bin/sh', 'export CODEX_HOME=' + quote(routerHome), ...proxyExports,
+    'exec ' + quote(binary) + ' app-server --stdio --strict-config', ''].join('\n')
+  const launch=launchFor(legacyPolicy || policy)
   await writeFile(launcher, launch, { flag: 'wx', mode: 0o700 })
   const audit = []
   events.subscribe(event => {
@@ -179,6 +182,42 @@ try {
   const status = await message('请使用 get_task_status 查询以下本次验收的任务 ID ' + resumed.id + ' 的结果，只报告实际状态。')
   assert.ok(router.store.list('tool-call').some(call => call.tool === 'get_task_status'), 'Router did not call get_task_status')
   report.status = { result: 'passed', ms: status.ms }
+
+  if(process.env.CODEX_WEB_PSM_LIVE==='1') {
+    stage='psm-history'
+    if (legacyPolicy) {
+      stage='psm-upgrade'
+      const oldPrimary=router.session.id
+      assert.equal(router.app.policyVersion,1)
+      await router.close()
+      const upgraded=launchFor(policy)
+      await writeFile(launcher,upgraded,{mode:0o700})
+      settings.launcherSha256=createHash('sha256').update(upgraded).digest('hex')
+      router=new RouterService({config:settings,stateDir,hub,followups,bus:events})
+      router.start()
+      await router.opening
+      assert.equal(router.session.id,oldPrimary)
+      assert.equal(router.app.policyVersion,2)
+      await router.psm.control({action:'enable'})
+      await poll(()=>router.session.id!==oldPrimary,90000)
+      assert.ok((await router.history({threadId:oldPrimary})).messages.length)
+      assert.equal(router.store.get('psm-upgrade',oldPrimary).phase,'committed')
+      report.psmUpgrade={oldHistoryReadable:true,primaryChanged:true}
+      stage='psm-history'
+    } else await router.psm.control({action:'enable'})
+    await router.psm.sync.running
+    const hits=await router.psm.search({query:'ROUTER_WORKER_OK'})
+    const raw=hits.find(hit=>hit.ref.startsWith('msg:') && hit.threadId===completed.threadId)
+    assert.ok(raw,'Missing original Worker text')
+    const verified=await router.psm.get(raw.ref)
+    assert.match(verified.text,/ROUTER_WORKER_OK/)
+    const known=new Set(router.store.list('tool-call').map(call=>call.at))
+    await message('只查询历史：请用 psm_search 检索 ROUTER_WORKER_OK，选一条 msg: 消息引用用 psm_get 回源验证，然后告诉我 Worker 回复了什么。不要派发。')
+    const calls=router.store.list('tool-call').filter(c=>!known.has(c.at))
+    assert.ok(calls.some(c=>c.tool==='psm_search') && calls.some(c=>c.tool==='psm_get'))
+    assert.equal(router.store.list('task').length,2)
+    report.psm={realHistory:true,rawMessageVerified:true,routerSearchAndRead:true}
+  }
 
   stage = 'restart'
   const threadId = router.session.id

@@ -1,6 +1,7 @@
 import * as React from 'react'
 import type { ModelOption } from '../../../shared/contracts'
 import type { Api } from '../rpc'
+import { PsmSettings } from './PsmSettings'
 import { DirectoryPickerDialog } from './DirectoryPickerDialog'
 import { useT } from '../i18n'
 
@@ -70,6 +71,7 @@ export function RouterSettings({ api, onDirtyChange }: { api: Api; onDirtyChange
     </form>}
     {error && <p role="alert" className="settings-message is-error">{error} <button className="dsh-codex-button" onClick={() => void load()}>重新加载</button></p>}
     {message && <p role="status" className="settings-message is-success">{message}</p>}
+    <PsmSettings api={api}/>
     <DirectoryPickerDialog open={browse} api={api} selectParent onClose={() => setBrowse(false)} onPick={async path => {
       if (draft) edit({ ...draft, projectRoot: path }); setBrowse(false)
     }}/>

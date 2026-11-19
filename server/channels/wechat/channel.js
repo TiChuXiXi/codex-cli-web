@@ -313,7 +313,7 @@ export class WeChatChannel {
 
   async consume(signal) {
     while (!signal.aborted) {
-      if (this.router.session) {
+      if (this.router.session && !this.router.upgrade?.running) {
         for (const row of this.store.wxRows('in','pending')) {
           if (signal.aborted) return
           await this.handle(row, signal)

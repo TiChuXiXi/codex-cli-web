@@ -16,6 +16,11 @@ pub const WEB_ROUTER_TOOLS: &[&str] = &[
     "dispatch_task",
     "get_task_status",
     "interrupt_task",
+    "psm_search",
+    "psm_get",
+    "psm_save",
+    "psm_update",
+    "psm_remove",
 ];
 
 pub(crate) fn web_router_tool_policy() -> codex_extension_api::ToolPolicy {
@@ -66,7 +71,7 @@ pub struct WebRouterCapabilitiesResponse {
                 .map(|name| format!("{}/{name}", codex_core::WEB_ROUTER_NAMESPACE))
                 .collect();
             let response = codex_app_server_protocol::WebRouterCapabilitiesResponse {
-                policy_version: 1,
+                policy_version: 2,
                 tools,
             };
             self.outgoing.send_response_as(
@@ -95,6 +100,12 @@ for (const [file, anchor, replacement] of files) {
   const path = resolve(source, file)
   const original = pending.get(path) ?? await readFile(path, 'utf8')
   if (original.includes(replacement)) continue
+  // Reuse an already prepared v1 checkout without inserting a second Rust policy.
+  const previousPolicy = replacement.replace(/^    "psm_\w+",$\n/gm, '').replace('policy_version: 2,', 'policy_version: 1,')
+  if (previousPolicy !== replacement && original.split(previousPolicy).length === 2) {
+    pending.set(path, original.replace(previousPolicy, replacement))
+    continue
+  }
   if (original.split(anchor).length !== 2) throw new Error('Unexpected Router policy anchor in ' + file)
   pending.set(path, original.replace(anchor, replacement))
 }

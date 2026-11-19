@@ -243,6 +243,43 @@ export class CodexHub {
   // ── 只读查询 ────────────────────────────────────────────────────────────
 
   /** 线程列表（分页）。 */
+  // PSM uses persisted history only. These reads never resume or subscribe to a thread.
+  async psmThreads({ cursor, archived = false } = {}, signal) {
+    return this.#requireRpc().request('thread/list', {
+      limit: 60, archived, cursor, sortKey: 'created_at', sortDirection: 'asc',
+      modelProviders: [], sourceKinds: ['cli', 'vscode', 'exec', 'appServer'],
+    }, { signal, timeoutMs: 30000 })
+  }
+
+  async psmWorkerBusy() {
+    const seen=new Set()
+    let cursor
+    do {
+      const page=await this.#requireRpc().request('thread/loaded/list',{cursor,limit:100})
+      if(!Array.isArray(page.data)) return true
+      for(const id of page.data) {
+        const thread=await this.psmMetadata(id)
+        if(!['notLoaded','idle'].includes(thread.status?.type)) return true
+      }
+      cursor=page.nextCursor
+      if(seen.has(cursor)) return true
+      seen.add(cursor)
+    } while(cursor)
+    return false
+  }
+
+  async psmMetadata(threadId, signal) {
+    const result = await this.#requireRpc().request('thread/read', { threadId, includeTurns: false }, { signal })
+    if (result?.thread?.id !== threadId) throw new Error('Invalid PSM thread metadata')
+    return result.thread
+  }
+
+  async psmTurns(threadId, cursor, signal) {
+    return this.#requireRpc().request('thread/turns/list', {
+      threadId, cursor, limit: 8, sortDirection: 'desc', itemsView: 'full',
+    }, { signal, timeoutMs: 30000 })
+  }
+
   async listThreads(params = {}) {
     const rpc = this.#requireRpc()
     const request = {

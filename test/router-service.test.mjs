@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
@@ -46,6 +46,7 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
     routerQueueHead: async threadId => submitted.find(item => item.threadId === threadId && !consumed.has(item.clientUserMessageId) &&
       !threads.get(threadId)?.turns.some(turn => turn.items?.some(entry => entry.clientId === item.clientUserMessageId))) ?? null,
     status: () => ({ phase: 'ready', codexVersion: '0.169.1' }),
+    psmThreads: async () => ({data: [], nextCursor: null}),
     projects: async () => discover ? [{ cwd, name: 'Alpha', threadCount: 2 }] : [],
     listThreads: async () => ({ data: [...threads.values()].map(value => value.thread) }),
     routerReadWorker: async id => threads.get(id) ?? { thread: null, turns: [] },
@@ -134,6 +135,7 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
     router.start()
     await router.opening
     assert.equal(router.status().phase, 'ready')
+    await router.psm.sync?.running
   }
   t.after(async () => {
     await router?.close()
@@ -1074,4 +1076,177 @@ test('early foreign completion cannot inherit a phone reply address before the n
   channel.accept({msgs:[inbound('ask','你好')]})
   await until(() => client.sent.length)
   assert.deepEqual(client.sent.map(message => message.text),['actual phone answer'])
+})
+
+test('PSM starts indexing by default and preserves pause and opt-out across restarts', async t => {
+  const fx = await fixture(t)
+  await fx.router.psm.sync.running
+  let status = await fx.router.psm.status()
+  assert.equal(status.enabled, true)
+  assert.equal(status.phase, 'idle')
+  await fx.router.psm.control({action: 'pause'})
+  await fx.restart()
+  status = await fx.router.psm.status()
+  assert.equal(status.enabled, true)
+  assert.equal(status.phase, 'paused')
+  await fx.router.psm.control({action: 'disable'})
+  await fx.restart()
+  status = await fx.router.psm.status()
+  assert.equal(status.enabled, false)
+  assert.equal(status.phase, 'disabled')
+})
+
+test('Router PSM tools return visible evidence, retain confirmed semantics across L1 rebuild, and purge copies', async t=>{
+  const fx=await fixture(t),router=fx.router,hub=fx.hub
+  hub.psmThreads=({archived})=>({data:archived?[]:[...fx.threads.values()].map(v=>v.thread),nextCursor:null})
+  hub.psmMetadata=id=>fx.threads.get(id).thread
+  hub.psmTurns=id=>({data:[{id:'t',status:'completed',items:[{id:'i',type:'agentMessage',text:id==='worker-a'?'USB HUB 掉线':'蓝牙配对'}]}],nextCursor:null})
+  await router.psm.control({action:'enable'})
+  await router.psm.sync.running
+  await router.send({requestId:'psm-question-test',text:'USB 掉线是那次设备失联'})
+  const [hit]=(await fx.tool('psm_search',{query:'USB 掉线'})).value
+  assert.equal(hit.threadId,'worker-a')
+  assert.equal((await fx.tool('psm_get',{ref:hit.ref})).value.text,'USB HUB 掉线')
+  const proposed=await fx.tool('psm_save',{kind:'alias',projectId:'alpha-project',threadId:'worker-a',
+    value:'设备失联',evidenceRef:hit.ref,confirmation:'request'})
+  assert.equal(proposed.value.status,'needs_confirmation')
+  const [card]=router.read().clarifications
+  await router.confirm({id:card.id,revision:card.revision,candidateId:card.candidates[0].id})
+  let [alias]=await router.psm.search({query:'设备失联'})
+  assert.equal(alias.level,'user_confirmed')
+  assert.equal(fx.submitted.length,0)
+  await router.psm.control({action:'rebuild',confirmed:true})
+  await router.psm.sync.running
+  assert.equal((await router.psm.search({query:'设备失联'}))[0].revision,1)
+  await router.psm.correct({projectId:'alpha-project',threadId:'worker-b',entryId:alias.ref.slice(6),revision:1,value:'设备失联'})
+  assert.equal((await router.psm.search({query:'设备失联'}))[0].threadId,'worker-b')
+  assert.equal(router.store.list('psm-revision').length,2)
+  const project=router.projects.get('alpha-project')
+  router.projects.clear()
+  assert.deepEqual(await router.psm.search({query:'掉线'}),[])
+  await assert.rejects(router.psm.get(hit.ref))
+  router.projects.set(project.id,project)
+  await router.psm.control({action:'purge',projectId:project.id,confirmed:true})
+  await router.psm.sync.running
+  assert.deepEqual(await router.psm.search({query:'设备失联'}),[])
+  assert.equal(router.store.list('psm-revision').length,0)
+  assert.ok(fx.threads.has('worker-a'))
+})
+
+test('primary upgrade waits for real pending work, commits one pointer and routes both channels to it',async t=>{
+  const fx=await fixture(t),r=fx.router
+  r.psm.preference.enabled=true
+  r.app.policyVersion=2
+  const old=r.session.id,app=r.app
+  app.request=async(_,{threadId})=>({thread:{id:threadId,cwd:app.cwd,status:{type:'idle'}}})
+  let starts=0
+  app.start=async()=>{starts++;return {thread:{id:'psm-primary',cwd:app.cwd}}}
+  r.store.wxSave('binding',{id:'active',state:'bound',body:'binding-fixture'})
+  r.store.put('task','unfinished',{id:'unfinished',status:'awaiting_input',routerThreadId:old})
+  r.upgrade.check()
+  assert.equal(starts,0)
+  r.store.put('task','unfinished',{id:'unfinished',status:'completed',routerThreadId:old})
+  r.store.wxSave('in',{id:'inflight',state:'pending'})
+  r.upgrade.check()
+  assert.equal(starts,0)
+  r.store.wxSave('in',{id:'inflight',state:'done'})
+  r.upgrade.check()
+  const web=r.send({text:'Web input',requestId:'after-switch-web'})
+  await r.upgrade.running
+  await web
+  r.admit({text:'WeChat input',requestId:'after-switch-phone'},{generation:'test'})
+  assert.equal(starts,1)
+  assert.equal(r.store.get('session','active').id,'psm-primary')
+  for(const key of ['after-switch-phone','after-switch-web'])assert.equal(r.store.get('message','user:'+key).routerThreadId,'psm-primary')
+  assert.equal(r.store.wxRead('binding','active').body,'binding-fixture')
+  assert.equal(r.store.get('router-history',old).id,old)
+  assert.equal(r.store.get('psm-upgrade',old).phase,'committed')
+})
+
+test('prepared and unacknowledged upgrades recover conservatively across restart',async t=>{
+  const fx=await fixture(t)
+  const old=fx.router.session.id
+  fx.router.store.put('psm-upgrade',old,{phase:'starting'})
+  await fx.restart()
+  const r=fx.router
+  r.psm.preference.enabled=true
+  r.app.policyVersion=2
+  r.app.start=()=>assert.fail('must never create another replacement here')
+  r.app.request=async(_,{threadId})=>({thread:{id:threadId,cwd:r.app.cwd,status:{type:'idle'}}})
+  r.upgrade.check();await r.upgrade.running
+  assert.equal(r.session.id,old)
+  assert.equal(r.upgrade.error,'创建结果待核对')
+  r.store.put('psm-upgrade',old,{phase:'prepared',newId:'known-target'})
+  r.store.db.prepare('INSERT INTO router_receipts VALUES(?,?,?,?,?,?,?,?)').run('dispatch',old,'worker','turn',1,'pending',null,Date.now()+100000)
+  r.upgrade.check();assert.equal(r.upgrade.running,null)
+  r.store.db.exec("UPDATE router_receipts SET state='delivered'")
+  r.upgrade.check();await r.upgrade.running
+  assert.equal(r.session.id,'known-target')
+  await fx.restart()
+  assert.equal(fx.router.session.id,'known-target')
+  assert.ok(fx.router.store.get('router-history',old))
+})
+
+test('an unregistered project is indexed privately until a real access choice; searching never dispatches',async t=>{
+  const fx=await fixture(t,{discover:true}),r=fx.router
+  fx.hub.psmThreads=({archived})=>({data:archived?[]:[fx.threads.get('worker-a').thread],nextCursor:null})
+  fx.hub.psmMetadata=id=>fx.threads.get(id).thread
+  fx.hub.psmTurns=()=>({data:[{id:'turn',items:[{id:'i',type:'agentMessage',text:'USB历史证据'}]}],nextCursor:null})
+  await r.psm.control({action:'enable'});await r.psm.sync.running
+  assert.equal((await r.psm.status()).indexed,1)
+  await r.send({requestId:'psm-authorize-project',text:'查找历史会话'})
+  assert.deepEqual((await fx.tool('psm_search',{query:'USB'})).value,[])
+  const [p]=(await fx.tool('list_projects',{})).value
+  assert.equal((await fx.tool('psm_get',{ref:'project:'+p.id})).value.status,'needs_confirmation')
+  const [card]=r.read().clarifications
+  await r.confirm({id:card.id,revision:card.revision,candidateId:p.id})
+  const [hit]=(await fx.tool('psm_search',{query:'USB'})).value
+  assert.equal(hit.projectId,p.id)
+  assert.equal(hit.resumeCandidate,false)
+  assert.equal(r.projects.has(p.id),false)
+  assert.equal((await fx.tool('psm_get',{ref:hit.ref})).value.text,'USB历史证据')
+  assert.equal(fx.submitted.length,0)
+  assert.equal(fx.threads.size,2)
+})
+
+test('a directory move with native thread continuity preserves memory; same-name replacement gets a fresh identity',async t=>{
+  const fx=await fixture(t),r=fx.router
+  const worker=fx.threads.get('worker-a')
+  fx.hub.psmThreads=({archived})=>({data:archived?[]:[worker.thread],nextCursor:null})
+  fx.hub.psmMetadata=()=>worker.thread
+  fx.hub.psmTurns=()=>({data:[{id:'turn',items:[{id:'item',type:'agentMessage',text:'项目历史'}]}],nextCursor:null})
+  await r.psm.control({action:'enable'});await r.psm.sync.running
+  const original=r.store.get('psm-thread',worker.thread.id).uid
+  const moved=fx.cwd+'-moved'
+  await rename(fx.cwd,moved)
+  worker.thread.cwd=moved
+  r.projects=await loadRouterProjects([{id:'alpha-project',name:'Alpha',cwd:moved}],r.directory)
+  r.psm.sync.refresh();await r.psm.sync.running
+  assert.equal((await r.psm.allowed()).get(original)?.cwd,moved)
+  assert.equal((await r.psm.search({query:'项目历史'}))[0].threadId,worker.thread.id)
+  await mkdir(fx.cwd)
+  r.projects=await loadRouterProjects([{id:'alpha-project',name:'Alpha',cwd:fx.cwd}],r.directory)
+  worker.thread.cwd=fx.cwd
+  r.psm.sync.refresh();await r.psm.sync.running
+  assert.deepEqual(await r.psm.search({query:'项目历史'}),[])
+  assert.match(await r.psm.targetIssue(r.projects.get('alpha-project'),worker.thread.id),/身份/)
+  assert.equal((await r.psm.sync.db.call('source',worker.thread.id)).state,'missing')
+})
+
+test('a corrupt derived file degrades PSM alone and explicit L1 rebuild restores confirmed associations',async t=>{
+  const fx=await fixture(t),r=fx.router
+  fx.hub.psmThreads=()=>({data:[],nextCursor:null})
+  await r.psm.control({action:'enable'})
+  await r.psm.sync.running
+  const uid=r.psm.identity(r.projects.get('alpha-project'))
+  r.psm.apply({id:'alias',uid,projectId:'alpha-project',kind:'alias',value:'设备控制',previous:0,state:'active'},'user_confirmed','settings-test')
+  await r.psm.control({action:'disable'})
+  await writeFile(join(r.directory,'psm-index.sqlite'),'invalid sqlite database')
+  await r.psm.control({action:'enable'})
+  assert.equal((await r.psm.status()).phase,'failed')
+  assert.equal(r.read().phase,'ready')
+  await r.send({requestId:'fallback-lookup-test',text:'查看项目'})
+  assert.equal((await fx.tool('list_projects',{})).success,true)
+  await r.psm.control({action:'rebuild',confirmed:true});await r.psm.sync.running
+  assert.equal((await r.psm.search({query:'设备控制'}))[0].level,'user_confirmed')
 })

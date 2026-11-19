@@ -27,8 +27,8 @@ const taskEvents = {
 }
 
 export class RouterDispatcher {
-  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal }) {
-    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal })
+  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, targetIssue }) {
+    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, targetIssue })
     this.off = bus.subscribe(event => this.onEvent(event))
     this.retained = new Set()
     this.timer = setInterval(() => this.schedule(), 12000)
@@ -56,7 +56,7 @@ export class RouterDispatcher {
     const id = randomUUID()
     const now = Date.now()
     const task = {
-      id, requestId: intent.requestId, routerThreadId: this.routerThreadId(),
+      id, requestId: intent.requestId, ...(intent.psmProjectUid && {psmProjectUid:intent.psmProjectUid}), routerThreadId: this.routerThreadId(),
       sourceRouterTurnId: intent.sourceRouterTurnId ?? null,
       projectId: intent.projectId, threadId: intent.threadId ?? null, turnId: null,
       instruction: intent.instruction, mode: intent.mode, status: 'queued', createdAt: now, updatedAt: now,
@@ -130,7 +130,7 @@ export class RouterDispatcher {
         const outcome = { completed: 'Worker 回合已结束，未返回最终文本。', interrupted: 'Worker 回合已中断。', failed: next.error || 'Worker 回合失败。' }
         const text = next.status === 'completed' && next.finalReply ? next.finalReply :
           [outcome[next.status], next.finalReply].filter(Boolean).join('\n\n')
-        this.store.put('message', messageId, { id: messageId, role: 'assistant', status: 'completed',
+        this.store.put('message', messageId, { id: messageId, role: 'assistant', status: 'completed', routerThreadId:next.routerThreadId,
           label: (receiptAdded ? 'Worker · ' : 'Router · ') + this.workerLabel(next), text })
         if (receiptAdded && next.status === 'completed' && !next.finalReply && !patch.historyRead) next.needsFinalReply = true
         delete next.finalReply
@@ -296,6 +296,8 @@ export class RouterDispatcher {
       const { project, detail } = await this.inspect(task)
       if (detail.thread.status?.type === 'active' || detail.turns.some(turn => turn.status === 'inProgress') ||
           this.followups?.list(threadId).entries.length) return
+      const invalid=await this.targetIssue?.(project,threadId)
+      if(invalid) { this.update(task.id,{status:'failed',error:invalid});return }
       await this.retain(threadId)
       if (task.worker && await this.hub.routerQueueHead(threadId)) return
       const issue = await this.prepareWorker(task, project)

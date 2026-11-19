@@ -161,6 +161,8 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
       {snapshot?.enabled === false ? 'Router 未启用' : '正在连接 Router…'}
     </p>}
     {snapshot?.receiptLimited && <p role="status" className="dsh-codex-router-meta">已达到自动回执限额，待回执任务将在额度恢复后处理。</p>}
+    {!!snapshot?.previousThreads?.length && <details><summary>旧中枢会话记录</summary>
+      {snapshot.previousThreads.map(id=><History key={id} api={api} threadId={id}/>)}</details>}
     {tab === 'chat' && <>
       <div className="dsh-codex-messages-wrap">
       <div ref={log} className="dsh-codex-messages" role="log" aria-label="Router 对话"
@@ -308,4 +310,21 @@ function TaskCard({ task, onWorker, onDismiss, onInteraction }: {
       </div>
       : <button type="button" className="dsh-codex-button" onClick={() => setConfirm(true)}>已核对，关闭任务</button>)}
   </article>
+}
+
+function History({api,threadId}:{api:Api;threadId:string}) {
+  const [messages,setMessages]=React.useState<{id:string;text:string;role:string}[]>([])
+  const [cursor,setCursor]=React.useState<string|null|undefined>()
+  const [busy,setBusy]=React.useState(false)
+  const [error,setError]=React.useState('')
+  const load=async()=>{
+    setBusy(true)
+    try {
+      const page=await api<{messages:typeof messages;nextCursor:string|null}>('router/history/read',{threadId,cursor})
+      setMessages(previous=>[...previous,...page.messages]);setCursor(page.nextCursor);setError('')
+    } catch(e){setError(String(e))} finally{setBusy(false)}
+  }
+  return <section><strong>{threadId}</strong>{messages.map((m,i)=><p key={m.id ?? i}>{m.role==='user'?'你':'Router'} · {m.text}</p>)}
+    {cursor!==null && <button type="button" disabled={busy} onClick={()=>void load()}>{cursor?'读取更早记录':'读取会话记录'}</button>}
+    {error && <p role="alert">{error}</p>}</section>
 }
