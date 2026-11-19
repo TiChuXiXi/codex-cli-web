@@ -47,6 +47,7 @@ const TURN_PAGE = 2
 const THREAD_PAGE = 5
 /** 记住最后一次打开的会话。 */
 const LAST_THREAD_KEY = 'dsh-codex-last-thread'
+const LAST_SURFACE_KEY = 'dsh-codex-last-surface'
 const VIEWED_TURNS_KEY = 'dsh-codex-viewed-turns'
 
 function readStored(key: string): string | null {
@@ -191,14 +192,14 @@ export function ConsolePage(props: ConsolePageProps) {
   providerRef.current = provider
   const [models, setModels] = React.useState<ModelOption[]>([])
   const [quota, setQuota] = React.useState<RateLimits | null>(null)
-  const [sessionPermission, setSessionPermission] = React.useState<{ threadId: string, mode: PermissionMode | null } | null>(null)
+  const [sessionSettings, setSessionSettings] = React.useState<ReturnType<typeof sessionExecutionSettings> | null>(null)
   const followupRevision = selectedId ? followups[selectedId]?.revision : undefined
   React.useEffect(() => {
     if (!selectedId || followupRevision === undefined) return
     let cancelled = false
-    void api<Parameters<typeof permissionFromSettings>[0]>('threads/settings', { threadId: selectedId })
+    void api<ThreadExecutionSettings | null>('threads/settings', { threadId: selectedId })
       .then(settings => {
-        if (!cancelled && settings) setSessionPermission({ threadId: selectedId, mode: permissionFromSettings(settings) })
+        if (!cancelled && settings) setSessionSettings(sessionExecutionSettings(selectedId, settings))
       })
       .catch(() => {})
     return () => { cancelled = true }
@@ -225,7 +226,10 @@ export function ConsolePage(props: ConsolePageProps) {
   const [dirPickerOpen, setDirPickerOpen] = React.useState(false)
   const [newProjectOpen, setNewProjectOpen] = React.useState(false)
   const [settingsOpen, setSettingsOpen] = React.useState(false)
-  const [routerOpen, setRouterOpen] = React.useState(false)
+  const [routerOpen, setRouterOpen] = React.useState(() => readStored(LAST_SURFACE_KEY) === 'router')
+  React.useEffect(() => {
+    try { window.localStorage.setItem(LAST_SURFACE_KEY, routerOpen ? 'router' : 'worker') } catch {}
+  }, [routerOpen])
   const [computerRoots, setComputerRoots] = React.useState<string[]>([])
   const [computerRoot, setComputerRoot] = React.useState('')
   React.useEffect(() => {
@@ -519,6 +523,11 @@ export function ConsolePage(props: ConsolePageProps) {
           case 'account/rateLimits':
             void loadQuota()
             break
+          case 'thread/settings':
+            if (event.threadId && event.threadId === selectedIdRef.current && event.payload?.settings) {
+              setSessionSettings(sessionExecutionSettings(event.threadId, event.payload.settings))
+            }
+            break
           case 'thread/usage':
             if (event.threadId) {
               usageEvents.current.delete(event.threadId)
@@ -625,7 +634,7 @@ export function ConsolePage(props: ConsolePageProps) {
     if (selectedId === null) return undefined
     let cancelled = false
     let opened = false
-    setSessionPermission(null)
+    setSessionSettings(null)
     setPlanMode(false)
     api('threads/open', { threadId: selectedId })
       .then(async () => {
@@ -635,14 +644,9 @@ export function ConsolePage(props: ConsolePageProps) {
           return
         }
         try {
-          const settings = await api<{
-            approvalPolicy: string | null
-            approvalsReviewer: string | null
-            sandbox: { type: string } | null
-            collaborationMode: { mode?: string | null } | null
-          } | null>('threads/settings', { threadId: selectedId })
+          const settings = await api<ThreadExecutionSettings | null>('threads/settings', { threadId: selectedId })
           if (!cancelled) {
-            setSessionPermission({ threadId: selectedId, mode: permissionFromSettings(settings) })
+            setSessionSettings(sessionExecutionSettings(selectedId, settings))
             setPlanMode(settings?.collaborationMode?.mode === 'plan')
           }
         } catch {
@@ -998,7 +1002,9 @@ export function ConsolePage(props: ConsolePageProps) {
             selectedId={selectedId}
             activeTurnId={detail?.thread.id === selectedId ? activeTurnId : null}
             models={models}
-            permissionFromSession={sessionPermission?.threadId === selectedId && detail?.thread.id === selectedId ? sessionPermission.mode : null}
+            permissionFromSession={sessionSettings?.threadId === selectedId ? sessionSettings.permission : null}
+            modelFromSession={sessionSettings?.threadId === selectedId ? sessionSettings.model : null}
+            effortFromSession={sessionSettings?.threadId === selectedId ? sessionSettings.effort : null}
             planMode={planMode}
             onEnterPlan={() => setPlanMode(true)}
             onExitPlan={() => setPlanMode(false)}
@@ -1048,6 +1054,11 @@ export function ConsolePage(props: ConsolePageProps) {
           onClose={() => setRouterStatus(current => current && ({ ...current, promptProjectRoot: false }))}/>}
         {newProjectOpen && <NewProjectDialog api={api} onClose={() => setNewProjectOpen(false)}
           onExisting={() => {setNewProjectOpen(false);setDirPickerOpen(true)}}
+          onConfirmation={() => {
+            setNewProjectOpen(false)
+            setRouterOpen(true)
+            appearance.closeNav()
+          }}
           onCreated={(cwd,id) => {
             setNewProjectOpen(false);setSelectedCwd(cwd);setSelectedId(id);setSearch('');setRouterOpen(false)
             if (searchTimer.current !== null) clearTimeout(searchTimer.current)
@@ -1065,7 +1076,20 @@ export function ConsolePage(props: ConsolePageProps) {
   )
 }
 
-function permissionFromSettings(settings: { approvalPolicy: string | null, approvalsReviewer: string | null, sandbox: { type: string } | null } | null): PermissionMode | null {
+type ThreadExecutionSettings = {
+  approvalPolicy: string | null
+  approvalsReviewer: string | null
+  sandbox: { type: string } | null
+  model?: string | null
+  effort?: string | null
+  collaborationMode?: { mode?: string | null } | null
+}
+
+function sessionExecutionSettings(threadId: string, settings: ThreadExecutionSettings | null) {
+  return { threadId, permission: permissionFromSettings(settings), model: settings?.model ?? null, effort: settings?.effort ?? null }
+}
+
+function permissionFromSettings(settings: ThreadExecutionSettings | null): PermissionMode | null {
   if (settings === null) return null
   if (settings.sandbox?.type === 'dangerFullAccess') return 'full'
   if (settings.sandbox?.type === 'readOnly') return 'read'

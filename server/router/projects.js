@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { realpath, stat } from 'node:fs/promises'
 import { HubError } from '../codex/hub.js'
+import { permissionPayload } from '../../shared/worker-options.js'
 
 const safeSandbox = new Set(['read-only', 'workspace-write'])
 const identity = ({ dev, ino }) => String(dev) + ':' + String(ino)
@@ -89,6 +90,24 @@ export function workerDispatchIssue(project, settings, { existing = false, grant
     issues.push('所选 Worker 的网络或写入范围超出项目权限')
   }
   return issues.length ? issues.join('。') : null
+}
+
+export function workerSettingsStamp({ cwd, sandbox, approvalPolicy, approvalsReviewer, model, effort, collaborationMode }) {
+  return { cwd, sandbox, approvalPolicy, approvalsReviewer, model, effort, executionMode: collaborationMode?.mode ?? 'default' }
+}
+
+export function workerPermissionMatches(project, settings, permission) {
+  if (workerIdentityIssue(project, settings)) return false
+  const expected = permissionPayload(permission, true)
+  const sandbox = settings.sandbox
+  if (settings.approvalPolicy !== expected.approvalPolicy ||
+      settings.approvalsReviewer !== expected.approvalsReviewer || sandbox.type !== expected.sandboxPolicy.type) return false
+  if (sandbox.type === 'workspaceWrite') {
+    return sandbox.networkAccess === expected.sandboxPolicy.networkAccess &&
+      sandbox.excludeTmpdirEnvVar === true && sandbox.excludeSlashTmp === true &&
+      Array.isArray(sandbox.writableRoots) && sandbox.writableRoots.every(root => root === project.cwd)
+  }
+  return sandbox.type !== 'readOnly' || sandbox.networkAccess === false
 }
 
 export function describeWorkerSettings({ sandbox, approvalPolicy, approvalsReviewer }) {

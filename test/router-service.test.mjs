@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { setTimeout as delay } from 'node:timers/promises'
 import { EventBus } from '../server/services/events.js'
+import { SettingsService } from '../server/services/settings.js'
+import { permissionPayload } from '../shared/worker-options.js'
 import { bootstrap } from '../server/bootstrap.js'
 import { loadConfig } from '../server/config.js'
 import { RouterService } from '../server/router/service.js'
@@ -16,7 +18,7 @@ import { RouterStore } from '../server/router/store.js'
 import { normalizeRouterConfig } from '../server/router/app-server.js'
 import { routerNamespace } from '../server/router/tools.js'
 
-async function fixture(t, { discover = false, resumeExistingPermissions = false, createChannel, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
+async function fixture(t, { discover = false, resumeExistingPermissions = false, projectSandbox = 'read-only', createChannel, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'router-service-'))
   const cwd = join(root, 'worker')
   await mkdir(cwd)
@@ -26,6 +28,8 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
     thread: { id, cwd, name: index ? '同名测试乙' : '同名测试甲', status: { type: 'idle' } }, turns: [],
   }]))
   const submitted = []
+  const creations = []
+  const createdSettings = new Map()
   const consumed = new Set()
   bus.subscribe(event => {
     if (event.type === 'item/upsert' && event.payload?.item?.type === 'userMessage') consumed.add(event.payload.item.clientId)
@@ -54,12 +58,19 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
       assert.equal(params.cwd, cwd)
       assert.equal(params.approvalPolicy, 'on-request')
       assert.equal(options.routerWorker, true)
+      creations.push({ params, options })
+      if (options.workerPermission) {
+        const access = permissionPayload(options.workerPermission, true)
+        createdSettings.set('created-worker', { cwd, approvalPolicy: access.approvalPolicy,
+          approvalsReviewer: access.approvalsReviewer, sandbox: access.sandboxPolicy })
+      }
       const thread = { id: 'created-worker', cwd, name: '新会话', status: { type: 'idle' } }
       threads.set(thread.id, { thread, turns: [] })
       return thread
     },
     renameThread: async () => {},
-    routerWorkerSettings: async id => ({ cwd: threads.get(id)?.thread.cwd, approvalPolicy: policy, approvalsReviewer: 'user', sandbox }),
+    routerWorkerSettings: async id => createdSettings.get(id) ?? ({ cwd: threads.get(id)?.thread.cwd, approvalPolicy: policy, approvalsReviewer: 'user', sandbox }),
+    routerWorkerProfile: async id => ({ ...await hub.routerWorkerSettings(id), model: 'worker-default', effort: 'medium', collaborationMode: { mode: 'default' } }),
     routerAddWorkerMessage: async (threadId, clientUserMessageId, text) => {
       const queued = { id: 'queued-' + clientUserMessageId, clientUserMessageId }
       submitted.push({ threadId, text, ...queued })
@@ -129,7 +140,7 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
       },
     }
   }
-  const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: 'Alpha', cwd, resumeExistingPermissions }] }
+  const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: 'Alpha', cwd, sandbox: projectSandbox, resumeExistingPermissions }] }
   async function boot() {
     router = new RouterService({ config, stateDir, hub, bus, connect, wakePolicy, createChannel })
     router.start()
@@ -144,7 +155,7 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
   })
   await boot()
   return {
-    get router() { return router }, hub, stateDir, cwd, threads, submitted, interrupts, bus, retained, sent, routerHistory,
+    get router() { return router }, hub, stateDir, cwd, threads, submitted, creations, interrupts, bus, retained, sent, routerHistory,
     set wakeBehavior(value) { wakeBehavior = value },
     set nativeStatus(value) { nativeStatus = value },
     get starts() { return starts }, get resumes() { return resumes },
@@ -201,6 +212,62 @@ test('a requested permission outside the project grant waits for the user and in
   assert.equal(question.kind,'workerPermission')
   await fx.router.confirm(question,true)
   assert.equal(fx.submitted.length,0)
+})
+
+test('saved Worker permission applies to creation and new dispatch, including an explicit read-only override', async t => {
+  const fx = await fixture(t, { projectSandbox: 'workspace-write' })
+  const settings = new SettingsService({ config: { codex: fx.hub.config, stateDir: fx.stateDir }, firewall: {} })
+  await settings.saveWorkerDefaults({ ...settings.workerDefaults(), defaultPermission: 'ask' }, fx.hub)
+  await fx.router.send({ requestId: 'saved-worker-create', text: '创建工作会话' })
+  const created = await fx.tool('create_session', { projectId: 'alpha-project' })
+  assert.equal(created.value.status, 'created')
+  assert.equal(fx.creations[0].options.workerPermission, 'ask')
+  assert.equal((await fx.hub.routerWorkerSettings(created.value.threadId)).sandbox.type, 'workspaceWrite')
+  fx.finish()
+
+  for (const [requestId, override] of [['saved-worker-dispatch', undefined], ['readonly-worker-dispatch', 'read']]) {
+    await fx.router.send({ requestId, text: '新建 Worker 并执行任务' })
+    const result = await fx.tool('dispatch_task', {
+      projectId: 'alpha-project', mode: 'new', instruction: '执行', requestId,
+      ...(override && { workerPermission: override }),
+    })
+    await until(() => fx.submitted.some(row => row.clientUserMessageId === result.value.id))
+    assert.equal(fx.creations.at(-1).options.workerPermission, override ?? 'ask')
+    const effective = await fx.hub.routerWorkerSettings('created-worker')
+    assert.equal(effective.sandbox.type, override ? 'readOnly' : 'workspaceWrite')
+    fx.finish()
+    // Mark the fixture's native queue entry as consumed before the next new dispatch.
+    fx.bus.publish('item/upsert', { item: { type: 'userMessage', clientId: result.value.id } })
+  }
+})
+
+test('Router refuses to enqueue a new Worker if Codex reports a different sandbox', async t => {
+  const fx = await fixture(t, { projectSandbox: 'workspace-write' })
+  fx.hub.config.defaultPermission = 'read'
+  fx.hub.routerWorkerSettings = async () => ({
+    cwd: fx.cwd, approvalPolicy: 'on-request', approvalsReviewer: 'user',
+    sandbox: permissionPayload('ask', true).sandboxPolicy,
+  })
+  const requestId = 'worker-sandbox-mismatch'
+  await fx.router.send({ requestId, text: '新建只读 Worker' })
+  const result = await fx.tool('dispatch_task', { projectId: 'alpha-project', mode: 'new', instruction: '执行', requestId })
+  await until(() => fx.router.getTask(result.value.id).status === 'failed')
+  assert.match(fx.router.getTask(result.value.id).error, /未应用指定权限/)
+  assert.equal(fx.submitted.length, 0)
+})
+
+test('a saved write default requires project permission confirmation instead of creating a read-only Worker', async t => {
+  const fx = await fixture(t)
+  fx.hub.config.defaultPermission = 'ask'
+  await fx.router.send({ requestId: 'worker-default-approval', text: '创建工作会话' })
+  const requested = await fx.tool('create_session', { projectId: 'alpha-project' })
+  assert.equal(requested.value.status, 'needs_confirmation')
+  assert.equal(fx.creations.length, 0)
+  const [question] = fx.router.read().clarifications
+  assert.equal(question.kind, 'workerPermission')
+  const result = await fx.router.confirm({ id: question.id, revision: question.revision, candidateId: 'allow' })
+  assert.equal(result.status, 'created')
+  assert.equal(fx.creations[0].options.workerPermission, 'ask')
 })
 
 test('first-run directory setup can be deferred and resumes the original new project request after restart', async t => {
@@ -295,6 +362,10 @@ test('saved Router defaults and newly provisioned projects survive restart, coll
   await assert.rejects(fx.router.openNewProject({ requestId: 'another-create-1', name: '示例' }), /已存在/)
   await assert.rejects(fx.router.openNewProject({ requestId: 'another-create-2', name: '../outside' }), /单个目录名/)
   await assert.rejects(fx.router.openNewProject({ requestId: 'another-create-3', repository: 'file:///etc' }), /HTTPS/)
+  fx.hub.config.defaultPermission = 'ask'
+  const waiting = await fx.router.openNewProject({ requestId: 'another-create-4', name: '需要授权的新项目' })
+  assert.deepEqual(waiting, { cwd: join(root, '需要授权的新项目'), status: 'needs_confirmation' })
+  assert.equal(fx.router.read().clarifications.at(-1).kind, 'workerPermission')
 })
 
 test('Router model changes during a turn persist across resume and default reset', async t => {
@@ -348,6 +419,61 @@ test('Router chats and restores the same session and transcript', async t => {
   assert.equal(fx.starts, 1)
   assert.equal(fx.resumes, 1)
   assert.equal(fx.router.read().messages.at(-1).text, '你好！')
+})
+
+test('Router persists the turn phase and tool activity exposed in chat', async t => {
+  const fx = await fixture(t)
+  await fx.router.send({ requestId: 'process-chat-0001', text: '查看会话过程' })
+  const routerThreadId = fx.router.read().primaryThreadId
+  const turnId = fx.router.read().activeTurnId
+  const scope = { threadId: routerThreadId, turnId }
+  const item = { type: 'agentMessage', id: 'progress-item', phase: 'commentary' }
+  fx.router.onEvent('item/started', { ...scope, item })
+  fx.router.onEvent('item/agentMessage/delta', { ...scope, itemId: item.id, delta: '正在读取' })
+  assert.equal(fx.router.read().messages.at(-1).phase, 'commentary')
+  assert.equal(fx.router.read().messages.at(-1).text, '正在读取')
+  fx.router.onEvent('item/completed', { ...scope, item: { ...item, text: '正在读取会话列表' } })
+  const pending = fx.tool('list_sessions', { query: 'private-search-fixture' })
+  assert.deepEqual(fx.router.read().messages.at(-1).tool, { name: 'list_sessions', status: 'running' })
+  assert.ok((await pending).success)
+  fx.finish('读取完成')
+  const finished = fx.router.read()
+  assert.equal(finished.activeTurnId, undefined)
+  assert.ok(Number.isFinite(finished.messages[0].durationMs))
+  assert.deepEqual(finished.messages.map(({ turnId, phase, text, tool }) => [turnId, phase, text, tool]), [
+    [turnId, undefined, '查看会话过程', undefined],
+    [turnId, 'commentary', '正在读取会话列表', undefined],
+    [turnId, undefined, '', { name: 'list_sessions', status: 'completed', outcome: { success: true } }],
+    [turnId, undefined, '读取完成', undefined],
+  ])
+  await fx.restart()
+  assert.deepEqual(fx.router.read().messages, finished.messages)
+})
+
+test('legacy Router messages recover native commentary and tool order without exposing arguments', async t => {
+  const fx = await fixture(t)
+  const threadId = fx.router.read().primaryThreadId
+  const turnId = 'legacy-router-turn'
+  fx.routerHistory.unshift({ id: turnId, status: 'completed', durationMs: 1200, items: [
+    { type: 'agentMessage', id: 'old-progress', phase: 'commentary', text: '历史过程' },
+    { type: 'dynamicToolCall', id: 'old-call', namespace: routerNamespace,
+      tool: 'list_sessions', status: 'completed', success: true, arguments: { query: 'private-fixture-query' } },
+    { type: 'agentMessage', id: 'old-final', phase: 'final_answer', text: '历史最终回答' },
+  ] })
+  for (const [id, text] of [['old-progress', '历史过程'], ['old-final', '历史最终回答']]) {
+    fx.router.store.put('message', 'agent:' + id, { id: 'agent:' + id, role: 'assistant', text, status: 'completed', routerThreadId: threadId })
+  }
+  await fx.restart()
+  const { messages } = fx.router.read()
+  assert.deepEqual(messages.map(({ turnId, text, phase, tool }) => [turnId, text, phase, tool?.name]), [
+    [turnId, '历史过程', 'commentary', undefined],
+    [turnId, '', undefined, 'list_sessions'],
+    [turnId, '历史最终回答', 'final_answer', undefined],
+  ])
+  assert.equal(messages[2].durationMs, 1200)
+  assert.doesNotMatch(JSON.stringify(messages), /private-fixture-query/)
+  await fx.restart()
+  assert.deepEqual(fx.router.read().messages, messages)
 })
 
 test('first use of a discovered project authorizes the named Worker in one choice', async t => {
@@ -577,6 +703,113 @@ test('only explicit confirmation can interrupt the task’s currently associated
   await assert.rejects(fx.router.confirm({ id: pending.id, revision: pending.revision, candidateId: 'worker-b' }), /不在待确认/)
   await fx.router.confirm({ id: pending.id, revision: pending.revision, candidateId: task.id })
   assert.deepEqual(fx.interrupts, [associated])
+})
+
+function installWorkerSettingsFixture(fx) {
+  const settings = { cwd: fx.cwd, model: 'worker-default', effort: 'medium', collaborationMode: { mode: 'plan' },
+    approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly', networkAccess: false } }
+  const changes = []
+  fx.hub.routerWorkerProfile = async () => structuredClone(settings)
+  fx.hub.configureWorker = async (threadId, worker) => {
+    changes.push({ threadId, ...worker })
+    Object.assign(settings, { model: worker.model, effort: worker.effort, collaborationMode: { mode: worker.executionMode } })
+    if (worker.permission) {
+      const { sandboxPolicy, approvalPolicy, approvalsReviewer } = permissionPayload(worker.permission, true)
+      Object.assign(settings, { sandbox: sandboxPolicy, approvalPolicy, approvalsReviewer })
+    }
+  }
+  return { changes, settings }
+}
+
+test('Router reads the current Worker settings and applies a confirmed edit when the active turn ends', async t => {
+  const fx = await fixture(t)
+  const { settings, changes } = installWorkerSettingsFixture(fx)
+  const target = fx.threads.get('worker-a')
+  target.thread.status = { type: 'active' }
+  const turn = { id: 'active-settings-turn', status: 'inProgress', items: [] }
+  target.turns.push(turn)
+  const requestId = 'settings-only-request'
+  await fx.router.send({ requestId, text: '这个会话的思考强度改成 high' })
+  const read = await fx.tool('get_session', { threadId: 'worker-a' })
+  assert.equal(read.value.activeTurnId, turn.id)
+  assert.deepEqual(read.value.settings, { model: 'worker-default', effort: 'medium', executionMode: 'plan',
+    sandbox: 'readOnly', permission: '只读，按需审批', approvalPolicy: 'on-request', approvalsReviewer: 'user' })
+  const proposal = await fx.tool('dispatch_task', { ...args(requestId), workerAction: 'settings', workerEffort: 'high' })
+  assert.equal(proposal.value.status, 'needs_confirmation')
+  const [card] = fx.router.read().clarifications
+  assert.match(card.candidates[0].summary, /medium.*high/)
+  const job = await fx.router.confirm({ ...card, candidateId: 'allow' })
+  await fx.router.dispatcher.sweep()
+  assert.deepEqual(changes, [])
+  assert.equal(fx.router.getTask(job.id).status, 'queued')
+  turn.status = 'completed'
+  target.thread.status = { type: 'idle' }
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.router.getTask(job.id).status, 'completed')
+  assert.deepEqual(changes, [{ threadId: 'worker-a', model: 'worker-default', effort: 'high', executionMode: 'plan' }])
+  assert.equal(settings.sandbox.type, 'readOnly')
+  assert.deepEqual(fx.interrupts, [])
+  assert.deepEqual(fx.submitted, [])
+})
+
+test('an approved restart interrupts the exact Router-dispatched Worker turn, then continues it once with the new settings', async t => {
+  const fx = await fixture(t)
+  const original = await dispatch(fx, 'restart-active-original')
+  const { changes } = installWorkerSettingsFixture(fx)
+  const target = fx.threads.get('worker-a')
+  const item = { type: 'userMessage', clientId: original.id }
+  const turn = { id: 'original-worker-turn', status: 'inProgress', items: [item] }
+  target.turns.push(turn)
+  target.thread.status = { type: 'active' }
+  fx.bus.publish('item/upsert', { item }, { threadId: 'worker-a', turnId: turn.id })
+  assert.equal(fx.router.getTask(original.id).status, 'running')
+  const requestId = 'restart-worker-request'
+  await fx.router.send({ requestId, text: '改成需要审批和 high，停下并继续' })
+  const restart = { workerAction: 'restart', expectedTurnId: turn.id, workerPermission: 'ask', workerEffort: 'high' }
+  const proposal = await fx.tool('dispatch_task', { ...args(requestId), instruction: '@worker ' + JSON.stringify(restart) })
+  assert.equal(proposal.value.status, 'needs_confirmation')
+  assert.deepEqual(fx.interrupts, [])
+  const [card] = fx.router.read().clarifications
+  const job = await fx.router.confirm({ ...card, candidateId: 'allow' })
+  await fx.router.dispatcher.sweep()
+  assert.deepEqual(fx.interrupts, [{ threadId: 'worker-a', turnId: turn.id }])
+  assert.deepEqual(changes, [])
+  assert.equal(fx.submitted.length, 1)
+  fx.finish()
+  await fx.restart()
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.interrupts.length, 1)
+  turn.status = 'interrupted'
+  target.thread.status = { type: 'idle' }
+  fx.bus.publish('turn/completed', { turn }, { threadId: 'worker-a', turnId: turn.id })
+  await fx.router.dispatcher.sweep()
+  assert.deepEqual(changes, [{ threadId: 'worker-a', model: 'worker-default', effort: 'high', executionMode: 'plan', permission: 'ask' }])
+  assert.equal(fx.submitted[1].clientUserMessageId, job.id)
+  assert.equal(fx.submitted[1].threadId, 'worker-a')
+  assert.match(fx.submitted[1].text, /继续本会话刚才中断的原任务/)
+  await fx.router.confirm({ ...card, candidateId: 'allow' })
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.submitted.length, 2)
+  assert.equal(fx.interrupts.length, 1)
+})
+
+test('restart rejects a stale confirmation without interrupting a replacement Worker turn', async t => {
+  const fx = await fixture(t)
+  installWorkerSettingsFixture(fx)
+  const target = fx.threads.get('worker-a')
+  const original = { id: 'stale-worker-original', status: 'inProgress' }
+  target.turns.push(original)
+  const requestId = 'stale-worker-restart'
+  await fx.router.send({ requestId, text: '修改权限并继续原任务' })
+  const proposal = await fx.tool('dispatch_task', { ...args(requestId), workerAction: 'restart',
+    expectedTurnId: original.id, workerPermission: 'ask' })
+  assert.equal(proposal.value.status, 'needs_confirmation')
+  const [card] = fx.router.read().clarifications
+  original.status = 'completed'
+  target.turns.push({ id: 'replacement-turn', status: 'inProgress' })
+  await assert.rejects(fx.router.confirm({ ...card, candidateId: 'allow' }), /回合已变化/)
+  assert.deepEqual(fx.interrupts, [])
+  assert.deepEqual(fx.submitted, [])
 })
 
 test('authenticated RPC reaches the private Router service through the workbench envelope', async t => {
@@ -947,6 +1180,10 @@ test('Web and WeChat share a durable FIFO and owner-only replies across restart 
   fx.finish('private Web answer')
   await until(() => fx.sent.length === 2)
   assert.equal(fx.sent[1].text,'hello from phone')
+  const scope = { threadId: fx.router.read().primaryThreadId, turnId: fx.router.read().activeTurnId }
+  fx.router.onEvent('item/completed', { ...scope, item: { id: 'wechat-progress', type: 'agentMessage',
+    phase: 'commentary', text: 'private progress retained in Web' } })
+  assert.ok((await fx.tool('list_projects', {})).success)
   fx.finish('phone answer')
   await until(() => fx.sent.length === 3)
   fx.finish('another private Web answer')
@@ -957,6 +1194,23 @@ test('Web and WeChat share a durable FIFO and owner-only replies across restart 
   assert.ok(fx.router.read().messages.some(m => m.label==='你 · 微信'))
   channel.accept({msgs:[inbound('1','hello from phone')],get_updates_buf:'cursor2'})
   assert.equal(channel.store.wxRows('in').length,1)
+})
+
+test('WeChat sends no Router reply if a legacy turn ends after progress and a tool without final text', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, { createChannel: router => new WeChatChannel(router, client) })
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  channel.accept({ msgs: [inbound('process-only', '只出现过程的回合')] })
+  await until(() => fx.router.active?.turnId)
+  const scope = { threadId: fx.router.read().primaryThreadId, turnId: fx.router.read().activeTurnId }
+  fx.router.onEvent('item/completed', { ...scope, item: { id: 'legacy-progress', type: 'agentMessage', text: '此文本是过程' } })
+  assert.ok((await fx.tool('list_projects', {})).success)
+  fx.router.onEvent('turn/completed', { threadId: scope.threadId, turn: { id: scope.turnId, status: 'completed' } })
+  assert.equal(channel.store.wxRows('out').some(row => row.id.startsWith('reply:')), false)
+  assert.equal(client.sent.length, 0)
+  assert.ok(fx.router.read().messages.some(row => row.text === '此文本是过程'))
 })
 
 test('a Web-dispatched Worker sends one committed Router receipt; a phone follow-up carries its dispatch reference', async t => {

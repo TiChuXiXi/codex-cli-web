@@ -1,4 +1,75 @@
 import { expect, test } from '@playwright/test'
+import type { RouterSnapshot } from '../../shared/contracts'
+
+test('new project opens the Router permission confirmation when the Worker default needs authorization', async ({ page }) => {
+  let pending = false
+  await page.route('**/codex-cli/status', async route => {
+    const response = await route.fetch()
+    const json = await response.json()
+    json.result.value.router = { enabled: true, phase: 'ready' }
+    await route.fulfill({ response, json })
+  })
+  await page.route('**/codex-cli/router/**', async route => {
+    const { rpcId, method } = route.request().postDataJSON()
+    let value: unknown
+    if (method === 'router/settings/read') value = { projectRoot: '/fixture/projects' }
+    if (method === 'router/projects/create') {
+      pending = true
+      value = { cwd: '/fixture/projects/示例', status: 'needs_confirmation' }
+    }
+    if (method === 'router/read') value = {
+      enabled: true, phase: 'ready', error: null, model: null, busy: false, messages: [],
+      clarifications: pending ? [{ id: 'worker-permission', revision: 1, kind: 'workerPermission',
+        label: '允许此任务使用指定的 Worker 权限？',
+        candidates: [{ id: 'allow', name: '示例 · 工作区写入，按需审批' }],
+      }] : [],
+      tasks: [],
+    }
+    await route.fulfill({ json: { type: 'server-response', rpcId, result: { ok: true, value } } })
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证', { exact: true }).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button', { name: '登录工作台' }).click()
+  await page.getByRole('button', { name: '新建项目', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '新建项目' })
+  await dialog.getByLabel('项目名称或 HTTPS 仓库地址').fill('示例')
+  await dialog.getByRole('button', { name: '创建并打开' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('region', { name: 'Router', exact: true })
+    .getByText('允许此任务使用指定的 Worker 权限？')).toBeVisible()
+})
+
+test('Router shows the before-and-after settings and requires confirmation for a Worker restart', async ({ page }) => {
+  let confirmation: unknown
+  await page.route('**/codex-cli/status', async route => {
+    const response = await route.fetch()
+    const json = await response.json()
+    json.result.value.router = { enabled: true, phase: 'ready' }
+    await route.fulfill({ response, json })
+  })
+  await page.route('**/codex-cli/router/**', async route => {
+    const { rpcId, method, payload } = route.request().postDataJSON()
+    if (method === 'router/clarifications/confirm') confirmation = payload
+    const value = method === 'router/read' ? {
+      enabled: true, phase: 'ready', error: null, model: null, busy: false, messages: [], tasks: [],
+      clarifications: confirmation ? [] : [{ id: 'settings', revision: 2, kind: 'workerSettings',
+        label: '确认修改设置并继续当前 Worker 任务？', candidates: [{ id: 'allow', name: '验收项目 · 验收会话',
+          summary: '当前：Sol / medium / 只读。更改后：Sol / high / 工作区写入。会中断当前回合，在同一会话中继续原任务。' }] }],
+    } : {}
+    await route.fulfill({ json: { type: 'server-response', rpcId, result: { ok: true, value } } })
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证', { exact: true }).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button', { name: '登录工作台' }).click()
+  await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
+  const card = page.getByRole('region', { name: '确认修改设置并继续当前 Worker 任务？' })
+  await expect(card).toContainText('Sol / medium / 只读')
+  await expect(card).toContainText('Sol / high / 工作区写入')
+  expect(confirmation).toBeUndefined()
+  await card.getByRole('button', { name: '确认设置' }).click()
+  await expect(card).toBeHidden()
+  expect(confirmation).toEqual({ id: 'settings', revision: 2, candidateId: 'allow' })
+})
 
 test('Router restores a choice and handles the selected Worker approval in chat', async ({ page }, info) => {
   let pending = true
@@ -98,7 +169,7 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   let busy = false
   let fail = true
   const ids: string[] = []
-  const messages = [{ id: 'agent-1', role: 'assistant', status: 'completed',
+  const messages: RouterSnapshot['messages'] = [{ id: 'agent-1', role: 'assistant', status: 'completed',
     text: '| 会话名称 | 会话 ID |\n| --- | --- |\n| 已有会话 | `session-1` |\n\n```js\nconst total = 1 + 1\n```' }]
   await page.route('**/codex-cli/status', async route => {
     const response = await route.fetch()
@@ -118,14 +189,17 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
       }
       if (busy) messages.push({ id: 'queued', role: 'user', status: 'queued', text: request.payload.text })
       else {
-        messages.push({ id: 'user-1', role: 'user', status: 'completed', text: request.payload.text })
-        messages.push({ id: 'stream', role: 'assistant', status: 'streaming', text: '正在检索' })
+        messages.push({ id: 'user-1', role: 'user', status: 'completed', text: request.payload.text, turnId: 'turn-1', durationMs: 155000 })
+        messages.push({ id: 'progress', role: 'assistant', status: 'completed', text: '正在检索会话', turnId: 'turn-1', phase: 'commentary' })
+        messages.push({ id: 'tool', role: 'assistant', status: 'completed', text: '', turnId: 'turn-1', tool: { name: 'list_sessions', status: 'completed', outcome: { success: true } } })
+        messages.push({ id: 'tool-2', role: 'assistant', status: 'completed', text: '', turnId: 'turn-1', tool: { name: 'list_projects', status: 'failed', outcome: { success: false, code: 'fixture-error' } } })
+        messages.push({ id: 'stream', role: 'assistant', status: 'streaming', text: '正在生成结果', turnId: 'turn-1', phase: 'final_answer' })
         busy = true
       }
     }
     const value = request.method === 'router/read'
       ? { enabled: true, phase: 'ready', error: null, model: 'gpt-6.1-terra', effort: 'high',
-          models: [{ id: 'gpt-6.1-terra', displayName: 'GPT-6.1 Terra', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], busy, messages,
+          models: [{ id: 'gpt-6.1-terra', displayName: 'GPT-6.1 Terra', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], busy, activeTurnId: busy ? 'turn-1' : undefined, messages,
           clarifications: [], tasks: [], latestEventId: 0 } : {}
     await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } } })
   })
@@ -165,6 +239,12 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   await expect(send).toBeEnabled()
 
   const log = router.getByRole('log')
+  const panel = log.getByRole('button', { name: /执行过程.*用时/ })
+  const progress = log.getByText('正在检索会话', { exact: true })
+  const tool = log.getByRole('button', { name: /调用了 2 个工具/ })
+  await expect(panel).toHaveCount(0)
+  await expect(progress).toBeVisible()
+  await expect(tool).toBeVisible()
   const update = async () => {
     await page.evaluate(() => window.dispatchEvent(new Event('fixture-router-update')))
   }
@@ -180,13 +260,32 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   await expect.poll(() => log.evaluate(el => el.scrollTop)).toBe(0)
   await router.getByRole('button', { name: '回到底部' }).click()
   await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(33)
-  messages.find(message => message.id === 'stream')!.status = 'completed'
+  const currentInput = messages.find(message => message.id === 'user-1')!
+  currentInput.status = 'unknown'
   busy = false
   await update()
+  await expect(log.getByText('消息结果待核对')).toBeVisible()
+  await expect(panel).toHaveCount(0)
+  await expect(progress).toBeVisible()
+  currentInput.status = 'completed'
+  messages.find(message => message.id === 'stream')!.status = 'completed'
+  await update()
   await expect(send).toBeEnabled()
+  await expect(panel).toHaveAttribute('aria-expanded', 'false')
+  await expect(progress).toBeHidden()
+  await expect(tool).toBeHidden()
+  await expect(log).toContainText('新增尾部内容')
+  await panel.click()
+  await expect(progress).toBeVisible()
+  await expect(tool).toBeVisible()
+  await tool.click()
+  await log.locator('summary').getByText('tool / list_projects', { exact: true }).click()
+  await expect(log.getByText(/fixture-error/)).toBeVisible()
   await page.reload()
-  await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Router', exact: true })).toBeVisible()
   await expect(input).toHaveValue('尚未发送的草稿')
+  await expect(panel).toHaveAttribute('aria-expanded', 'false')
+  await expect(progress).toBeHidden()
   await log.evaluate(el => { el.scrollTop = 0 })
   await page.screenshot({ path: info.outputPath('router-chat-desktop.png'), animations: 'disabled' })
   await page.setViewportSize({ width: 390, height: 844 })
@@ -194,6 +293,11 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   await expect(router.getByRole('table')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false)
   await page.screenshot({ path: info.outputPath('router-chat-mobile-dark.png'), animations: 'disabled' })
+  await panel.click()
+  await expect(progress).toBeVisible()
+  await expect(tool).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false)
+  await page.screenshot({ path: info.outputPath('router-process-mobile-dark.png'), animations: 'disabled' })
   expect(errors).toEqual([])
 })
 

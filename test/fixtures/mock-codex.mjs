@@ -129,12 +129,27 @@ async function handle(message) {
       if(thread.ephemeral){finish(thread,turn,'{"title":"自动标题夹具"}');return}
       if(text==='请触发子代理执行'||text==='请触发旧版子代理执行') {
         spawnFixtureAgents(thread,turn,text==='请触发旧版子代理执行')
+      }else if(text==='请触发过程面板') {
+        const meta = { threadId: thread.id, turnId: turn.id }
+        for (const item of [
+          { id: randomUUID(), type: 'agentMessage', phase: 'commentary', text: '正在检查过程夹具' },
+          { id: randomUUID(), type: 'commandExecution', command: 'echo process-fixture', status: 'completed', exitCode: 0, aggregatedOutput: '过程夹具命令输出' },
+          { id: randomUUID(), type: 'commandExecution', command: 'echo process-fixture-second', status: 'completed', exitCode: 0 },
+        ]) {
+          turn.items.push(item)
+          notify('item/completed', { ...meta, item })
+        }
+        turn.durationMs = 155000
+        later(() => finish(thread, turn, '过程夹具最终回答'), 1800)
       }else if(text==='请触发多题提问') {
         finish(thread,turn,'请选择两项设置。',[
           {title:'使用哪个环境？',options:['测试环境','生产环境']},
           {title:'使用哪种输出？',options:['简要','完整']},
         ])
       }else if(text.includes('审批')) {
+        const progress = { id: randomUUID(), type: 'agentMessage', phase: 'commentary', text: '正在等待夹具审批' }
+        turn.items.push(progress)
+        notify('item/completed', { threadId: thread.id, turnId: turn.id, item: progress })
         const requestId='approval-'+randomUUID()
         waiting.set(requestId,{thread,turn})
         later(()=>output({id:requestId,method:'item/commandExecution/requestApproval',params:{threadId:thread.id,turnId:turn.id,itemId:randomUUID(),command:'echo fixture',cwd,reason:'夹具审批'}}),80)

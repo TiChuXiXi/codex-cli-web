@@ -476,7 +476,8 @@ html[data-codex-transition]::view-transition{pointer-events:none}
 /* Messages share a reading column; intrinsic bubble widths do not centre each row. */
 .dsh-codex-root .dsh-codex-messages{gap:22px}
 .dsh-codex-root .dsh-codex-message-content{display:flex;flex-direction:column;gap:12px;min-width:0}
-.dsh-codex-root .dsh-codex-message-content>.dsh-codex-tool-group{width:100%;margin:0}
+.dsh-codex-root .dsh-codex-message-content>.dsh-codex-tool-group,
+.dsh-codex-root .dsh-codex-turn-process-body>.dsh-codex-tool-group{width:100%;margin:0}
 .dsh-codex-root .dsh-codex-message-content>.dsh-codex-turn-footer{margin:0}
 .dsh-codex-root .dsh-codex-messages>*{width:min(800px,100%);margin-left:auto;margin-right:auto;flex:none}
 .dsh-codex-root .dsh-codex-message{margin-top:0;margin-bottom:0;gap:8px}

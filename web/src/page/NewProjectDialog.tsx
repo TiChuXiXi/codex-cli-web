@@ -3,8 +3,12 @@ import { randomId } from '../randomId'
 import type { Api } from '../rpc'
 import { ProjectRootDialog } from './ProjectRootDialog'
 
-export function NewProjectDialog({ api, onCreated, onExisting, onClose }: {
-  api: Api; onCreated: (cwd: string, threadId: string) => void; onExisting: () => void; onClose: () => void
+export function NewProjectDialog({ api, onCreated, onConfirmation, onExisting, onClose }: {
+  api: Api
+  onCreated: (cwd: string, threadId: string) => void
+  onConfirmation: () => void
+  onExisting: () => void
+  onClose: () => void
 }) {
   const [value, setValue] = React.useState('')
   const [root, setRoot] = React.useState<string | null>(null)
@@ -23,9 +27,11 @@ export function NewProjectDialog({ api, onCreated, onExisting, onClose }: {
     if (request.current.value !== input) request.current = { value: input, id: randomId() }
     setBusy(true); setError('')
     try {
-      const data = await api<{ cwd: string; threadId: string }>('router/projects/create',
-        { requestId: request.current.id, ...(clone ? { repository: input } : { name: input }) })
-      onCreated(data.cwd, data.threadId)
+      const data = await api<{ cwd: string; threadId: string } | { cwd: string; status: 'needs_confirmation' }>(
+        'router/projects/create', { requestId: request.current.id, ...(clone ? { repository: input } : { name: input }) },
+      )
+      if ('status' in data) onConfirmation()
+      else onCreated(data.cwd, data.threadId)
     } catch (e) { setError(e instanceof Error ? e.message : '新建项目失败') }
     finally { setBusy(false) }
   }

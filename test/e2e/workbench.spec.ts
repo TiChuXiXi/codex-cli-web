@@ -30,6 +30,55 @@ test('login, conversation streaming, queue, refresh and logout',async({page})=>{
   await expect(page.getByLabel('访问凭证',{exact:true})).toBeVisible()
   expect(errors).toEqual([])
 })
+test('Worker shows activity inline until completion and restores it on demand', async ({ page }, info) => {
+  await login(page)
+  await selectThread(page)
+  const input = page.locator('textarea').first()
+  await input.fill('请触发过程面板')
+  await input.press('Enter')
+  const panel = page.getByRole('button', { name: /执行过程.*用时/ })
+  const commentary = page.getByText('正在检查过程夹具', { exact: true })
+  const answer = page.getByText('过程夹具最终回答', { exact: true })
+  const answerRow = page.locator('.dsh-codex-message.assistant').filter({ has: answer })
+  const toolToggle = page.getByRole('button', { name: /执行了 2 条命令/ })
+  const expectAligned = async (expanded: boolean) => {
+    await expect(toolToggle).toHaveAttribute('aria-expanded', String(expanded))
+    const [toolBox, answerBox] = await Promise.all([toolToggle.boundingBox(), answerRow.boundingBox()])
+    expect(toolBox!.x).toBeCloseTo(answerBox!.x, 0)
+    expect(toolBox!.width).toBeCloseTo(answerBox!.width, 0)
+  }
+  await expect(commentary).toBeVisible()
+  await expect(panel).toHaveCount(0)
+  await expect(answer).toBeVisible()
+  await expect(panel).toHaveAttribute('aria-expanded', 'false')
+  await expect(commentary).toBeHidden()
+  expect(await panel.evaluate(element => element.compareDocumentPosition(
+    [...document.querySelectorAll('.dsh-codex-message')].find(message => message.textContent?.includes('过程夹具最终回答'))!,
+  ) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy()
+  await page.screenshot({ path: info.outputPath('worker-process-closed.png') })
+  await panel.press('Enter')
+  await expect(commentary).toBeVisible()
+  await expectAligned(false)
+  await toolToggle.click()
+  await expectAligned(true)
+  await page.locator('summary').getByText('echo process-fixture', { exact: true }).click()
+  await expect(page.getByText('过程夹具命令输出')).toBeVisible()
+  await expect(answer).toBeVisible()
+  await answer.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: info.outputPath('worker-process-open.png') })
+  await page.reload()
+  await expect(panel).toHaveAttribute('aria-expanded', 'false')
+  await expect(commentary).toBeHidden()
+  await expect(answer).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await panel.click()
+  await expectAligned(false)
+  await toolToggle.click()
+  await expectAligned(true)
+  await toolToggle.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: info.outputPath('worker-process-mobile.png') })
+})
+
 test('subagent activity expands in place and reconciles parallel updates', async ({ page }, testInfo) => {
   await page.addInitScript(() => {
     const NativeEventSource = window.EventSource
@@ -78,6 +127,7 @@ test('subagent activity expands in place and reconciles parallel updates', async
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.reload()
+  await page.getByRole('button', { name: /执行过程/ }).last().click()
   await expect(expand('Kepler')).toHaveAttribute('aria-expanded', 'false')
   await expect(lorentz).toContainText('已完成')
   await page.getByRole('button', { name: '切换深色模式', exact: true }).click()
@@ -94,13 +144,68 @@ test('subagent activity expands in place and reconciles parallel updates', async
   await page.screenshot({ path: testInfo.outputPath('subagents-mobile.png') })
 })
 
-test('command approval round trip',async({page})=>{
-  await login(page);await selectThread(page)
-  await page.locator('textarea').first().fill('请触发审批')
-  await page.locator('textarea').first().press('Enter')
-  await expect(page.getByText('夹具审批',{exact:false})).toBeVisible()
-  await page.getByRole('button',{name:'允许',exact:true}).click()
-  await expect(page.getByText('审批已处理。',{exact:false})).toBeVisible()
+test('Worker updates permission, model, and effort from a native thread settings event', async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource
+    window.EventSource = class extends NativeEventSource {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options)
+        window.addEventListener('fixture-worker-settings', event => this.onmessage?.call(this, new MessageEvent('message', {
+          data: JSON.stringify({ seq: 100, ts: Date.now(), type: 'thread/settings', threadId: 'fixture-thread',
+            payload: { settings: (event as CustomEvent).detail } }),
+        })))
+      }
+    }
+  })
+  await login(page)
+  await selectThread(page)
+  await expect(page.getByRole('button', { name: '会话权限：需要审批', exact: true })).toBeVisible()
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('fixture-worker-settings', { detail: {
+    approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly' }, model: 'router-selected-model', effort: 'high',
+  } })))
+  await expect(page.getByRole('button', { name: '会话权限：只读', exact: true })).toBeVisible()
+  await expect(page.locator('.dsh-codex-model-trigger')).toContainText('router-selected-model')
+  await expect(page.locator('[data-meta=effort]')).toContainText('high')
+})
+
+test('next-turn settings stay after the current Worker reply and survive reload', async ({ page }) => {
+  await login(page)
+  await selectThread(page)
+  const input = page.locator('textarea').first()
+  await input.fill('请触发审批')
+  await input.press('Enter')
+  const allow = page.getByRole('button', { name: '允许', exact: true })
+  await expect(allow).toBeVisible()
+
+  await page.getByRole('button', { name: '会话权限：需要审批', exact: true }).click()
+  await page.getByRole('menu').getByText('替我审批', { exact: true }).click()
+  await expect(page.getByText('当前回合权限：需要审批。下一轮权限：替我审批。')).toBeVisible()
+  await page.locator('.dsh-codex-model-trigger').click()
+  await page.getByRole('menu').getByRole('button', { name: /模型/ }).click()
+  await page.getByRole('menuitemradio', { name: '默认模型' }).click()
+  await page.keyboard.press('Escape')
+
+  const content = page.locator('.dsh-codex-message-content')
+  const finalReply = content.getByText('审批已处理。', { exact: true })
+  const notices = content.locator(':scope > .dsh-codex-divider').filter({ hasText: '下一轮生效' })
+  const expected = ['权限已切换为替我审批（下一轮生效）', '模型已切换为 默认模型（下一轮生效）']
+  await expect(notices).toHaveText(expected)
+  await expect(content.locator(':scope > :last-child')).toHaveText(expected[1])
+  await allow.click()
+  await expect(finalReply).toBeVisible()
+  const process = content.getByRole('button', { name: /执行过程/ }).last()
+  await expect(process).toHaveAttribute('aria-expanded', 'false')
+  await expect(notices).toHaveText(expected)
+  await expect(content.locator(':scope > :last-child')).toHaveText(expected[1])
+
+  await input.fill('设置后的下一轮')
+  await input.press('Enter')
+  await expect(content.getByText(/已收到：设置后的下一轮/)).toBeVisible()
+  await page.reload()
+  await expect(notices).toHaveText(expected)
+  const ordered = content.locator(':scope > :is(.dsh-codex-message, .dsh-codex-divider)')
+    .filter({ hasText: /审批已处理。|下一轮生效|已收到：设置后的下一轮/ })
+  await expect(ordered).toHaveText([/审批已处理。/, ...expected, /已收到：设置后的下一轮/])
 })
 test('multi-question reply advances before sending all answers',async({page})=>{
   await login(page)

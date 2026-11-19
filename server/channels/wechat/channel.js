@@ -406,8 +406,8 @@ export class WeChatChannel {
         this.delivery.enqueue('queued:' + inbox, '这项请求已加入微信待办队列。发“待办”可查看当前题目。', { inbox })
       }
     } else {
-      const content = answer || (message.status === 'completed' ? 'Router 已处理这条消息。' : 'Router 回合未完成。')
-      this.delivery.enqueue('reply:' + inbox, content.length > 3500 ? content.slice(0,3450) + '\n（完整答复已保存在 Web Router）' : content, { inbox })
+      const content = answer || (message.status === 'completed' ? null : 'Router 回合未完成。')
+      if (content) this.delivery.enqueue('reply:' + inbox, content.length > 3500 ? content.slice(0,3450) + '\n（完整答复已保存在 Web Router）' : content, { inbox })
     }
   }
 

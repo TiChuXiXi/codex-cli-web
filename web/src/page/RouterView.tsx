@@ -3,12 +3,16 @@ import { createPortal } from 'react-dom'
 import type { Api } from '../rpc'
 import { randomId } from '../randomId'
 import type { RouterSnapshot, RouterTask, RouterClarification } from '../../../shared/contracts'
-import { AsyncQuestions, Message } from './ItemCard'
+import { AsyncQuestions, ItemCard, Message } from './ItemCard'
+import { groupActivity, ToolGroup } from './ToolGroup'
+import type { CodexItem } from '../types'
 import { ApprovalCard } from './ApprovalCard'
 import { ModelPicker, type ModelMenu } from './ModelPicker'
 import { Icon } from '../components/Icon'
 import { ProjectRootDialog } from './ProjectRootDialog'
 import { useT } from '../i18n'
+import { formatDuration } from '../utils'
+import { TurnProcess } from './TurnProcess'
 import './router.css'
 
 const labels: Record<string, string> = {
@@ -22,6 +26,7 @@ const receiptLabels: Record<string, string> = {
 }
 
 export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cwd: string, revision: number, nav: HTMLElement | null, onWorker: (id: string) => void }) {
+  const t = useT()
   const [snapshot, setSnapshot] = React.useState<RouterSnapshot | null>(null)
   const [error, setError] = React.useState<string | null>(null)
   const [text, setText] = React.useState(() => {
@@ -145,6 +150,87 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
 
   const ready = snapshot?.phase === 'ready'
   const latestUnseen = (snapshot?.latestEventId ?? 0) > viewed
+  const messages = snapshot?.messages ?? []
+  const pendingTurns = new Set(snapshot?.pendingReceiptTurnIds)
+  if (snapshot?.activeTurnId) pendingTurns.add(snapshot.activeTurnId)
+  const durations = new Map<string, number>()
+  const explicitAnswers = new Set<string>()
+  const legacyAnswers = new Map<string, RouterSnapshot['messages'][number]>()
+  const processes = new Map<string, RouterSnapshot['messages']>()
+  const processAnchors = new Map<string, RouterSnapshot['messages'][number]>()
+  for (const message of messages) {
+    if (!message.turnId) continue
+    if (message.role === 'user' && ['sending', 'accepted', 'unknown'].includes(message.status)) pendingTurns.add(message.turnId)
+    if (message.durationMs !== undefined) durations.set(message.turnId, message.durationMs)
+    if (message.role !== 'assistant' || message.questions) continue
+    if (message.tool) legacyAnswers.delete(message.turnId)
+    else if (message.text.trim()) {
+      if (message.phase === 'final_answer') explicitAnswers.add(message.turnId)
+      if (message.phase) legacyAnswers.delete(message.turnId)
+      else legacyAnswers.set(message.turnId, message)
+    }
+  }
+  for (const message of messages) {
+    const { turnId } = message
+    if (!turnId || pendingTurns.has(turnId) || message.role !== 'assistant' || message.questions) continue
+    if (!processAnchors.has(turnId)) processAnchors.set(turnId, message)
+    if (message.phase === 'final_answer' || (!explicitAnswers.has(turnId) && legacyAnswers.get(turnId) === message)) continue
+    if (!message.tool && !message.text.trim()) continue
+    const items = processes.get(turnId) ?? []
+    items.push(message)
+    processes.set(turnId, items)
+  }
+
+  const renderMessage = (message: RouterSnapshot['messages'][number]) => {
+
+    return <React.Fragment key={message.id}>
+      <Message api={api} cwd={cwd} kind={message.role} label={message.label ?? (message.role === 'user' ? '你' : 'Router')}
+        text={message.text} muted={message.phase === 'commentary'} />
+      {message.questions && <AsyncQuestions item={message} onAnswer={message.status === 'pending' ? async answer => {
+        try { await api('router/questions/answer', { id: message.id, text: answer }) }
+        finally { await refresh() }
+      } : undefined}/>}
+      {message.status === 'queued' && <span className="dsh-codex-router-meta">已排队</span>}
+      {message.status === 'cancelled' && <span className="dsh-codex-router-meta">已取消</span>}
+      {message.status === 'unknown' && <span className="dsh-codex-router-meta">消息结果待核对</span>}
+      {message.status === 'failed' && <span className="dsh-codex-router-meta">Router 回合失败</span>}
+    </React.Fragment>
+  }
+
+  const renderRows = (rows: RouterSnapshot['messages']) => {
+    const messagesById = new Map(rows.map(message => [message.id, message]))
+    const items: CodexItem[] = rows.map(message => {
+      if (!message.tool) return { id: message.id, type: 'routerMessage' }
+      const { name, status, outcome } = message.tool
+      return { id: message.id, type: 'dynamicToolCall', tool: name, result: outcome,
+        status: status === 'running' ? (message.turnId && pendingTurns.has(message.turnId) ? 'inProgress' : 'interrupted') : status }
+    })
+    return groupActivity(items).map(entry => {
+      if (entry.kind === 'group') return <ToolGroup key={entry.key} items={entry.items} api={api} />
+      if (entry.item.type === 'dynamicToolCall') return <ItemCard key={entry.item.id} item={entry.item} api={api} />
+      return renderMessage(messagesById.get(entry.item.id)!)
+    })
+  }
+
+  const output: React.ReactNode[] = []
+  let visible: RouterSnapshot['messages'] = []
+  for (const message of messages) {
+    const { turnId } = message
+    const items = turnId ? processes.get(turnId) : undefined
+    if (turnId && items && processAnchors.get(turnId) === message) {
+      output.push(...renderRows(visible))
+      visible = []
+      const duration = durations.get(turnId)
+      output.push(<TurnProcess key={'process:' + turnId}
+        label={duration === undefined ? undefined : t('turn.workedFor', { duration: formatDuration(duration, t) })}
+        onExpand={() => { stickToEnd.current = false; setShowJump(true) }}>
+        {renderRows(items)}
+      </TurnProcess>)
+    }
+    if (!items?.includes(message)) visible.push(message)
+  }
+  output.push(...renderRows(visible))
+
   return <section className="dsh-codex-router" aria-label="Router">
     {nav && createPortal(<>
       <button type="button" className="dsh-codex-button" aria-pressed={tab === 'chat'} onClick={() => setTab('chat')}>对话</button>
@@ -175,17 +261,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
           可以直接聊天，也可以让 Router 查找已登记项目、续接会话或查询任务。
         </p>}
         <div ref={contentRef} className="dsh-codex-message-content">
-        {snapshot?.messages.map(message => <React.Fragment key={message.id}>
-          <Message api={api} cwd={cwd} kind={message.role} label={message.label ?? (message.role === 'user' ? '你' : 'Router')} text={message.text}/>
-          {message.questions && <AsyncQuestions item={message} onAnswer={message.status === 'pending' ? async answer => {
-            try { await api('router/questions/answer', { id: message.id, text: answer }) }
-            finally { await refresh() }
-          } : undefined}/>}
-          {message.status === 'queued' && <span className="dsh-codex-router-meta">已排队</span>}
-          {message.status === 'cancelled' && <span className="dsh-codex-router-meta">已取消</span>}
-          {message.status === 'unknown' && <span className="dsh-codex-router-meta">消息结果待核对</span>}
-          {message.status === 'failed' && <span className="dsh-codex-router-meta">Router 回合失败</span>}
-        </React.Fragment>)}
+        {output}
         {snapshot?.clarifications.map(item => <section key={item.id} className="dsh-codex-router-card" aria-label={item.label}>
           <h2>{item.label}</h2>
           {item.original && <details className="dsh-codex-router-original">
@@ -206,7 +282,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
               </div>
               <button type="button" className="dsh-codex-button" disabled={!ready || acting !== null}
                 onClick={() => void choose(item, candidate.id)}>
-                {item.kind === 'interrupt' ? '确认中断' : item.kind === 'create' || candidate.id === 'create' ? '确认新建' : '选择'}
+                {item.kind === 'workerSettings' ? '确认设置' : item.kind === 'interrupt' ? '确认中断' : item.kind === 'create' || candidate.id === 'create' ? '确认新建' : '选择'}
               </button>
             </li>)}
           </ul>
@@ -293,7 +369,7 @@ function TaskCard({ task, onWorker, onDismiss, onInteraction }: {
     <h2>{task.project}</h2>
     {task.worker && <div className="dsh-codex-router-meta">{[task.worker.model,t('composer.effort.'+task.worker.effort),
       task.worker.executionMode==='plan'?'计划模式':'普通执行',task.worker.permission?t('permission.'+task.worker.permission):'沿用会话权限'].join(' · ')}</div>}
-    <div className="dsh-codex-router-meta">{labels[task.status] ?? task.status} · {localTime(task.updatedAt)}</div>
+    <div className="dsh-codex-router-meta">{task.workerAction === 'settings' && task.status === 'completed' ? '会话设置已更新' : labels[task.status] ?? task.status} · {localTime(task.updatedAt)}</div>
     {task.receiptStatus && receiptLabels[task.receiptStatus] && <div className="dsh-codex-router-meta">{receiptLabels[task.receiptStatus]}</div>}
     {task.summary && <p className="dsh-codex-router-text">{task.summary}</p>}
     {task.error && <p className="dsh-codex-router-text">{task.error}</p>}

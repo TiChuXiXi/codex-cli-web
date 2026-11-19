@@ -4,15 +4,16 @@ import { basename, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { HubError } from '../codex/hub.js'
 import { connectRouterApp } from './app-server.js'
-import { finalAnswer, RouterDispatcher } from './dispatcher.js'
+import { RouterDispatcher } from './dispatcher.js'
+import { recoverLegacyOutput, routerTurnAnswer, stageRouterAnswer, toolOutcome } from './transcript.js'
 import { rankCandidates } from './matching.js'
-import { checkProject, checkThread, describeWorkerSettings, loadRouterProjects, shortText, workerDispatchIssue, workerIdentityIssue } from './projects.js'
+import { checkProject, checkThread, describeWorkerSettings, loadRouterProjects, shortText, workerDispatchIssue, workerIdentityIssue, workerSettingsStamp } from './projects.js'
 import { RouterSessionUpgrade } from './psm-migration.js'
 import { ProjectSessionMemory } from './psm.js'
 import { RouterStore } from './store.js'
 import { makeProject, newProjectTarget, projectParent } from './new-project.js'
-import { routerNamespace, toolResult, validateTool } from './tools.js'
-import { RouterWakeScheduler } from './wake.js'
+import { routerNamespace, toolNames, toolResult, validateTool } from './tools.js'
+import { RouterWakeScheduler, turnDuration } from './wake.js'
 import { permissionPayload } from '../../shared/worker-options.js'
 
 const lifetime = 24 * 60 * 60 * 1000
@@ -23,6 +24,7 @@ function operationFingerprint(intent) {
     intent.instruction ?? null]
   const overrides = [intent.workerModel, intent.workerEffort, intent.workerPermission, intent.executionMode]
   if (overrides.some(Boolean)) fields.push(...overrides.map(value => value ?? null))
+  if (intent.workerAction) fields.push(intent.workerAction, intent.expectedTurnId ?? null)
   return JSON.stringify(fields)
 }
 
@@ -129,6 +131,9 @@ export class RouterService {
       if (this.closed || this.epoch !== epoch) { app.close(); return }
       await this.wake.recover(app)
       if (this.closed || this.epoch !== epoch) { app.close(); return }
+      await recoverLegacyOutput(this.store, app, session.id, () => this.epoch === epoch && !this.closed)
+        .catch(() => this.logger?.warn?.('Router 旧过程记录暂时无法恢复'))
+      if (this.closed || this.epoch !== epoch) { app.close(); return }
       this.phase = 'ready'
       this.error = null
       this.logger?.info?.(`Router 已就绪（${app.selected.model}，${this.projects.size} 个登记项目）`)
@@ -168,8 +173,7 @@ export class RouterService {
         nativeStatus ??= await this.readThreadStatus(app, this.session.id)
         if (this.app !== app || this.closed) return
         if (nativeStatus === 'active' && !this.active) {
-          const answer = finalAnswer(turn.items)
-          this.active = { ...message, turnId: turn.id, finalText: answer?.text, finalPhase: answer?.phase }
+          this.active = { ...message, turnId: turn.id, answer: routerTurnAnswer(turn.items) }
           continue
         }
         if (!this.active) this.nativeBusy = nativeStatus !== 'idle'
@@ -181,12 +185,11 @@ export class RouterService {
         if (this.app !== app || this.closed) return
         this.nativeBusy = nativeStatus !== 'idle'
       }
-      this.finishMessage({ ...message, turnId: turn?.id ?? message.turnId, status: turn?.status ?? 'unknown' }, finalAnswer(turn?.items)?.text)
-      for (const item of turn?.items ?? []) {
-        if (item.type === 'agentMessage' && typeof item.text === 'string') {
-          this.recordMessage({ id: 'agent:' + item.id, role: 'assistant', text: item.text.slice(0, 24000), status: 'completed' })
-        }
-      }
+      if (turn) this.restoreAgentItems(turn)
+      this.finishMessage({
+        ...message, turnId: turn?.id ?? message.turnId, status: turn?.status ?? 'unknown',
+        durationMs: turn ? turnDuration(turn, message.startedAt) : undefined,
+      }, turn?.status === 'completed' ? routerTurnAnswer(turn.items)?.text : undefined)
     }
   }
 
@@ -202,7 +205,10 @@ export class RouterService {
     this.app = null
     const active = this.active
     this.active = null
-    if (active && active.source !== 'worker_receipt') this.recordMessage({ ...active, status: 'unknown' })
+    if (active && active.source !== 'worker_receipt') {
+      delete active.answer
+      this.recordMessage({ ...active, status: 'unknown' })
+    }
     if (!this.closed) {
       this.phase = 'unavailable'
       this.error = 'Router 连接已断开'
@@ -230,12 +236,16 @@ export class RouterService {
       effort: this.app?.selected?.effort ?? null, models: this.app?.models ?? [],
       usingDefaultModel: !this.session?.modelSelection || !this.app?.resolveSelection?.(this.session.modelSelection),
       busy: Boolean(this.active) || this.nativeBusy,
+      activeTurnId: this.active?.turnId ?? undefined,
+      pendingReceiptTurnIds: this.session && this.store.wakeRecovery(this.session.id).flatMap(batch => batch.turnId ? [batch.turnId] : []),
       receiptLimited: this.wake?.limited() ?? false,
       primaryThreadId:this.session?.id, previousThreads,
       queuedCount: this.store?.queuedInputCount.get().count ?? 0,
       messages: [
-        ...(this.store?.list('message', 80).filter(m=>!previousThreads.length || m.routerThreadId===this.session?.id || (m.dispatchId && this.store.get('task',m.dispatchId)?.routerThreadId===this.session?.id)).reverse().map(message =>
-          ({ id: message.id, role: message.role, label: message.label, text: message.text, status: message.status,
+        ...(this.store?.list('message', 80).filter(m=>!previousThreads.length || m.routerThreadId===this.session?.id || (m.dispatchId && this.store.get('task',m.dispatchId)?.routerThreadId===this.session?.id)).reverse()
+          .flatMap(message => message.turnId ? [message] : (this.store.get('legacy-output', message.id)?.messages ?? [message]))
+          .map(message => ({ id: message.id, role: message.role, label: message.label, text: message.text, status: message.status,
+            turnId: message.turnId, phase: message.phase, durationMs: message.durationMs, tool: message.tool,
             questions: message.questions, dispatchId: message.dispatchId, interactionMethod: message.interactionMethod })) ?? []),
         ...this.deltas.values(),
       ],
@@ -262,6 +272,7 @@ export class RouterService {
     const project = this.projects.get(projectId)
     return { id, projectId, project: project?.name ?? projectId, threadId, turnId,
       ...(task.worker ? {worker:task.worker} : {}),
+      ...(task.workerAction ? { workerAction: task.workerAction } : {}),
       ...(project?.createdAt ? { cwd: project.cwd } : {}),
       status, createdAt, updatedAt, summary: summary ?? null, error: error ?? null,
       receiptStatus: task.receiptConflict ? 'unknown' : this.store.receiptState(id) }
@@ -413,8 +424,10 @@ export class RouterService {
     const key = 'web-project-' + requestId
     const projectId = await this.provision(key, repository || 'new:' + name.trim())
     const task = await this.execute(key, { kind: 'create', projectId })
-    if (!task.threadId) throw new HubError('codex-cli/router-task', '项目已登记，初始会话状态待核对，可从项目列表进入')
-    return { cwd: this.projects.get(projectId).cwd, threadId: task.threadId }
+    const cwd = this.projects.get(projectId).cwd
+    if (task.status === 'needs_confirmation') return { cwd, status: 'needs_confirmation' }
+    if (!task.threadId) throw new HubError('codex-cli/router-task', task.message ?? '项目已登记，初始会话状态待核对，可从项目列表进入')
+    return { cwd, threadId: task.threadId }
   }
 
   recordMessage(message) {
@@ -526,8 +539,14 @@ export class RouterService {
         this.bindTurn(active, params.turnId)
       } else {
         // A late final item from another turn must never acquire this input's reply address.
-        if ((method === 'turn/completed' || (method === 'item/completed' && finalAnswer([params.item].filter(Boolean)))) &&
-            this.earlyEvents.length < 32) this.earlyEvents.push([method, params])
+        const terminal = method === 'turn/completed'
+        const outputItem = method === 'item/completed' && ['agentMessage', 'dynamicToolCall'].includes(params.item?.type)
+        if (terminal || outputItem) {
+          if (this.earlyEvents.length >= 32 && (terminal || routerTurnAnswer([params.item]))) {
+            this.earlyEvents.shift()
+          }
+          if (this.earlyEvents.length < 32) this.earlyEvents.push([method, params])
+        }
         return
       }
     }
@@ -535,38 +554,66 @@ export class RouterService {
         params.item?.type === 'userMessage' && params.item.clientId === active.requestId && !this.session.materialized) {
       this.session = this.store.put('session', 'active', { ...this.session, materialized: true })
     }
-    if (active.turnId === params.turnId && method === 'item/agentMessage/delta' &&
-        typeof params.itemId === 'string' && typeof params.delta === 'string') {
-      const id = 'agent:' + params.itemId
-      const text = ((this.deltas.get(id)?.text ?? '') + params.delta).slice(0, 24000)
-      this.deltas.set(id, { id, role: 'assistant', text, status: 'streaming' })
-      if (!this.deltaTimer) {
-        this.deltaTimer = setTimeout(() => { this.deltaTimer = null; this.publish() }, 100)
-        this.deltaTimer.unref()
-      }
-    }
-    if (active.turnId === params.turnId && method === 'item/completed' && params.item?.type === 'agentMessage') {
-      this.deltas.delete('agent:' + params.item.id)
-      if (finalAnswer([params.item]) && (params.item.phase === 'final_answer' || !active.finalPhase)) {
-        active.finalText = params.item.text.slice(0, 24000)
-        active.finalPhase = params.item.phase
-      }
-      this.recordMessage({
-        id: 'agent:' + params.item.id, role: 'assistant', text: String(params.item.text ?? '').slice(0, 24000),
-        status: 'completed',
-      })
+    if (active.turnId === params.turnId) {
+      this.trackAgentMessage(method, params)
+      if (method === 'item/completed' && params.item) stageRouterAnswer(active, params.item)
     }
     if (method === 'turn/completed' && params.turn?.id === active.turnId) {
       active.status = params.turn.status
+      active.durationMs = turnDuration(params.turn, active.startedAt)
+      this.restoreAgentItems(params.turn)
       this.clearDeltas()
       this.active = null
-      const item = finalAnswer(params.turn.items)
-      const answer = active.finalPhase === 'final_answer' && item?.phase !== 'final_answer' ? active.finalText : item?.text ?? active.finalText
-      delete active.finalText
-      delete active.finalPhase
+      const answer = active.status === 'completed' ? routerTurnAnswer(params.turn.items, active.answer)?.text : undefined
+      delete active.answer
       this.finishMessage(active, answer)
       this.kickInputs()
       this.wake.kick()
+    }
+  }
+
+  agentMessage(turnId, item, text, status) {
+    return {
+      id: 'agent:' + item.id, turnId,
+      phase: item.phase, role: 'assistant', text: text.slice(0, 24000), status,
+    }
+  }
+
+  restoreAgentItems(turn, receipt = false) {
+    for (const item of turn.items ?? []) {
+      if (item.type !== 'agentMessage' || !item.id || typeof item.text !== 'string' ||
+          (receipt && item.phase !== 'commentary')) continue
+      const message = this.agentMessage(turn.id, item, item.text, 'completed')
+      const existing = this.store.get('message', message.id)
+      if (existing?.text !== message.text || existing.phase !== message.phase || existing.turnId !== turn.id) {
+        this.store.put('message', message.id, { ...message, routerThreadId: this.session.id })
+      }
+    }
+  }
+
+  trackAgentMessage(method, { turnId, item, itemId, delta }, receipt = false) {
+    if (method === 'item/started' && item?.type === 'agentMessage' && item.id) {
+      const message = this.agentMessage(turnId, item, String(item.text ?? ''), 'streaming')
+      this.deltas.set(message.id, message)
+    } else if (method === 'item/agentMessage/delta' && typeof itemId === 'string' && typeof delta === 'string') {
+      const id = 'agent:' + itemId
+      const previous = this.deltas.get(id)
+      this.deltas.set(id, this.agentMessage(turnId, { id: itemId, phase: previous?.phase }, (previous?.text ?? '') + delta, 'streaming'))
+    } else if (method === 'item/completed' && item?.type === 'agentMessage' && item.id) {
+      const message = this.agentMessage(turnId, item, String(item.text ?? ''), 'completed')
+      if (receipt && item.phase !== 'commentary') {
+        this.deltas.set(message.id, message)
+        this.publish()
+      } else {
+        this.deltas.delete(message.id)
+        this.recordMessage(message)
+      }
+      return
+    } else return
+
+    if (!this.deltaTimer) {
+      this.deltaTimer = setTimeout(() => { this.deltaTimer = null; this.publish() }, 100)
+      this.deltaTimer.unref()
     }
   }
 
@@ -652,6 +699,7 @@ export class RouterService {
         params.namespace !== routerNamespace || typeof params.callId !== 'string' || !params.callId || params.callId.length > 256) {
       return toolResult(false, { code: 'outsideRouterTurn' })
     }
+    stageRouterAnswer(source, { type: 'dynamicToolCall' })
     const key = JSON.stringify(source.source === 'worker_receipt'
       ? [this.session.id, source.turnId, source.batch.requestId, params.callId]
       : [this.session.id, source.turnId, params.callId])
@@ -668,6 +716,11 @@ export class RouterService {
     if (count >= 32) return toolResult(false, { code: 'toolLimit' })
     source.calls = count + 1
     this.store.put('tool-call', key, { tool: params.tool, at: Date.now() })
+    const activity = toolNames.includes(params.tool) ? {
+      id: 'tool:' + key, routerThreadId: this.session.id, turnId: source.turnId,
+      role: 'assistant', text: '', status: 'completed', tool: { name: params.tool, status: 'running' },
+    } : null
+    if (activity) this.recordMessage(activity)
     let response
     try {
       const args = validateTool(params.tool, params.arguments)
@@ -684,6 +737,11 @@ export class RouterService {
         JSON.parse(response.contentItems[0].text)?.status!=='needs_confirmation'
       this.store.put('tool-call',key,{tool:params.tool,at:Date.now(),...(readOnly ? {refresh:true,
         inputHash:createHash('sha256').update(JSON.stringify(params.arguments)).digest('hex')} : {response})})
+      if (activity) {
+        activity.tool.status = response.success ? 'completed' : 'failed'
+        activity.tool.outcome = toolOutcome(response)
+        this.recordMessage(activity)
+      }
     }
     return response
   }
@@ -758,7 +816,14 @@ export class RouterService {
         }))
         source.inspected ??= []
         if (!source.inspected.includes(detail.thread.id)) source.inspected.push(detail.thread.id)
-        return { ...this.sessionRow(project, detail.thread), recent }
+        const settings = workerSettingsStamp(await this.hub.routerWorkerProfile(detail.thread.id))
+        const invalid = workerIdentityIssue(project, settings)
+        if (invalid) throw new HubError('codex-cli/router-worker-settings', invalid)
+        return { ...this.sessionRow(project, detail.thread), recent, settings: {
+          model: settings.model, effort: settings.effort, executionMode: settings.executionMode,
+          permission: describeWorkerSettings(settings), sandbox: settings.sandbox.type,
+          approvalPolicy: settings.approvalPolicy, approvalsReviewer: settings.approvalsReviewer,
+        }, activeTurnId: detail.turns.findLast(turn => turn.status === 'inProgress')?.id ?? null }
       }
       case 'get_task_status': return this.getTask(args.dispatchId)
       case 'interrupt_task': {
@@ -818,6 +883,7 @@ export class RouterService {
     const pending = this.store.list('clarification').find(item => item.requestId === source.requestId &&
       item.status === 'pending' && item.expiresAt > Date.now())
     if (pending) return { status: 'needs_confirmation', id: pending.id }
+    if (intent.workerAction) return this.prepareWorkerChange(source, intent)
     if (intent.kind === 'dispatch' && intent.mode !== 'new' && !intent.threadId) {
       // Older Router threads retain their original tool schema. They can nominate inspected sessions too.
       const ids = intent.candidateThreadIds ?? source.inspected ?? []
@@ -846,12 +912,41 @@ export class RouterService {
     if (!registered) return this.clarify(source, {
       kind: 'project', label: '允许 Router 使用此项目并继续当前任务？', intent,
       candidates: [{ ...candidate, id: project.id, projectId: project.id, pendingProject: project,
-        name: project.name + '（' + project.cwd + '）' + (candidate ? ' · ' + candidate.name : ' · 新建只读会话') }],
+        name: project.name + '（' + project.cwd + '）' + (candidate ? ' · ' + candidate.name : ' · 新建会话') }],
     })
     if (candidate?.grant) return this.clarify(source, {
       kind: 'session', label: '允许 Router 按这个会话的现有权限续接？', intent, candidates: [candidate],
     })
     return this.execute(source.requestId, intent)
+  }
+
+  async prepareWorkerChange(source, intent) {
+    const { project, detail } = await this.resolveThread(intent.threadId, intent.projectId)
+    const issue = await this.psm.targetIssue(project, intent.threadId)
+    if (issue) throw new HubError('codex-cli/router-thread', issue)
+    const settings = workerSettingsStamp(await this.hub.routerWorkerProfile(intent.threadId))
+    const invalid = workerIdentityIssue(project, settings)
+    if (invalid) throw new HubError('codex-cli/router-worker-settings', invalid)
+    if (!settings.model || !settings.effort) throw new HubError('codex-cli/router-worker-settings', '无法核实当前模型或思考强度')
+    const restart = intent.workerAction === 'restart'
+    const turn = detail.turns.at(-1)
+    if (restart && (turn?.status !== 'inProgress' || turn.id !== intent.expectedTurnId)) {
+      throw new HubError('codex-cli/router-stale', '目标回合已变化，请重新查询 Worker')
+    }
+    const worker = await this.workerOptions(intent, settings)
+    if (this.active !== source) throw new HubError('codex-cli/router-stale', '当前 Router 回合已结束')
+    const desired = worker.permission ? permissionPayload(worker.permission, true) : null
+    const access = desired ? { sandbox: desired.sandboxPolicy, approvalPolicy: desired.approvalPolicy,
+      approvalsReviewer: desired.approvalsReviewer } : settings
+    const name = shortText(detail.thread.name || detail.thread.preview, 120) || '未命名会话'
+    return this.clarify(source, {
+      kind: 'workerSettings', label: restart ? '确认修改设置并继续当前 Worker 任务？' : '确认修改 Worker 会话设置？',
+      intent, worker, settings, projectIdentity: project.identity,
+      candidates: [{ id: 'allow', projectId: project.id, threadId: intent.threadId, name: project.name + ' · ' + name,
+        summary: '当前：' + settings.model + ' / ' + settings.effort + ' / ' + describeWorkerSettings(settings) +
+          '。更改后：' + worker.model + ' / ' + worker.effort + ' / ' + describeWorkerSettings(access) +
+          (restart ? '。会中断当前回合，在同一会话中继续原任务。' : '。等待空闲后应用设置。') }],
+    })
   }
 
   async workerCandidate(project, thread, requestedPermission) {
@@ -958,6 +1053,19 @@ export class RouterService {
       this.store.put('psm-read-grant',project.id,project)
       return {projectId:project.id,status:'authorized'}
     }
+    if (row.kind === 'workerSettings') {
+      const { project, detail } = await this.resolveThread(row.intent.threadId, row.intent.projectId)
+      if (row.projectIdentity !== project.identity) throw new HubError('codex-cli/router-stale', '项目身份已变化')
+      const task = previousOperation(this.store, row.requestId, row.intent)
+      if (task) return task
+      const current = workerSettingsStamp(await this.hub.routerWorkerProfile(row.intent.threadId))
+      const turn = detail.turns.at(-1)
+      if (!isDeepStrictEqual(row.settings, current) ||
+          (row.intent.workerAction === 'restart' && (turn?.id !== row.intent.expectedTurnId || turn.status !== 'inProgress'))) {
+        throw new HubError('codex-cli/router-stale', 'Worker 的设置或回合已变化，请重新确认')
+      }
+      return this.execute(row.requestId, row.intent, row.worker, row.settings)
+    }
     if (row.kind === 'workerPermission') {
       const project = await checkProject(this.projects.get(row.intent.projectId))
       if (row.projectIdentity !== project.identity) throw new HubError('codex-cli/router-stale', '项目身份已变化')
@@ -1001,29 +1109,29 @@ export class RouterService {
     return this.execute(row.requestId, { ...row.intent, projectId: project.id, threadId: candidate.id })
   }
 
-  async execute(requestId, intent, approvedWorker) {
+  async execute(requestId, intent, approvedWorker, approvedSettings) {
     this.requireReady()
     const old = previousOperation(this.store, requestId, intent)
     if (old) return old
+    const project = this.projects.get(intent.projectId)
+    const worker = intent.kind === 'interrupt' ? null : approvedWorker ?? await this.workerOptions(intent)
+    if (worker?.permission && !approvedWorker) {
+      const access = permissionPayload(worker.permission, true)
+      const desired = { cwd: project.cwd, approvalPolicy: access.approvalPolicy,
+        approvalsReviewer: access.approvalsReviewer, sandbox: access.sandboxPolicy }
+      const issue = workerDispatchIssue(project, desired)
+      const current = issue && intent.threadId ? await this.hub.routerWorkerSettings(intent.threadId) : null
+      const currentAuthorized = current && isDeepStrictEqual(current, desired) && !workerDispatchIssue(project, current,
+        {existing:true,grant:this.store.get('worker-grant', intent.threadId)})
+      if (issue && !currentAuthorized) return this.clarify({requestId, text:intent.instruction, turnId:intent.sourceRouterTurnId}, {
+        kind:'workerPermission', label:'允许此任务使用指定的 Worker 权限？', intent, worker, projectIdentity:project.identity,
+        candidates:[{id:'allow',name:project.name + ' · ' + describeWorkerSettings(desired),
+          summary:(intent.threadId ? '会话 ' + intent.threadId : '新建会话') + ' 将使用此权限执行任务。'}],
+      })
+    }
     if (intent.kind === 'dispatch') {
-      const project = this.projects.get(intent.projectId)
-      const worker = approvedWorker ?? await this.workerOptions(intent)
-      if (worker?.permission && !approvedWorker) {
-        const access = permissionPayload(worker.permission, true)
-        const desired = { cwd: project.cwd, approvalPolicy: access.approvalPolicy,
-          approvalsReviewer: access.approvalsReviewer, sandbox: access.sandboxPolicy }
-        const issue = workerDispatchIssue(project, desired)
-        const current = issue && intent.threadId ? await this.hub.routerWorkerSettings(intent.threadId) : null
-        const currentAuthorized = current && isDeepStrictEqual(current, desired) && !workerDispatchIssue(project, current,
-          {existing:true,grant:this.store.get('worker-grant', intent.threadId)})
-        if (issue && !currentAuthorized) return this.clarify({requestId, text:intent.instruction, turnId:intent.sourceRouterTurnId}, {
-          kind:'workerPermission', label:'允许此任务使用指定的 Worker 权限？', intent, worker, projectIdentity:project.identity,
-          candidates:[{id:'allow',name:project.name + ' · ' + describeWorkerSettings(desired),
-            summary:(intent.threadId ? '会话 ' + intent.threadId : '新建会话') + ' 将使用此权限执行任务。'}],
-        })
-      }
       const psmProjectUid=this.psm?.preference.enabled ? this.psm.identity(project) : null
-      const task = this.dispatcher.enqueue({ ...intent, requestId, worker, psmProjectUid }, value => {
+      const task = this.dispatcher.enqueue({ ...intent, requestId, worker, psmProjectUid, approvedSettings }, value => {
         this.saveOperation(requestId, intent, this.task(value))
       })
       return this.task(task)
@@ -1034,21 +1142,23 @@ export class RouterService {
       if (intent.kind === 'interrupt') {
         result = this.task(await this.dispatcher.interrupt(intent.id, intent.turnId))
       } else {
-        const thread = await this.dispatcher.createWorker(this.projects.get(intent.projectId), intent.title)
+        const thread = await this.dispatcher.createWorker(project, intent.title, worker?.permission)
         result = this.task(this.dispatcher.recordCreation({ requestId, threadId: thread.id, projectId: intent.projectId }))
       }
-    } catch {
-      result = { status: 'unknown', message: '操作结果待核对' }
+    } catch (error) {
+      result = error.code === 'codex-cli/router-worker-settings'
+        ? { status: 'failed', message: error.message }
+        : { status: 'unknown', message: '操作结果待核对' }
     }
     this.store.transaction(() => this.saveOperation(requestId, intent, result))
     this.publish()
     return result
   }
 
-  async workerOptions(intent) {
+  async workerOptions(intent, current) {
     const config = this.hub.config
-    const model = intent.workerModel ?? config.defaultModel
-    let effort = intent.workerEffort ?? config.defaultEffort
+    const model = intent.workerModel ?? current?.model ?? config.defaultModel
+    let effort = intent.workerEffort ?? current?.effort ?? config.defaultEffort
     if (intent.workerModel || intent.workerEffort) {
       const catalog = await this.hub.models()
       const entry = catalog.find(row => row.id === model)
@@ -1058,8 +1168,9 @@ export class RouterService {
         effort = entry.defaultReasoningEffort
       }
     }
-    const permission = intent.workerPermission ?? (intent.mode === 'new' ? config.defaultPermission : null)
-    return {model, effort, executionMode:intent.executionMode ?? config.defaultExecutionMode,
+    const createsWorker = intent.kind === 'create' || intent.mode === 'new'
+    const permission = intent.workerPermission ?? (createsWorker ? config.defaultPermission : null)
+    return {model, effort, executionMode:intent.executionMode ?? current?.executionMode ?? config.defaultExecutionMode,
       ...(permission && permission !== 'inherit' ? {permission} : {})}
   }
 

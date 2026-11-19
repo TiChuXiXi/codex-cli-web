@@ -515,7 +515,7 @@ export class CodexHub {
   // ── 对话 ────────────────────────────────────────────────────────────────
 
   /** 新线程：thread/start，返回紧凑 DTO 并纳入订阅。 */
-  async newThread(params = {}, { routerWorker = false } = {}) {
+  async newThread(params = {}, { routerWorker = false, workerPermission } = {}) {
     const rpc = this.#requireRpc()
     const request = {
       modelProvider: 'openai',
@@ -527,7 +527,10 @@ export class CodexHub {
     if (typeof params.effort === 'string' && params.effort !== '') request.effort = params.effort
     // thread/start reads its reasoning effort from the config override.
     request.config = { model_reasoning_effort: request.effort }
-    const permission = !routerWorker && !params.sandbox && !params.approvalPolicy && this.config.defaultPermission
+    if (params.approvalPolicy !== undefined && params.approvalPolicy !== null) request.approvalPolicy = params.approvalPolicy
+    if (typeof params.sandbox === 'string' && params.sandbox !== '') request.sandbox = params.sandbox
+    const permission = routerWorker ? workerPermission :
+      (!request.sandbox && !request.approvalPolicy ? this.config.defaultPermission : null)
     if (permission && permission !== 'inherit') {
       const policy = permissionPayload(permission)
       request.approvalPolicy = policy.approvalPolicy
@@ -535,16 +538,14 @@ export class CodexHub {
       request.sandbox = {read:'read-only', ask:'workspace-write', approve:'workspace-write', full:'danger-full-access'}[permission]
       if (permission === 'approve') request.config['sandbox_workspace_write.network_access'] = true
     }
-    if (params.approvalPolicy !== undefined && params.approvalPolicy !== null) request.approvalPolicy = params.approvalPolicy
-    if (typeof params.sandbox === 'string' && params.sandbox !== '') request.sandbox = params.sandbox
     if (params.ephemeral === true) request.ephemeral = true
     if (routerWorker) {
-      request.approvalsReviewer = 'user'
+      request.approvalsReviewer ??= 'user'
       if (request.sandbox === 'workspace-write') {
         request.config = {
           ...request.config,
           'sandbox_workspace_write.writable_roots': [],
-          'sandbox_workspace_write.network_access': false,
+          'sandbox_workspace_write.network_access': permission === 'approve',
           'sandbox_workspace_write.exclude_tmpdir_env_var': true,
           'sandbox_workspace_write.exclude_slash_tmp': true,
         }
@@ -554,7 +555,7 @@ export class CodexHub {
     const thread = compactThread({ ...result?.thread, model: result?.model ?? result?.thread?.model, reasoningEffort: result?.reasoningEffort ?? result?.thread?.reasoningEffort })
     if (thread?.id) {
       this.#owned.add(thread.id)
-      this.#threadSettings.set(thread.id, { ...workerSettings(result), collaborationMode: result?.collaborationMode ?? null })
+      this.#threadSettings.set(thread.id, workerProfile(result))
       if (!routerWorker && this.config.defaultExecutionMode === 'plan') {
         await this.configureWorker(thread.id, { model: request.model, effort: request.effort, executionMode: 'plan' })
       }
@@ -597,7 +598,11 @@ export class CodexHub {
   }
 
   async routerWorkerSettings(threadId) {
-    if (this.#owned.has(threadId) && this.#threadSettings.has(threadId)) return workerSettings(this.#threadSettings.get(threadId))
+    return workerSettings(await this.routerWorkerProfile(threadId))
+  }
+
+  async routerWorkerProfile(threadId) {
+    if (this.#owned.has(threadId) && this.#threadSettings.has(threadId)) return this.#threadSettings.get(threadId)
     return this.#withSubscription(threadId, async () => {
       const rpc = this.#requireRpc()
       const snapshot = await rpc.request('thread/resume', { threadId, excludeTurns: true }, { timeoutMs: 20000 })
@@ -605,17 +610,26 @@ export class CodexHub {
       if (!this.#subscriptionCount(threadId) && !this.#owned.has(threadId) && !this.#subscribed.has(threadId)) {
         await rpc.request('thread/unsubscribe', { threadId }, { timeoutMs: 10000 }).catch(() => {})
       }
-      return workerSettings(snapshot)
+      return workerProfile(snapshot)
     })
   }
 
-  async configureWorker(threadId, { model, effort, executionMode, permission }) {
+  async configureWorker(threadId, { model, effort, executionMode, permission }, { verify = false } = {}) {
     const collaborationMode = { mode: executionMode, settings: { model, reasoning_effort: effort, developer_instructions: null } }
     const access = permission ? permissionPayload(permission, true) : {}
-    await this.#requireRpc().request('thread/settings/update', { threadId, model, effort, collaborationMode, ...access })
-    const old = this.#threadSettings.get(threadId)
-    if (old) this.#threadSettings.set(threadId, { ...old, collaborationMode,
-      ...(permission ? { approvalPolicy: access.approvalPolicy, approvalsReviewer: access.approvalsReviewer, sandbox: access.sandboxPolicy } : {}) })
+    const previous = this.#threadSettings.get(threadId)
+    const rpc = this.#requireRpc()
+    await rpc.request('thread/settings/update', { threadId, model, effort, collaborationMode, ...access })
+    if ((permission || verify) && this.#owned.has(threadId)) {
+      // A new thread has no rollout to resume. The native notification follows the empty RPC response.
+      const deadline = Date.now() + 1500
+      while (this.#rpc === rpc && this.#threadSettings.get(threadId) === previous && Date.now() < deadline) {
+        await sleep(20)
+      }
+    }
+    if (!permission && !verify && previous && this.#threadSettings.get(threadId) === previous) {
+      this.#threadSettings.set(threadId, { ...previous, model, effort, collaborationMode })
+    }
   }
 
   async routerAddWorkerMessage(threadId, clientUserMessageId, text) {
@@ -910,12 +924,7 @@ export class CodexHub {
     if (!this.#owned.has(threadId)) {
       const result = await resumeThread(rpc, threadId, resolveCodexHome(this.config))
       if (this.#rpc !== rpc) throw new HubError('codex-cli/not-ready', '连接已断开')
-      this.#threadSettings.set(threadId, {
-        approvalPolicy: result?.approvalPolicy ?? null,
-        approvalsReviewer: result?.approvalsReviewer ?? null,
-        sandbox: result?.sandbox ?? null,
-        collaborationMode: result?.collaborationMode ?? null,
-      })
+      this.#threadSettings.set(threadId, workerProfile(result))
     }
     this.#subscribed.add(threadId)
   }
@@ -1048,8 +1057,10 @@ export class CodexHub {
       case 'thread/settings/updated': {
         const settings = payload.threadSettings
         if (settings && (this.#owned.has(payload.threadId) || this.#subscriptionCount(payload.threadId))) {
-          this.#threadSettings.set(payload.threadId, { ...workerSettings({ ...settings, sandbox:settings.sandboxPolicy }),
-            collaborationMode:settings.collaborationMode ?? null })
+          const profile = workerProfile({ ...settings, sandbox: settings.sandboxPolicy })
+          this.#threadSettings.set(payload.threadId, profile)
+          const { model, effort } = profile
+          this.bus.publish('thread/settings', { settings: { ...workerSettings(profile), model, effort } }, { threadId: payload.threadId })
         }
         return
       }
@@ -1211,6 +1222,15 @@ function workerSettings(response) {
     approvalsReviewer: response?.approvalsReviewer ?? null,
     sandbox: response?.sandbox ?? null,
     cwd: response?.cwd ?? response?.thread?.cwd ?? null,
+  }
+}
+
+function workerProfile(response) {
+  return {
+    ...workerSettings(response),
+    model: response?.model ?? response?.collaborationMode?.settings?.model ?? response?.thread?.model ?? null,
+    effort: response?.reasoningEffort ?? response?.effort ?? response?.collaborationMode?.settings?.reasoning_effort ?? response?.thread?.reasoningEffort ?? null,
+    collaborationMode: response?.collaborationMode ?? null,
   }
 }
 

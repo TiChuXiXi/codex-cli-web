@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { finalAnswer } from './dispatcher.js'
+import { routerTurnAnswer, stageRouterAnswer } from './transcript.js'
 import { shortText } from './projects.js'
 
 const terminal = new Set(['completed', 'failed', 'interrupted'])
 const windowMs = 24 * 60 * 60 * 1000
 const defaults = { mergeMs: 1000, gapMs: 10000, daily: 60, batchSize: 10, attempts: 3 }
 const executionLabels = { completed: '回合已结束', failed: '回合失败', interrupted: '回合已中断' }
+
+export function turnDuration(turn, startedAt) {
+  if (Number.isFinite(turn.durationMs)) return turn.durationMs
+  const start = Number.isFinite(turn.startedAt) ? turn.startedAt * 1000 : startedAt
+  const end = Number.isFinite(turn.completedAt) ? turn.completedAt * 1000 : Date.now()
+  return Number.isFinite(start) ? Math.max(0, end - start) : undefined
+}
 
 export class RouterWakeScheduler {
   constructor(router, policy) {
@@ -148,7 +155,7 @@ export class RouterWakeScheduler {
     source.batch = batch
     if (source.candidateId !== turnId) {
       source.candidateId = turnId
-      source.answer = null
+      source.answer = undefined
       source.terminal = null
     }
     if (source.terminal) this.finish(source, source.terminal)
@@ -164,13 +171,10 @@ export class RouterWakeScheduler {
       return
     }
     if (!source.turnId && source.candidateId && source.candidateId !== turnId) return
+    if (source.turnId) this.router.trackAgentMessage(method, params, true)
     if (method === 'turn/started' || method === 'turn/completed' ||
         (method === 'item/completed' && item?.type === 'agentMessage')) source.candidateId ??= turnId
-    if (method === 'item/completed' && finalAnswer(item ? [item] : [])) {
-      if (item.phase === 'final_answer' || source.answer?.phase !== 'final_answer') {
-        source.answer = { text: item.text.slice(0, 24000), phase: item.phase }
-      }
-    }
+    if (method === 'item/completed' && item) stageRouterAnswer(source, item)
     if (method === 'turn/completed' && terminal.has(params.turn?.status)) {
       if (source.turnId) this.finish(source, params.turn)
       else source.terminal = params.turn
@@ -224,20 +228,20 @@ export class RouterWakeScheduler {
   }
 
   finish(source, turn) {
+    this.router.restoreAgentItems(turn, true)
     if (turn.status !== 'completed') {
       this.retry(source)
       return
     }
-    const staged = source.candidateId === turn.id ? source.answer : null
-    const item = finalAnswer(turn.items)
-    const answer = item?.phase || !staged ? item?.text : staged.text
+    const staged = source.candidateId === turn.id ? source.answer : undefined
+    const answer = routerTurnAnswer(turn.items, staged)?.text
     const fallback = source.batch.dispatchIds.map(id => {
       const task = this.router.dispatcher.get(id)
       return '- ' + this.router.dispatcher.workerLabel(task) + '：' +
         (task.error || task.summary || executionLabels[task.executionStatus] || '回合状态待核对')
     }).join('\n')
     this.commit(source, 'delivered', answer?.slice(0, 24000) ??
-      'Worker 执行回执\n\n' + fallback)
+      'Worker 执行回执\n\n' + fallback, 0, turnDuration(turn, source.batch.startedAt))
   }
 
   retry(source) {
@@ -246,17 +250,21 @@ export class RouterWakeScheduler {
     else this.commit(source, 'retry', null, Date.now() + 2000 * 2 ** (batch.attempt - 1))
   }
 
-  commit(source, status, text, availableAt = 0) {
+  commit(source, status, text, availableAt = 0, durationMs) {
     const batch = source.batch
     this.store.transaction(() => {
       this.store.put('wake', batch.id, { ...batch, turnId: source.turnId ?? batch.turnId, status })
       this.store.updateReceipts.run(status === 'retry' ? 'pending' : status, availableAt, batch.id)
       this.router.wechat?.receipt(batch, status, text)
       if (text) this.store.put('message', 'receipt:' + batch.id, {
-        id: 'receipt:' + batch.id, role: 'assistant', text, status: 'completed',
+        id: 'receipt:' + batch.id, routerThreadId: batch.routerThreadId, turnId: source.turnId ?? batch.turnId,
+        role: 'assistant', phase: 'final_answer', text, status: 'completed', durationMs,
       })
     })
-    if (this.router.active === source) this.router.active = null
+    if (this.router.active === source) {
+      this.router.clearDeltas()
+      this.router.active = null
+    }
     this.router.publish()
     this.router.kickInputs()
     this.kick()

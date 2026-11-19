@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { HubError } from '../codex/hub.js'
-import { checkProject, checkThread, shortText, workerDispatchIssue, workerIdentityIssue } from './projects.js'
-import { permissionPayload } from '../../shared/worker-options.js'
+import { checkProject, checkThread, shortText, workerDispatchIssue, workerIdentityIssue, workerPermissionMatches, workerSettingsStamp } from './projects.js'
 
+const continuationPrompt = '请继续本会话刚才中断的原任务。先查看已有对话和当前工作区，核对已完成的步骤与未提交的改动，从未完成处继续。保留已有改动，避免重复执行。需要用户确认、审批或补充信息时，使用本会话的原生交互，完成后汇报结果。'
 const turnTerminal = new Set(['completed', 'failed', 'interrupted'])
 const terminal = new Set(['created', ...turnTerminal])
 const waiting = new Set(['awaiting_approval', 'awaiting_input'])
@@ -10,6 +11,21 @@ const waiting = new Set(['awaiting_approval', 'awaiting_input'])
 export function finalAnswer(items = []) {
   const messages = items.filter(item => item.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim())
   return messages.findLast(item => item.phase === 'final_answer') ?? messages.findLast(item => !item.phase)
+}
+
+function restartedTurnMatches(task, detail) {
+  const latest = detail.turns.at(-1)
+  return Boolean(task.restartRequestedAt && latest?.id === task.expectedTurnId && latest.status === 'interrupted')
+}
+
+function workerChangeMatches(project, task, settings) {
+  if (workerIdentityIssue(project, settings)) return false
+  const { worker, approvedSettings } = task
+  if (settings.model !== worker.model || settings.effort !== worker.effort || settings.executionMode !== worker.executionMode) return false
+  return worker.permission ? workerPermissionMatches(project, settings, worker.permission) :
+    settings.approvalPolicy === approvedSettings.approvalPolicy &&
+    settings.approvalsReviewer === approvedSettings.approvalsReviewer &&
+    isDeepStrictEqual(approvedSettings.sandbox, settings.sandbox)
 }
 
 function waitStatus(requests, flags = []) {
@@ -48,7 +64,8 @@ export class RouterDispatcher {
   enqueue(intent, onCommit) {
     const existing = this.store.get('dispatch-key', intent.requestId)
     const fingerprint = JSON.stringify([intent.projectId, intent.threadId ?? null, intent.instruction, intent.mode,
-      ...(intent.worker ? [intent.worker] : [])])
+      ...(intent.worker ? [intent.worker] : []),
+      ...(intent.workerAction ? [intent.workerAction, intent.expectedTurnId ?? null] : [])])
     if (existing) {
       if (existing.fingerprint !== fingerprint) throw new HubError('codex-cli/router-conflict', '请求 ID 已用于另一项任务')
       return this.get(existing.id)
@@ -61,6 +78,7 @@ export class RouterDispatcher {
       projectId: intent.projectId, threadId: intent.threadId ?? null, turnId: null,
       instruction: intent.instruction, mode: intent.mode, status: 'queued', createdAt: now, updatedAt: now,
       ...(intent.worker ? {worker:intent.worker} : {}),
+      ...(intent.workerAction && { workerAction: intent.workerAction, expectedTurnId: intent.expectedTurnId, approvedSettings: intent.approvedSettings }),
     }
     const event = this.store.transaction(() => {
       this.store.put('dispatch-key', intent.requestId, { id, fingerprint })
@@ -144,12 +162,15 @@ export class RouterDispatcher {
     return next
   }
 
-  async createWorker(project, title) {
+  async createWorker(project, title, permission) {
     await checkProject(project)
     const thread = await this.hub.newThread({
       cwd: project.cwd, sandbox: project.sandbox, approvalPolicy: 'on-request',
-    }, { routerWorker: true })
+    }, { routerWorker: true, workerPermission: permission })
     await checkThread(project, thread, this.routerThreadId())
+    if (permission && !workerPermissionMatches(project, await this.hub.routerWorkerSettings(thread.id), permission)) {
+      throw new HubError('codex-cli/router-worker-settings', 'Worker 未应用指定权限')
+    }
     if (title) await this.hub.renameThread({ threadId: thread.id, name: title }).catch(() => {})
     return thread
   }
@@ -276,6 +297,35 @@ export class RouterDispatcher {
     this.retained.add(threadId)
   }
 
+  async requestRestart(task, tasks) {
+    if (!this.isReady() || this.hub.status().phase !== 'ready' || !verifiedWorkerVersions.has(this.hub.status().codexVersion)) return
+    const { project, detail } = await this.inspect(task)
+    const turn = detail.turns.at(-1)
+    const fail = error => this.update(task.id, { status: 'failed', error })
+    if (turn?.id !== task.expectedTurnId) return fail('原 Worker 回合已经变化，未中断或续执行其他回合')
+    if (turn.status !== 'inProgress') return
+    const competing = tasks.some(other => other.id !== task.id && other.threadId === task.threadId &&
+      other.createdAt <= task.createdAt && !terminal.has(other.status) && other.turnId !== task.expectedTurnId)
+    if (competing || this.followups?.list(task.threadId).entries.length || await this.hub.routerQueueHead(task.threadId)) {
+      return fail('Worker 还有其他待执行消息，未中断当前回合')
+    }
+    const invalid = await this.targetIssue?.(project, task.threadId)
+    if (invalid) return fail(invalid)
+    const settings = workerSettingsStamp(await this.hub.routerWorkerProfile(task.threadId))
+    if (!isDeepStrictEqual(settings, task.approvedSettings)) return fail('Worker 设置已变化，请重新确认')
+    if (this.closed || !this.isReady() || Date.now() - (task.restartRequestedAt ?? 0) < 20000) return
+    if ((task.restartAttempts ?? 0) >= 2) return fail('无法确认原 Worker 回合已停止，未发送续执行消息')
+    await this.retain(task.threadId)
+    if (this.closed || !this.isReady()) return
+    this.update(task.id, { restartRequestedAt: Date.now(), restartAttempts: (task.restartAttempts ?? 0) + 1, error: null })
+    try {
+      await this.hub.interruptTurn({ threadId: task.threadId, turnId: task.expectedTurnId })
+    } catch {
+      this.update(task.id, { error: '正在核对原 Worker 回合的中断结果' })
+    }
+    this.schedule()
+  }
+
   async submit(task) {
     const worker = this.hub.status()
     if (worker.phase !== 'ready') return
@@ -287,7 +337,7 @@ export class RouterDispatcher {
       let threadId = task.threadId
       if (!threadId) {
         this.update(task.id, { status: 'creating' })
-        const thread = await this.createWorker(this.project(task.projectId))
+        const thread = await this.createWorker(this.project(task.projectId), undefined, task.worker?.permission)
         threadId = thread.id
         task = this.update(task.id, { threadId, status: 'queued' })
         this.store.put('binding', 'last', { projectId: task.projectId, threadId, at: Date.now() })
@@ -295,7 +345,14 @@ export class RouterDispatcher {
       if (!this.isReady() || this.closed) return
       const { project, detail } = await this.inspect(task)
       if (detail.thread.status?.type === 'active' || detail.turns.some(turn => turn.status === 'inProgress') ||
-          this.followups?.list(threadId).entries.length) return
+          this.followups?.list(threadId).entries.length) {
+        if (task.workerAction === 'settings') await this.retain(threadId)
+        return
+      }
+      if (task.workerAction === 'restart' && !restartedTurnMatches(task, detail)) {
+        this.update(task.id, { status: 'failed', error: '原回合未按本次请求中断，未发送续执行消息' })
+        return
+      }
       const invalid=await this.targetIssue?.(project,threadId)
       if(invalid) { this.update(task.id,{status:'failed',error:invalid});return }
       await this.retain(threadId)
@@ -307,10 +364,22 @@ export class RouterDispatcher {
       }
       await checkProject(project)
       if (!this.isReady() || this.closed) return
+      if (task.workerAction === 'settings') {
+        this.update(task.id, { status: 'completed', error: null, summary: 'Worker 会话设置已更新' })
+        return
+      }
+      if (task.workerAction === 'restart') {
+        const current = (await this.inspect(task)).detail
+        if (!restartedTurnMatches(task, current) || current.thread.status?.type === 'active' ||
+            this.followups?.list(threadId).entries.length || await this.hub.routerQueueHead(threadId)) {
+          this.update(task.id, { status: 'failed', error: '设置已更新。会话状态发生变化，未发送续执行消息' })
+          return
+        }
+      }
       this.update(task.id, { status: 'submitting', error: null, threadName: shortText(detail.thread.name, 120) })
       const text = task.mode === 'new'
         ? '你就是用户指定的 Worker。原文中的新建、选择会话和派发步骤已由 Router 完成。请在当前会话亲自执行业务任务，向用户提问和申请审批均使用当前会话的原生工具。\n\n用户原文：\n' + task.instruction
-        : task.instruction
+        : task.workerAction === 'restart' ? continuationPrompt : task.instruction
       const queued = await this.hub.routerAddWorkerMessage(threadId, task.id, text)
       if (!queued?.id || queued.clientUserMessageId !== task.id) throw new Error('缺少原生队列确认')
       const current = this.get(task.id)
@@ -320,7 +389,9 @@ export class RouterDispatcher {
       })
     } catch (error) {
       const current = this.get(task.id)
-      if (current.status === 'creating' || current.status === 'submitting') {
+      if (error.code === 'codex-cli/router-worker-settings') {
+        this.update(task.id, { status: 'failed', error: error.message })
+      } else if (current.status === 'creating' || current.status === 'submitting') {
         this.update(task.id, { status: 'unknown', error: '提交结果待核对，已暂停自动重试' })
       } else if (error.code === 'codex-cli/router-thread' || error.code === 'codex-cli/router-project') {
         this.update(task.id, { status: 'failed', error: error.message })
@@ -365,6 +436,10 @@ export class RouterDispatcher {
       if (detail.thread.status?.type === 'active' || detail.turns.some(turn => turn.status === 'inProgress') ||
           this.followups?.list(task.threadId).entries.length || !this.isReady() || this.closed) return
       if (task.worker && (await this.hub.routerQueueHead(task.threadId))?.id !== queued.id) return
+      if (task.workerAction === 'restart' && !restartedTurnMatches(task, detail)) {
+        this.update(task.id, { error: '续执行消息仍在原生队列，原回合状态已变化，请检查队列' })
+        return
+      }
       const issue = await this.prepareWorker(task, project)
       if (issue) {
         this.update(task.id, { error: issue })
@@ -391,22 +466,28 @@ export class RouterDispatcher {
   }
 
   async prepareWorker(task, project) {
+    if (task.workerAction) {
+      const current = workerSettingsStamp(await this.hub.routerWorkerProfile(task.threadId))
+      if (workerChangeMatches(project, task, current)) return null
+      if (!isDeepStrictEqual(task.approvedSettings, current)) return 'Worker 设置已变化，请重新确认'
+      try {
+        await this.hub.configureWorker(task.threadId, task.worker, { verify: true })
+        const effective = workerSettingsStamp(await this.hub.routerWorkerProfile(task.threadId))
+        return workerChangeMatches(project, task, effective) ? null : 'Codex 未确认所请求的 Worker 设置'
+      } catch (error) { return '无法应用 Worker 执行设置：' + error.message }
+    }
     const current = await this.hub.routerWorkerSettings(task.threadId)
     const permission = task.worker?.permission
     const issue = permission ? workerIdentityIssue(project, current) : this.settingsIssue(task, project, current)
     if (issue || !task.worker) return issue
     try {
-      await this.hub.configureWorker(task.threadId, task.worker)
-      if (!permission) return null
-      const effective = await this.hub.routerWorkerSettings(task.threadId)
-      const expected = permissionPayload(permission, true)
-      const sandbox = effective.sandbox
-      if (workerIdentityIssue(project, effective) || effective.approvalPolicy !== expected.approvalPolicy ||
-          effective.approvalsReviewer !== expected.approvalsReviewer || sandbox.type !== expected.sandboxPolicy.type ||
-          (sandbox.type === 'workspaceWrite' && (sandbox.networkAccess !== expected.sandboxPolicy.networkAccess ||
-            !sandbox.excludeTmpdirEnvVar || !sandbox.excludeSlashTmp || !Array.isArray(sandbox.writableRoots) ||
-            sandbox.writableRoots.some(root => root !== project.cwd))) ||
-          (sandbox.type === 'readOnly' && sandbox.networkAccess)) return 'Worker 未应用指定权限'
+      const changePermission = permission && (task.mode !== 'new' || !workerPermissionMatches(project, current, permission))
+      await this.hub.configureWorker(task.threadId, changePermission ? task.worker : {
+        model: task.worker.model, effort: task.worker.effort, executionMode: task.worker.executionMode,
+      })
+      if (permission && !workerPermissionMatches(project, await this.hub.routerWorkerSettings(task.threadId), permission)) {
+        return 'Worker 未应用指定权限'
+      }
       return null
     } catch (error) { return '无法应用 Worker 执行设置：' + error.message }
   }
@@ -508,8 +589,20 @@ export class RouterDispatcher {
   async sweepTasks() {
     const blocked = new Set()
     const related = new Set()
-    for (const task of this.list(-1).reverse()) {
+    const tasks = this.list(-1).reverse()
+    for (const task of tasks) {
+      if (this.closed) return
+      if (task.status === 'queued' && task.workerAction === 'restart') {
+        try { await this.requestRestart(task, tasks) } catch (error) {
+          if (['codex-cli/router-thread', 'codex-cli/router-project'].includes(error.code)) {
+            this.update(task.id, { status: 'failed', error: error.message })
+          }
+        }
+      }
+    }
+    for (const saved of tasks) {
       if (this.closed) break
+      const task = saved.workerAction === 'restart' ? this.get(saved.id) : saved
       if (terminal.has(task.status)) {
         if (task.needsFinalReply && this.hub.status().phase === 'ready') {
           try { await this.recoverFinalReply(task) } catch { /* Retry from Worker history on the next sweep. */ }

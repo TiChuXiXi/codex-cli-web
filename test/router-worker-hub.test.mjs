@@ -72,6 +72,12 @@ test('Worker retains a separate Hub reference, restores it on reconnect, and rea
   await hub.ensureThreadSubscription(threadId)
   const events = []
   bus.subscribe(event => events.push(event))
+  connections[1].emit({ method: 'thread/settings/updated', params: { threadId, threadSettings: {
+    cwd: '/fixture', approvalPolicy: 'on-request', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false },
+  } } })
+  assert.equal(hub.getThreadSettings(threadId).sandbox.type, 'readOnly')
+  assert.ok(events.some(event => event.type === 'thread/settings' && event.threadId === threadId &&
+    event.payload.settings.sandbox.type === 'readOnly'))
   connections[1].emit({ method: 'turn/completed', params: { threadId, turn: { id: 'older', status: 'completed' } } })
   assert.ok(events.some(event => event.type === 'turn/completed' && event.turnId === 'older'))
   assert.equal((await hub.routerReadWorker(threadId, { clientId: 'dispatch' })).turns[0].id, 'older')

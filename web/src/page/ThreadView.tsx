@@ -17,8 +17,9 @@ import { ToolGroup, groupActivity } from './ToolGroup'
 import { runningStartedAt } from '../running-time'
 import { collectSubagents, isSubagentActivity, type SubscribeSubagentEvents } from '../subagents'
 import { SubagentCard } from './SubagentCard'
+import { TurnProcess } from './TurnProcess'
 
-type SettingEvent = {id: string; turnId: string | null; itemId: string | null; text: string}
+type SettingEvent = {id: string; turnId: string | null; text: string}
 
 export interface ThreadViewProps {
   provider: string
@@ -30,6 +31,8 @@ export interface ThreadViewProps {
   activeTurnId: string | null
   models: ModelOption[]
   permissionFromSession?: PermissionMode | null
+  modelFromSession?: string | null
+  effortFromSession?: string | null
   planMode: boolean
   onEnterPlan: () => void
   onExitPlan: () => void
@@ -65,6 +68,8 @@ export function ThreadView({
   activeTurnId,
   models,
   permissionFromSession,
+  modelFromSession,
+  effortFromSession,
   planMode,
   onEnterPlan,
   onExitPlan,
@@ -100,7 +105,7 @@ export function ThreadView({
     try {
       const stored = JSON.parse(localStorage.getItem('dsh-codex-setting-events:' + id) || '[]')
       if (Array.isArray(stored)) {
-        return settingEvents.current[id] = stored.filter((e: any) => e && typeof e.id === 'string' && typeof e.text === 'string' && (e.turnId === null || typeof e.turnId === 'string') && (e.itemId === null || typeof e.itemId === 'string')).slice(-500)
+        return settingEvents.current[id] = stored.filter((e: any) => e && typeof e.id === 'string' && typeof e.text === 'string' && (e.turnId === null || typeof e.turnId === 'string')).slice(-500)
       }
     } catch {}
     return settingEvents.current[id] = []
@@ -109,7 +114,7 @@ export function ThreadView({
     if (!threadId || !detail) return
     const turns = [...detail.turns].sort((a, b) => turnTime(a) - turnTime(b))
     const last = turns.at(-1)
-    const event: SettingEvent = {id: randomId(), turnId: last?.id ?? null, itemId: last?.items?.at(-1)?.id ?? null, text}
+    const event: SettingEvent = {id: randomId(), turnId: activeTurnId ?? last?.id ?? null, text}
     const next = [...eventsFor(threadId), event].slice(-500)
     settingEvents.current[threadId] = next
     try { localStorage.setItem('dsh-codex-setting-events:' + threadId, JSON.stringify(next)) } catch {}
@@ -144,9 +149,9 @@ export function ThreadView({
       const stored = threadId === null ? null : JSON.parse(sessionStorage.getItem(`dsh-codex-model-selection-${threadId}`) ?? 'null')
       if (stored && typeof stored.model === 'string' && typeof stored.effort === 'string') pending = stored
     } catch {}
-    setModel(pending?.model ?? detail.thread.model ?? '')
-    setEffort(pending?.effort ?? detail.thread.reasoningEffort ?? '')
-  }, [threadId])
+    setModel(pending?.model ?? modelFromSession ?? detail.thread.model ?? '')
+    setEffort(pending?.effort ?? effortFromSession ?? detail.thread.reasoningEffort ?? '')
+  }, [threadId, modelFromSession, effortFromSession])
 
   // Permission can arrive or change independently of the selected model and effort.
   React.useLayoutEffect(() => {
@@ -187,7 +192,7 @@ export function ThreadView({
         // 忽略。
       }
     },
-    [threadId, permission, detail, t, api, onFollowups],
+    [threadId, permission, detail, activeTurnId, t, api, onFollowups],
   )
 
   // 是否贴着底部：决定新内容到来时要不要跟随；用户上滚后停止跟随。
@@ -284,6 +289,8 @@ export function ThreadView({
   if (detail === null) return null
 
   const thread = detail.thread
+  const effectiveModel = modelFromSession ?? thread.model
+  const effectiveEffort = effortFromSession ?? thread.reasoningEffort
   const orderedTurns = [...detail.turns]
     .map((turn, index) => ({ turn, index }))
     .sort((a, b) => {
@@ -293,17 +300,9 @@ export function ThreadView({
     })
     .map((entry) => entry.turn)
   const changes = eventsFor(thread.id)
-  const insertChanges = (turn: CodexTurn): CodexItem[] => {
-    const result: CodexItem[] = []
-    const pending = changes.filter(event => event.turnId === turn.id)
-    for (const item of turn.items ?? []) {
-      result.push(item)
-      for (const event of pending.filter(e => e.itemId === item.id)) result.push({id: event.id, type: 'localSettingChange', text: event.text})
-    }
-    const known = new Set((turn.items ?? []).map(item => item.id))
-    for (const event of pending.filter(e => e.itemId === null || !known.has(e.itemId))) result.push({id: event.id, type: 'localSettingChange', text: event.text})
-    return result
-  }
+  const renderSetting = (event: SettingEvent) => (
+    <ItemCard key={event.id} item={{ id: event.id, type: 'localSettingChange', text: event.text }} api={api} />
+  )
   const items = orderedTurns.flatMap((turn) => turn.items ?? [])
   const subagents = subscribeSubagentEvents ? collectSubagents(items, thread.id, thread.parentThreadId) : null
   const hasItems = items.length > 0
@@ -314,6 +313,10 @@ export function ThreadView({
   const answerQuestion = async (text: string) => {
     if (activeTurnId !== null) await api('turns/steer', { threadId: thread.id, turnId: activeTurnId, text })
     else { await permissionUpdates.current[thread.id]; await onSend(text, { model, effort, permission }) }
+  }
+  const stopFollowing = () => {
+    atBottomRef.current = false
+    setShowJump(true)
   }
   const activeTurn = detail.turns.find((turn) => turn.id === activeTurnId) ?? null
   const now = Date.now()
@@ -337,14 +340,14 @@ export function ThreadView({
               {t('thread.cwd')}: <code>{basename(thread.cwd)}</code>
             </span>
           ) : null}
-          {thread.model ? (
+          {effectiveModel ? (
             <span className="dsh-codex-chip" data-meta="model">
-              {t('thread.model')}: {thread.model}
+              {t('thread.model')}: {effectiveModel}
             </span>
           ) : null}
-          {thread.reasoningEffort ? (
+          {effectiveEffort ? (
             <span className="dsh-codex-chip" data-meta="effort">
-              {t('thread.effort')}: {thread.reasoningEffort}
+              {t('thread.effort')}: {effectiveEffort}
             </span>
           ) : null}
           {typeof thread.gitInfo?.branch === 'string' && thread.gitInfo.branch !== '' ? (
@@ -375,27 +378,45 @@ export function ThreadView({
               {loadingOlder ? t('thread.loadingOlder') : t('thread.loadOlder')}
             </button>
           ) : null}
-          {changes.filter(event => event.turnId === null).map(event => <ItemCard key={event.id} item={{id: event.id, type: 'localSettingChange', text: event.text}} api={api} />)}
+          {changes.filter(event => event.turnId === null).map(renderSetting)}
           {!hasItems && changes.length === 0 && <div className="dsh-codex-empty">{t('thread.noMessages')}</div>}
-          {orderedTurns.map((turn) => (
-              <React.Fragment key={turn.id}>
-                {groupActivity(insertChanges(turn).filter(item =>
-                  item.type !== 'reasoning' && (!subagents || !isSubagentActivity(item) || subagents.has(item.id)),
-                )).map(entry => {
-                  if (entry.kind === 'group') return <ToolGroup key={entry.key} items={entry.items} api={api} />
-                  const agents = subagents?.get(entry.item.id)
-                  if (agents && subscribeSubagentEvents) return agents.map(agent => (
-                    <SubagentCard key={thread.id + ':' + agent.id} agent={agent} parentThreadId={thread.id} parentRunning={activeTurnId !== null}
-                      api={api} subscribe={subscribeSubagentEvents} onExpand={() => {
-                        atBottomRef.current = false
-                        setShowJump(true)
-                      }} />
-                  ))
-                  return <ItemCard key={thread.id + ':' + entry.item.id} item={entry.item} api={api} cwd={thread.cwd ?? ''} onAnswer={thread.id === selectedId && openQuestionIds.has(entry.item.id) ? answerQuestion : undefined} />
-                })}
-                <TurnFooter turn={turn} />
-              </React.Fragment>
-            ))}
+          {orderedTurns.map(turn => {
+            const entries = groupActivity((turn.items ?? []).filter(item =>
+              !['reasoning', 'sleep', 'hookPrompt'].includes(item.type) &&
+              (!subagents || !isSubagentActivity(item) || subagents.has(item.id)),
+            ))
+            const renderEntry = (entry: (typeof entries)[number]) => {
+              if (entry.kind === 'group') return <ToolGroup key={entry.key} items={entry.items} api={api} />
+              const agents = subagents?.get(entry.item.id)
+              if (agents && subscribeSubagentEvents) return agents.map(agent => (
+                <SubagentCard key={thread.id + ':' + agent.id} agent={agent} parentThreadId={thread.id} parentRunning={activeTurnId !== null}
+                  api={api} subscribe={subscribeSubagentEvents} onExpand={stopFollowing} />
+              ))
+              return <ItemCard key={thread.id + ':' + entry.item.id} item={entry.item} api={api} cwd={thread.cwd ?? ''} onAnswer={thread.id === selectedId && openQuestionIds.has(entry.item.id) ? answerQuestion : undefined} />
+            }
+            const finished = turn.id !== activeTurnId && ['completed', 'failed', 'interrupted'].includes(turn.status ?? '')
+            const answers = entries.filter(entry => entry.kind === 'item' && entry.item.type === 'agentMessage' && entry.item.phase === 'final_answer')
+            const legacyAnswer = answers.length ? undefined : entries.filter(entry =>
+              entry.kind === 'item' && entry.item.type === 'agentMessage' && !entry.item.phase && entry.item.text?.trim(),
+            ).at(-1)
+            const process = new Set(finished ? entries.filter(entry =>
+              entry.kind === 'group' || (entry.item.type !== 'userMessage' && !entry.item.questions?.length &&
+                !answers.includes(entry) && entry !== legacyAnswer),
+            ) : [])
+            const processStart = entries.find(entry => process.has(entry) || answers.includes(entry) || entry === legacyAnswer)
+            const { label, clock } = turnTiming(turn, t)
+            return <React.Fragment key={thread.id + ':' + turn.id}>
+              {entries.map(entry => <React.Fragment key={entry.kind === 'group' ? entry.key : entry.item.id}>
+                {process.size > 0 && entry === processStart && <TurnProcess label={label} onExpand={stopFollowing}>
+                  {[...process].map(renderEntry)}
+                </TurnProcess>}
+                {!process.has(entry) && renderEntry(entry)}
+              </React.Fragment>)}
+              {finished && process.size === 0 && (label || clock) &&
+                <div className="dsh-codex-turn-footer">{[label, clock].filter(Boolean).join(' · ')}</div>}
+              {changes.filter(event => event.turnId === turn.id).map(renderSetting)}
+            </React.Fragment>
+          })}
           </div>
         </div>
         {showJump ? (
@@ -420,7 +441,9 @@ export function ThreadView({
 
       {permissionError?.threadId === threadId && <div className="dsh-codex-permission-pending" role="alert">{permissionError.message}</div>}
       {threadId === selectedId && activeTurnId !== null && permissionFromSession != null && permission !== permissionFromSession && (
-        <div className="dsh-codex-permission-pending" role="status">权限更改将在下一轮生效；当前回合和待处理的审批仍使用原权限。</div>
+        <div className="dsh-codex-permission-pending" role="status">
+          {t('permission.pending', { current: t('permission.' + permissionFromSession), next: t('permission.' + permission) })}
+        </div>
       )}
       <Composer
         key={threadId ?? 'new'}
@@ -484,9 +507,7 @@ function turnTime(turn: CodexTurn): number {
   return times.length > 0 ? Math.min(...times) : Number.MAX_SAFE_INTEGER
 }
 
-function TurnFooter({ turn }: { turn: CodexTurn }) {
-  const t = useT()
-  if (turn.status === 'inProgress') return null
+function turnTiming(turn: CodexTurn, t: ReturnType<typeof useT>) {
   const startMs = typeof turn.startedAt === 'number' ? turn.startedAt * 1000 : null
   const lastItem = [...(turn.items ?? [])].reverse().find((item) => typeof item.completedAtMs === 'number')
   const endMs = typeof turn.completedAt === 'number' ? turn.completedAt * 1000 : (lastItem?.completedAtMs ?? null)
@@ -498,7 +519,6 @@ function TurnFooter({ turn }: { turn: CodexTurn }) {
         : null
   const duration = durationMs === null ? '' : formatDuration(durationMs, t)
   const clock = formatClock(endMs)
-  if (duration === '' && clock === '') return null
   const label =
     duration === ''
       ? ''
@@ -507,8 +527,7 @@ function TurnFooter({ turn }: { turn: CodexTurn }) {
         : turn.status === 'failed'
           ? t('turn.failed', { duration })
           : t('turn.workedFor', { duration })
-  const text = label === '' ? clock : clock === '' ? label : `${label} · ${clock}`
-  return <div className="dsh-codex-turn-footer">{text}</div>
+  return { label, clock }
 }
 
 function ChevronDownGlyph(){return <Icon name="chevronDown" size={16}/>}

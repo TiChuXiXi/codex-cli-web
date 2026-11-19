@@ -12,6 +12,7 @@ export interface SubagentReadRequest {
 
 export interface RouterTask {
   worker?: {model:string; effort:string; executionMode:'default'|'plan'; permission?:string}
+  workerAction?: 'settings' | 'restart'
   id: string
   projectId: string
   project: string
@@ -28,7 +29,7 @@ export interface RouterTask {
 export interface RouterClarification {
   id: string
   revision: number
-  kind: 'project' | 'session' | 'create' | 'interrupt' | 'projectRoot' | 'workerPermission' | 'psmMemory' | 'psmAccess'
+  kind: 'project' | 'session' | 'create' | 'interrupt' | 'projectRoot' | 'workerPermission' | 'workerSettings' | 'psmMemory' | 'psmAccess'
   label: string
   original?: string
   candidates: { id: string; name: string; project?: string; summary?: string; updatedAt?: number; reasons?: string[] }[]
@@ -55,6 +56,8 @@ export interface RouterSnapshot {
   error: string | null
   model: string | null
   busy: boolean
+  activeTurnId?: string
+  pendingReceiptTurnIds?: string[]
   effort: string | null
   models: ModelOption[]
   usingDefaultModel: boolean
@@ -62,6 +65,8 @@ export interface RouterSnapshot {
   receiptLimited?: boolean
   messages: {
     id: string; role: 'user' | 'assistant'; label?: string; text: string; status: string
+    turnId?: string; phase?: string | null; durationMs?: number
+    tool?: { name: string; status: 'running' | 'completed' | 'failed' | 'interrupted'; outcome?: { success: boolean; code?: string; status?: string } }
     dispatchId?: string; interactionMethod?: string
     questions?: { title: string; options?: string[] | null }[]
   }[]

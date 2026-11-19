@@ -48,6 +48,22 @@ test('ordinary and Router-created Worker threads send Sol with medium reasoning 
   }
 })
 
+test('Router sends the authorized permission on thread/start with project confinement', async t => {
+  const { hub, calls } = await fixture(t, { defaultPermission: 'ask' })
+  const params = { cwd: '/fixture', sandbox: 'read-only', approvalPolicy: 'on-request' }
+  await hub.newThread(params, { routerWorker: true, workerPermission: 'ask' })
+  const write = calls.findLast(call => call.method === 'thread/start').params
+  assert.equal(write.sandbox, 'workspace-write')
+  assert.equal(write.approvalPolicy, 'on-request')
+  assert.equal(write.approvalsReviewer, 'user')
+  assert.equal(write.config['sandbox_workspace_write.network_access'], false)
+  assert.equal(write.config['sandbox_workspace_write.exclude_tmpdir_env_var'], true)
+  assert.equal(write.config['sandbox_workspace_write.exclude_slash_tmp'], true)
+  assert.deepEqual(write.config['sandbox_workspace_write.writable_roots'], [])
+  await hub.newThread(params, { routerWorker: true, workerPermission: 'read' })
+  assert.equal(calls.findLast(call => call.method === 'thread/start').params.sandbox, 'read-only')
+})
+
 test('explicit selection overrides application defaults and existing turns receive no forced model', async t => {
   const { hub, calls } = await fixture(t, { defaultModel: 'configured-model', defaultEffort: 'high' })
   const configured = await hub.newThread()
