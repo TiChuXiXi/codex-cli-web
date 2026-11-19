@@ -64,5 +64,16 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   assert.equal(receipt.clientUserMessageId, requestId)
   assert.equal(receipt.input[0].text, 'Worker receipt fixture')
   assert.equal(receipt.additionalContext, undefined)
+  const presentation = {displayName:'南桥',selfName:'我',personality:'温和',style:'直接',brevity:'简洁',wechatStyle:'短句'}
+  for (const channel of ['web','wechat','receipt']) {
+    const params = (await app.send(receipt.threadId,'hello','voice-scope-1234',{presentation,channel,workerReceipt:channel==='receipt'})).params
+    assert.equal(params.threadId,receipt.threadId)
+    assert.deepEqual(params.sandboxPolicy,receipt.sandboxPolicy)
+    assert.equal(params.approvalPolicy,receipt.approvalPolicy)
+    const voice = params.additionalContext['router-voice'].value
+    assert.match(voice,/南桥/)
+    assert.equal(voice.includes('微信表达'),channel!=='web')
+    assert.equal(Boolean(params.additionalContext['router-instructions']),channel!=='receipt')
+  }
   assert.deepEqual(receipt.sandboxPolicy, { type: 'readOnly', networkAccess: false })
 })

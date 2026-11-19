@@ -127,7 +127,7 @@ export interface HubStatus {
   pendingApprovals?: number
   seq?: number
   pending?: unknown[]
-  router?: { enabled: boolean; phase: string; promptProjectRoot?: boolean }
+  router?: { enabled: boolean; phase: string; displayName?: string; promptProjectRoot?: boolean }
 }
 
 export interface CodexEvent {

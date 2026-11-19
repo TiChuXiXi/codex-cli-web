@@ -71,9 +71,9 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
     renameThread: async () => {},
     routerWorkerSettings: async id => createdSettings.get(id) ?? ({ cwd: threads.get(id)?.thread.cwd, approvalPolicy: policy, approvalsReviewer: 'user', sandbox }),
     routerWorkerProfile: async id => ({ ...await hub.routerWorkerSettings(id), model: 'worker-default', effort: 'medium', collaborationMode: { mode: 'default' } }),
-    routerAddWorkerMessage: async (threadId, clientUserMessageId, text) => {
+    routerAddWorkerMessage: async (threadId, clientUserMessageId, text, selectionContext) => {
       const queued = { id: 'queued-' + clientUserMessageId, clientUserMessageId }
-      submitted.push({ threadId, text, ...queued })
+      submitted.push({ threadId, text, ...(selectionContext && {selectionContext}), ...queued })
       if (loseReply) throw new Error('fixture acknowledgement lost')
       return queued
     },
@@ -181,6 +181,22 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
 function args(requestId, threadId = 'worker-a') {
   return { projectId: 'alpha-project', threadId, mode: 'resume', instruction: 'untrusted replacement', requestId }
 }
+
+test('voice and feedback settings are revision-checked and live on the existing main conversation', async t => {
+  const fx = await fixture(t)
+  const initial = fx.router.settings()
+  const session = fx.router.session.id
+  const next = await fx.router.saveSettings({...initial,presentation:{...initial.presentation,displayName:'南桥',stageSeconds:12}})
+  assert.equal(fx.router.read().displayName,'南桥')
+  assert.equal(fx.router.session.id,session)
+  assert.equal(fx.starts,1)
+  await assert.rejects(fx.router.saveSettings(initial),/重新加载/)
+  await assert.rejects(fx.router.saveSettings({...next,presentation:{typing:'yes'}}),/反馈时间/)
+  await fx.restart()
+  assert.equal(fx.router.settings().presentation.stageSeconds,12)
+  assert.equal(fx.router.session.id,session)
+  assert.equal(fx.starts,1)
+})
 
 test('legacy dispatch options reach the chosen Worker without changing the original task or the workbench defaults', async t => {
   const fx = await fixture(t)
@@ -600,6 +616,33 @@ test('semantic evidence resumes the preauthorized full-access Worker with no con
   assert.equal(fx.threads.size, 2)
 })
 
+test('explicit parallel resumes keep project confirmations, retries and Worker handoffs independent', async t => {
+  const fx = await fixture(t, {discover:true})
+  const [alpha] = (await fx.router.projectRows()).filter(p => p.name === 'Alpha')
+  const otherCwd = join(fx.cwd, '..', 'handset')
+  await mkdir(otherCwd)
+  const other = await loadRouterProjects([{id:'handset',name:'手持终端',cwd:otherCwd}],fx.router.directory)
+  fx.router.projects.set('handset',other.get('handset'))
+  fx.threads.get('worker-b').thread.cwd = otherCwd
+  const text = '请分别续接 Alpha 和 手持终端 的原会话，各自用原生命令审批请求执行 pwd。'
+  const requestId = 'explicit-independent-projects'
+  await fx.router.send({requestId,text})
+  const alphaArgs = {...args(requestId),projectId:alpha.id,workerPermission:'read'}
+  const otherArgs = {...args(requestId,'worker-b'),projectId:'handset',workerPermission:'read'}
+  const [first,second] = await Promise.all([fx.tool('dispatch_task',alphaArgs),fx.tool('dispatch_task',otherArgs)])
+  assert.equal(first.value.status,'needs_confirmation')
+  assert.equal(second.value.status,'queued')
+  assert.equal((await fx.tool('dispatch_task',otherArgs)).value.id,second.value.id)
+  const [pending] = fx.router.read().clarifications
+  assert.equal(pending.candidates[0].projectId,alpha.id)
+  assert.equal((await fx.router.confirm({...pending,candidateId:alpha.id})).projectId,alpha.id)
+  await fx.router.dispatcher.sweep()
+  await until(()=>fx.submitted.length===2)
+  assert.deepEqual(fx.submitted.map(row=>row.threadId).sort(),['worker-a','worker-b'])
+  assert.ok(fx.submitted.every(row=>row.text===text && row.selectionContext.includes('只执行用户原文中属于本项目的业务步骤')))
+  assert.equal(fx.router.store.get('operation',requestId),null)
+})
+
 test('one conversational choice across projects resumes the selected thread with the original instruction', async t => {
   const fx = await fixture(t)
   const otherCwd = join(fx.cwd, '..', 'handset')
@@ -607,6 +650,9 @@ test('one conversational choice across projects resumes the selected thread with
   const other = await loadRouterProjects([{ id: 'handset', name: '手持终端', cwd: otherCwd }], fx.router.directory)
   fx.router.projects.set('handset', other.get('handset'))
   fx.threads.get('worker-b').thread.cwd = otherCwd
+  fx.threads.get('worker-a').turns = [{id:'old-result',status:'completed',items:[
+    {type:'agentMessage',phase:'final_answer',text:'工作目录为 `/tmp/test/private-path`。'},
+  ]}]
   const text = '接着改上次的 Qt 储位列表。'
   const requestId = 'two-projects-ambiguous'
   await fx.router.send({ requestId, text })
@@ -616,6 +662,7 @@ test('one conversational choice across projects resumes the selected thread with
   const [pending] = fx.router.read().clarifications
   assert.equal(pending.label, '想改看板还是手持终端？')
   assert.deepEqual(pending.candidates.map(row => row.project), ['Alpha', '手持终端'])
+  assert.doesNotMatch(pending.candidates[0].phoneSummary,/private-path|\/tmp\//)
   assert.equal(fx.submitted.length, 0)
   fx.finish()
   await fx.router.send({ requestId: 'reply-choose-handset', text: '手持终端那个' })
@@ -937,7 +984,11 @@ test('Worker receipts are persisted without a browser, merged while busy and rea
   assert.equal(fx.router.getTask(second.id).receiptStatus, 'claimed')
   assert.equal((await fx.tool('dispatch_task', args(wakes[0].requestId))).value.code, 'codex-cli/router-receipt-scope')
   assert.equal((await fx.tool('get_task_status', { dispatchId: 'another-id' })).success, false)
+  fx.router.store.put('message','wx-action:answer',{id:'wx-action:answer',role:'user',dispatchId:first.id,status:'completed',interactionMethod:'item/tool/requestUserInput',
+    receiptEvidence:{choices:[{question:'如何汇报？',selected:'按项目名'}]},text:'未纳入回执的聊天原文'})
   const result = await fx.tool('get_task_status', { dispatchId: first.id })
+  assert.deepEqual(result.value.answeredInteractions,[{method:'item/tool/requestUserInput',choices:[{question:'如何汇报？',selected:'按项目名'}]}])
+  assert.deepEqual((await fx.tool('get_task_status',{dispatchId:second.id})).value.answeredInteractions,[])
   assert.equal(result.value.finalReply, '关联 Worker 的最终答复')
   assert.equal(result.value.executionStatus, 'completed')
   assert.equal((await fx.tool('get_task_status', { dispatchId: second.id })).value.executionStatus, 'interrupted')
@@ -997,10 +1048,14 @@ test('structured Worker questions steer their live turn or queue exactly one fol
   fx.hub.steerTurn = async body => { replies.push(body) }
   for (const task of [a,b]) {
     const q = fx.router.read().messages.find(m => m.questions && m.id.includes(task.id))
-    await fx.router.answerQuestion({ id: q.id, text: '靛蓝' })
+    const text = task.id === a.id ? '颜色\n靛蓝' : '靛蓝'
+    await fx.router.answerQuestion({ id: q.id, text })
     await assert.rejects(fx.router.answerQuestion({ id: q.id, text: '松绿' }), /失效/)
+    assert.deepEqual(fx.router.store.answeredInteractions(task.id), [
+      {method:'worker/question',choices:[{question:'颜色',selected:'靛蓝'}]},
+    ])
   }
-  assert.deepEqual(replies, [{ threadId: a.threadId, turnId: 'turn-' + a.id, text: '靛蓝' }])
+  assert.deepEqual(replies, [{ threadId: a.threadId, turnId: 'turn-' + a.id, text: '颜色\n靛蓝' }])
   assert.equal(fx.router.dispatcher.list().filter(task => task.instruction === '靛蓝' && task.threadId === b.threadId).length, 1)
 })
 
@@ -1084,7 +1139,9 @@ test('Worker input requests stay non-terminal and duplicate Turn ownership recor
   fx.bus.publish('approval/requested', { method: 'item/tool/requestUserInput' }, meta)
   assert.equal(fx.router.getTask(task.id).status, 'awaiting_input')
   assert.equal(fx.router.getTask(task.id).receiptStatus, null)
-  fx.bus.publish('approval/resolved', {}, meta)
+  const submitted = {method:'item/tool/requestUserInput',choices:[{question:'选择',selected:'乙'}]}
+  fx.bus.publish('approval/resolved', {reason:'answered',instanceId:'fixture-choice',submitted}, meta)
+  assert.deepEqual(fx.router.store.answeredInteractions(task.id),[submitted])
   assert.equal(fx.router.getTask(task.id).status, 'running')
 
   fx.bus.publish('turn/completed', { turn: { id: meta.turnId, status: 'completed' } }, meta)
@@ -1251,10 +1308,12 @@ test('a phone clarification is delivered once and its original instruction reach
   assert.equal(call.value.status,'needs_confirmation')
   fx.finish('选中后将继续。')
   await until(() => client.sent.length === 1)
-  assert.match(client.sent[0].text,/选中后将继续。.*同名测试甲/s)
-  channel.accept({msgs:[inbound('selected','1')]})
+  assert.match(client.sent[0].text,/同名测试甲.*同名测试乙/s)
+  assert.doesNotMatch(client.sent[0].text,/选中后将继续|worker-a|帮我继续/)
+  channel.accept({msgs:[inbound('selected','第二个')]})
   await until(() => fx.submitted.length === 1)
-  assert.equal(fx.submitted[0].threadId,'worker-a')
+  assert.equal(fx.submitted[0].threadId,'worker-b')
+  assert.match(fx.submitted[0].selectionContext,/用户已选定当前项目和会话/)
   assert.equal(fx.submitted[0].text,source.text)
   assert.equal(fx.sent.length,1)
 })
@@ -1311,6 +1370,10 @@ test('a structured question answered in WeChat resumes its completed Worker exac
   assert.equal(followups.length,1)
   assert.equal(followups[0].threadId,task.threadId)
   assert.equal(fx.router.read().messages.find(m=>m.questions)?.status,'answered')
+  const evidence = [{method:'worker/question',choices:[{question:'使用哪个数据库？',selected:'SQLite'}]}]
+  await until(() => fx.router.store.answeredInteractions(followups[0].id).length)
+  assert.deepEqual(fx.router.store.answeredInteractions(task.id),evidence)
+  assert.deepEqual(fx.router.store.answeredInteractions(followups[0].id),evidence)
 })
 
 test('early foreign completion cannot inherit a phone reply address before the native turn is acknowledged', async t => {
@@ -1503,4 +1566,98 @@ test('a corrupt derived file degrades PSM alone and explicit L1 rebuild restores
   assert.equal((await fx.tool('list_projects',{})).success,true)
   await r.psm.control({action:'rebuild',confirmed:true});await r.psm.sync.running
   assert.equal((await r.psm.search({query:'设备控制'}))[0].level,'user_confirmed')
+})
+
+test('phone semantic fallback is bound to one revision and only proposes a plain candidate', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t,{createChannel:r=>new WeChatChannel(r,client)})
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(()=>channel.account)
+  channel.accept({msgs:[inbound('source','继续昨天的测试')]})
+  await until(()=>fx.router.active?.origin)
+  const requestId = fx.router.active.requestId
+  await fx.tool('dispatch_task',{requestId,mode:'resume',instruction:'ignored',candidateThreadIds:['worker-a','worker-b']})
+  fx.finish('选择')
+  await until(()=>client.sent.length)
+  channel.accept({msgs:[inbound('unclear','之前检查构建的那个')]})
+  await until(()=>fx.router.active?.origin?.choice)
+  assert.equal((await fx.tool('interrupt_task',{dispatchId:'fake'})).success,false)
+  const proposed = await fx.tool('dispatch_task',{...args(requestId,'worker-b'),projectId:'alpha-project'})
+  assert.equal(proposed.value.status,'needs_confirmation')
+  fx.finish('已开始执行')
+  await until(()=>client.sent.some(m=>m.text.includes('可能是第 2 项')))
+  assert.equal(fx.submitted.length,0)
+  assert.ok(!client.sent.some(m=>m.text.includes('已开始执行')))
+  channel.accept({msgs:[inbound('confirm','选同名测试乙')]})
+  await until(()=>fx.submitted.length===1)
+  assert.equal(fx.submitted[0].text,'继续昨天的测试')
+})
+
+test('phone history permission continues the same instruction and still requires a project dispatch grant',async t=>{
+  const client=fakeClient()
+  const fx=await fixture(t,{discover:true,createChannel:r=>new WeChatChannel(r,client)})
+  const r=fx.router, channel=r.wechat
+  channel.bind()
+  await until(()=>channel.account)
+  const instruction='继续之前的测试任务'
+  channel.accept({msgs:[inbound('start',instruction)]})
+  await until(()=>r.active?.origin)
+  const [project]=(await fx.tool('list_projects',{})).value
+  const first=r.active.requestId
+  await fx.tool('psm_get',{ref:'project:'+project.id})
+  fx.finish('请授权读取历史')
+  await until(()=>channel.queueHead()?.shown)
+  channel.accept({msgs:[inbound('read','1')]})
+  await until(()=>r.active?.origin?.continuedFrom===first)
+  assert.equal(r.active.text,instruction)
+  const sessions=(await fx.tool('list_sessions',{projectId:project.id})).value
+  assert.equal(sessions.length,2)
+  const requestId=r.active.requestId
+  const result=await fx.tool('dispatch_task',{requestId,mode:'resume',instruction,candidateThreadIds:sessions.map(c=>c.id)})
+  assert.equal(result.value.status,'needs_confirmation')
+  fx.finish('已列出候选')
+  await until(()=>channel.queueHead()?.shown)
+  channel.accept({msgs:[inbound('choose','第二个')]})
+  await until(()=>client.sent.some(m=>m.text.includes('确认授权')))
+  assert.equal(r.projects.has(project.id),false)
+  assert.equal(fx.submitted.length,0)
+  channel.accept({msgs:[inbound('authorize','确认授权')]})
+  await until(()=>fx.submitted.length===1)
+  assert.equal(fx.submitted[0].threadId,sessions[1].id)
+  assert.equal(fx.submitted[0].text,instruction)
+})
+
+test('a candidate call missing explicit read and plan settings cannot inherit a never-approve grant',async t=>{
+  const client=fakeClient()
+  const fx=await fixture(t,{createChannel:r=>new WeChatChannel(r,client)})
+  fx.policy='never'
+  const applied=[]
+  fx.hub.configureWorker=async (threadId,worker)=>{
+    applied.push({threadId,...worker})
+    fx.policy='on-request'
+  }
+  const r=fx.router, channel=r.wechat
+  channel.bind()
+  await until(()=>channel.account)
+  const instruction='让我选择已有会话。为选中的会话指定只读、按需由我审批，使用计划模式。'
+  channel.accept({msgs:[inbound('start',instruction)]})
+  await until(()=>r.active?.origin)
+  const requestId=r.active.requestId
+  const result=await fx.tool('dispatch_task',{requestId,mode:'resume',instruction:'ignored',candidateThreadIds:['worker-a','worker-b']})
+  assert.equal(result.value.status,'needs_confirmation')
+  fx.finish('请选择')
+  await until(()=>channel.queueHead()?.shown)
+  channel.accept({msgs:[inbound('pick','第二个')]})
+  await until(()=>client.sent.some(m=>m.text.includes('会话将设置为只读、按需由你审批，使用计划模式')))
+  assert.doesNotMatch(client.sent.at(-1).text,/免审批/)
+  assert.equal(fx.submitted.length,0)
+  assert.equal(r.store.get('worker-grant','worker-b'),null)
+  channel.accept({msgs:[inbound('confirm','确认授权')]})
+  await until(()=>fx.submitted.length===1)
+  assert.equal(applied[0].threadId,'worker-b')
+  assert.equal(applied[0].permission,'read')
+  assert.equal(applied[0].executionMode,'plan')
+  assert.equal(fx.submitted[0].text,instruction)
+  assert.equal(r.store.get('worker-grant','worker-b'),null)
 })

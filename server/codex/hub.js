@@ -13,6 +13,7 @@
 import {resolveSkillInputs} from '../services/skills.js'
 import { readContextUsage } from '../services/context-usage.js'
 import { ThreadTitles } from '../services/thread-titles.js'
+import { approvalDetails } from '../../shared/approval-details.js'
 import { permissionPayload } from '../../shared/worker-options.js'
 import { basename } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -22,6 +23,27 @@ import { openCodexTransport, resolveCodexHome } from './transport/index.js'
 
 const CLIENT_INFO = { name: 'codex-cli-web', title: 'Codex Web UI', version: '0.1.0' }
 const INITIALIZE_CAPABILITIES = { experimentalApi: true, requestAttestation: false }
+
+// Keep successful native decisions useful to receipts without broadcasting user-entered text.
+function submittedDecision({ method, params }, response) {
+  if (method === 'item/tool/requestUserInput') {
+    const choices = (Array.isArray(params.questions) ? params.questions : []).flatMap(q => {
+      const answers = response?.answers?.[q.id]?.answers
+      if (q.isSecret || !Array.isArray(answers) || answers.length !== 1 ||
+          typeof answers[0] !== 'string' || !Array.isArray(q.options) || !q.options.some(opt => opt?.label === answers[0])) return []
+      return [{question:q.question?.slice(0,240),selected:answers[0].slice(0,120)}]
+    }).slice(0,8)
+    return {method,choices}
+  }
+  if (method === 'item/permissions/requestApproval') {
+    const decision = Object.keys(response?.permissions ?? {}).length ? (response.scope === 'session' ? 'allowSession' : 'allowOnce') : 'deny'
+    return {method,decision}
+  }
+  if (['item/commandExecution/requestApproval','item/fileChange/requestApproval'].includes(method)) {
+    const decision = {accept:'allowOnce',acceptForSession:'allowSession',decline:'deny',cancel:'cancel'}[response?.decision]
+    return typeof decision === 'string' ? {method,decision} : {method}
+  }
+}
 
 /** 带稳定错误码的 Hub 错误，路由层按 code 转成 RPC 错误。 */
 export class HubError extends Error {
@@ -632,9 +654,11 @@ export class CodexHub {
     }
   }
 
-  async routerAddWorkerMessage(threadId, clientUserMessageId, text) {
+  async routerAddWorkerMessage(threadId, clientUserMessageId, text, selectionContext) {
+    const input = (selectionContext ? [selectionContext, text] : [text])
+      .map(part => ({ type: 'text', text: part, text_elements: [] }))
     const result = await this.#requireRpc().request('thread/queue/add', {
-      threadId, clientUserMessageId, input: [{ type: 'text', text, text_elements: [] }],
+      threadId, clientUserMessageId, input,
     }, { timeoutMs: 15000 })
     this.#owned.delete(threadId)
     return result?.queuedSubmission
@@ -997,13 +1021,52 @@ export class CodexHub {
       }, this.config.approvalTimeoutMs)
       pending.timer.unref?.()
     }
+    const { threadId, turnId, itemId } = pending.params
+    if (threadId && turnId && itemId && approvalDetails(pending)?.complete === false &&
+        ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(pending.method)) {
+      // A request may follow item/started or precede it. Bound the history lookup and
+      // verify the original live instance again when its asynchronous answer arrives.
+      void this.#rpc.request('thread/turns/list', { threadId, limit: 8, sortDirection: 'desc', itemsView: 'full' },
+        { timeoutMs: 2000 }).then(page => {
+        const item = page.data?.find(turn => turn.id === turnId)?.items?.find(entry => entry.id === itemId)
+        if (this.#pendingApprovals.get(key) === pending) this.#completeApproval(pending, item)
+      }).catch(() => {})
+    }
     return promise
+  }
+
+  #completeApproval(pending, item) {
+    if (!item || approvalDetails(pending)?.complete !== false) return
+    const params = { ...pending.params }
+    if (pending.method === 'item/commandExecution/requestApproval' && item.type === 'commandExecution') {
+      params.command ||= item.command
+      params.cwd ||= item.cwd
+    } else if (pending.method === 'item/fileChange/requestApproval' && item.type === 'fileChange') {
+      params.changes = item.changes?.map(({ path, kind }) => ({ path, kind }))
+    } else return
+    if (!approvalDetails({ method: pending.method, params }).complete) return
+    pending.params = params
+    this.bus.publish('approval/requested', { requestId: pending.id, instanceId: pending.instanceId,
+      method: pending.method, params, createdAt: pending.createdAt }, {
+      threadId: params.threadId, turnId: params.turnId, itemId: params.itemId })
   }
 
   /** 回应一个挂起的服务端请求；response 是方法对应的原始响应体。 */
   respondApproval(requestId, response, instanceId) {
-    if (!instanceId || this.#pendingApprovals.get(String(requestId))?.instanceId !== instanceId) {
+    const pending = this.#pendingApprovals.get(String(requestId))
+    if (!instanceId || pending?.instanceId !== instanceId) {
       throw new HubError('codex-cli/unknown-approval', '审批请求已处理或失效，请刷新')
+    }
+    const details = approvalDetails(pending)
+    if (details) {
+      const session = response?.decision === 'acceptForSession' || response?.scope === 'session'
+      const granting = response?.decision === 'accept' || response?.decision === 'acceptForSession' ||
+        Boolean(response?.permissions && Object.keys(response.permissions).length)
+      if ((granting && !(session ? details.session : details.allow)) ||
+          (response?.decision === 'decline' && !details.deny) ||
+          (response?.decision === 'cancel' && Array.isArray(pending.params.availableDecisions) && !details.cancel)) {
+        throw new HubError('codex-cli/bad-request', '当前审批请求不支持该决定')
+      }
     }
     const ok = this.#settleApproval(String(requestId), response, 'answered')
     if (!ok) throw new HubError('codex-cli/unknown-approval', '审批请求不存在或已解决')
@@ -1029,7 +1092,8 @@ export class CodexHub {
     pending.resolve(response)
     this.bus.publish(
       'approval/resolved',
-      { requestId: pending.id, instanceId: pending.instanceId, reason },
+      { requestId: pending.id, instanceId: pending.instanceId, reason,
+        ...(reason === 'answered' && {submitted:submittedDecision(pending,response)}) },
       {
         threadId: pending.params.threadId,
         turnId: pending.params.turnId,
@@ -1094,6 +1158,12 @@ export class CodexHub {
       case 'item/started':
       case 'item/completed': {
         const completed = method === 'item/completed'
+        if (payload.item?.id && payload.threadId && payload.turnId) {
+          for (const pending of this.#pendingApprovals.values()) {
+            const { threadId, turnId, itemId } = pending.params
+            if (threadId === payload.threadId && turnId === payload.turnId && itemId === payload.item.id) this.#completeApproval(pending, payload.item)
+          }
+        }
         this.bus.publish(
           'item/upsert',
           { item: payload.item ? compactItem({

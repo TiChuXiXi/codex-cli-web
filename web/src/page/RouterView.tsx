@@ -184,7 +184,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
   const renderMessage = (message: RouterSnapshot['messages'][number]) => {
 
     return <React.Fragment key={message.id}>
-      <Message api={api} cwd={cwd} kind={message.role} label={message.label ?? (message.role === 'user' ? '你' : 'Router')}
+      <Message api={api} cwd={cwd} kind={message.role} label={message.label ?? (message.role === 'user' ? '你' : snapshot?.displayName || 'Router')}
         text={message.text} muted={message.phase === 'commentary'} />
       {message.questions && <AsyncQuestions item={message} onAnswer={message.status === 'pending' ? async answer => {
         try { await api('router/questions/answer', { id: message.id, text: answer }) }
@@ -311,7 +311,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
       }}><Icon name="arrowDown" size={16}/></button>}
       </div>
       {snapshot?.busy && <div role="status" className="dsh-codex-running-bar">
-        <Icon name="loader" size={16} className="dsh-codex-running-spinner"/>Router 正在回复…{snapshot.queuedCount ? '　排队 ' + snapshot.queuedCount + ' 条' : ''}
+        <Icon name="loader" size={16} className="dsh-codex-running-spinner"/>{snapshot.displayName || 'Router'} 正在回复…{snapshot.queuedCount ? '　排队 ' + snapshot.queuedCount + ' 条' : ''}
       </div>}
       <form className="dsh-codex-composer-wrap" onSubmit={event => { event.preventDefault(); void submit() }}>
         <div className="dsh-codex-composer-card" aria-busy={sending || snapshot?.busy}>

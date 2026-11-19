@@ -15,6 +15,7 @@ const fields = {
   limit: { type: 'integer', minimum: 1, maximum: 25 },
   projectId: { type: 'string', minLength: 1, maxLength: 2048 },
   threadId: { type: 'string', minLength: 1, maxLength: 128 },
+  candidateProjectIds: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 128 }, minItems: 2, maxItems: 4, uniqueItems: true },
   candidateThreadIds: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 128 }, minItems: 2, maxItems: 4, uniqueItems: true },
   title: { type: 'string', minLength: 1, maxLength: 120 },
   instruction: { type: 'string', minLength: 1, maxLength: 12000 },
@@ -40,7 +41,7 @@ const definitions = {
   list_sessions: ['按名称、预览和最近活动检索 Worker。省略 projectId 可跨项目查找，省略 query 可浏览最近会话。', [], ['projectId', 'query', 'limit']],
   get_session: ['读取一个候选会话及其当前模型、思考强度、权限和活动回合 ID。', ['threadId'], []],
   create_session: ['创建项目会话。projectId 可为已有项目 ID、new:新项目名，或需要克隆的 HTTPS Git 仓库地址。', ['projectId'], ['title']],
-  dispatch_task: ['目标明确时传 projectId 和 threadId（新建仅传 projectId）。确有歧义时传 2–4 个 candidateThreadIds 和 reason。用户选择时引用原 requestId。可指定 Worker 的模型、思考强度、会话权限和计划/执行模式。修改既有会话设置用 mode=resume 和 workerAction=settings，空闲时生效。用户要求停止并继续时用 workerAction=restart，并传 get_session 返回的 expectedTurnId。两者均须确认。', ['instruction', 'mode', 'requestId'], ['projectId', 'threadId', 'candidateThreadIds', 'reason','workerModel','workerEffort','workerPermission','executionMode','workerAction','expectedTurnId']],
+  dispatch_task: ['目标明确时传 projectId 和 threadId（新建仅传 projectId）。新建会话的目标项目不确定时用 new 和 2–4 个 candidateProjectIds。续接确有歧义时传 2–4 个 candidateThreadIds 和 reason。用户选择时引用原 requestId。可指定 Worker 的模型、思考强度、会话权限和计划/执行模式。修改既有会话设置用 mode=resume 和 workerAction=settings，空闲时生效。用户要求停止并继续时用 workerAction=restart，并传 get_session 返回的 expectedTurnId。两者均须确认。', ['instruction', 'mode', 'requestId'], ['projectId', 'threadId', 'candidateThreadIds', 'candidateProjectIds', 'reason','workerModel','workerEffort','workerPermission','executionMode','workerAction','expectedTurnId']],
   get_task_status: ['读取任务的真实进展及结果。', ['dispatchId'], []],
   interrupt_task: ['为关联任务请求用户确认中断，由用户在界面确认。', ['dispatchId'], ['reason']],
 }
@@ -102,7 +103,9 @@ export function validateTool(name, args) {
     if (args.workerAction && (args.mode !== 'resume' || !args.projectId || !args.threadId || args.candidateThreadIds ||
         (args.workerAction === 'restart' && !args.expectedTurnId) ||
         !(args.workerModel || args.workerEffort || args.workerPermission))) throw bad()
-    if (args.candidateThreadIds) {
+    if (args.candidateProjectIds) {
+      if (args.mode !== 'new' || args.projectId || args.threadId || args.candidateThreadIds || args.workerAction) throw bad()
+    } else if (args.candidateThreadIds) {
       if (args.mode === 'new' || args.threadId) throw bad()
     } else if (!args.projectId || (args.mode === 'new' && args.threadId)) throw bad()
   }

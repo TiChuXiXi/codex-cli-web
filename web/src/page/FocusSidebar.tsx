@@ -43,6 +43,7 @@ export interface FocusSidebarProps {
   onSettings: () => void
   routerOpen?: boolean
   routerPhase?: string
+  routerName?: string
   onRouter?: () => void
   onRefresh: () => void
   onExit?: () => void
@@ -77,7 +78,7 @@ export function FocusSidebar({
   onNewProject,
   onSettings,
   routerOpen,
-  routerPhase,
+  routerPhase, routerName,
   onRouter,
   onRefresh,
   onExit,
@@ -187,11 +188,11 @@ export function FocusSidebar({
         </button>
       </div>
 
-      {onRouter && <button type="button" className="dsh-codex-router-nav" aria-label={t('focus.routerName') + ' Router'}
+      {onRouter && <button type="button" className="dsh-codex-router-nav" aria-label={(routerName || t('focus.routerName')) + ' Router'}
         aria-pressed={routerOpen} onClick={onRouter}>
         <span className="router-nav-heading">
           <span className="router-nav-icon"><Icon name="orbit" size={19}/></span>
-          <span className="router-nav-copy"><strong>{t('focus.routerName')}</strong><small>{t('focus.routerDescription')}</small></span>
+          <span className="router-nav-copy"><strong>{routerName || t('focus.routerName')}</strong><small>{t('focus.routerDescription')}</small></span>
           <Icon name="chevronRight" size={16}/>
         </span>
         <span className="router-nav-status">

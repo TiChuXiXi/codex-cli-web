@@ -107,6 +107,40 @@ export class RouterStore {
       json_extract(value,'$.status') IN (${slots}) ORDER BY rowid DESC`).all(...states).map(row => JSON.parse(row.value))
   }
 
+  answeredInteractions(dispatchId) {
+    // A question answered after its turn ended can resume in a new, question-keyed dispatch.
+    const task = this.get('task', dispatchId)
+    const question = task?.requestId?.startsWith('worker-question:') && this.get('message', task.requestId)
+    const continuation = question?.status === 'answered' && question.threadId === task.threadId
+    const questionId = continuation ? question.id : null
+    const rows = this.db.prepare(`SELECT id,value FROM router_records WHERE kind='message' AND (
+      (id LIKE 'worker-question:%' AND json_extract(value,'$.status')='answered'
+        AND (json_extract(value,'$.dispatchId')=? OR id=?))
+      OR (id LIKE 'wx-action:%' AND json_extract(value,'$.status')='completed'
+        AND (json_extract(value,'$.dispatchId')=? OR
+          (json_extract(value,'$.questionId')=? AND json_extract(value,'$.dispatchId')=?))
+        AND (json_extract(value,'$.interactionMethod') IN ('item/tool/requestUserInput','worker/question',
+          'item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval')
+          OR (json_extract(value,'$.interactionMethod') IS NULL AND json_type(value,'$.receiptEvidence.choices')='array'))))
+      ORDER BY rowid DESC LIMIT 32`).all(dispatchId, questionId, dispatchId, questionId, continuation ? question.dispatchId : null)
+    const evidence = new Map((task?.nativeAnswers ?? []).map(({instanceId,...answer}) => [instanceId,answer]))
+    for (const { id, value } of rows.reverse()) {
+      const action = JSON.parse(value)
+      const method = action.interactionMethod ?? 'worker/question'
+      let key = action.instanceId ?? action.questionId ?? id
+      if (method === 'worker/question' && !action.questionId && id.startsWith('wx-action:')) {
+        // Older phone actions reference their question via the card displayed at intake.
+        const shown = this.wxRead('in', id.slice('wx-action:'.length))?.shown
+        const card = shown?.length === 1 && this.wxRead('card', shown[0].id)
+        if (card?.key?.startsWith('worker-question:' + action.dispatchId + ':')) key = card.key
+      }
+      if (!evidence.has(key) || action.receiptEvidence?.choices?.length) {
+        evidence.set(key, { method, ...action.receiptEvidence })
+      }
+    }
+    return [...evidence.values()].slice(-16)
+  }
+
   transaction(action) {
     this.db.exec('BEGIN IMMEDIATE')
     try {

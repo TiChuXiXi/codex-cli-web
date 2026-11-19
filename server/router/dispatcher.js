@@ -13,6 +13,19 @@ export function finalAnswer(items = []) {
   return messages.findLast(item => item.phase === 'final_answer') ?? messages.findLast(item => !item.phase)
 }
 
+// Web and WeChat submit structured questions as "title\nanswer" blocks.
+function publicQuestionChoices(questions, text) {
+  const blocks = text.split('\n\n')
+  return questions.flatMap(({ title, options, isSecret }, index) => {
+    if (isSecret || !Array.isArray(options) || typeof title !== 'string') return []
+    const prefix = title + '\n'
+    const block = blocks.length === questions.length ? blocks[index] : null
+    const selected = block?.startsWith(prefix) ? block.slice(prefix.length) : questions.length === 1 ? text : null
+    if (!options.includes(selected) || typeof selected !== 'string') return []
+    return [{ question: title.slice(0, 240), selected: selected.slice(0, 120) }]
+  }).slice(0, 8)
+}
+
 function restartedTurnMatches(task, detail) {
   const latest = detail.turns.at(-1)
   return Boolean(task.restartRequestedAt && latest?.id === task.expectedTurnId && latest.status === 'interrupted')
@@ -73,10 +86,12 @@ export class RouterDispatcher {
     const id = randomUUID()
     const now = Date.now()
     const task = {
-      id, requestId: intent.requestId, ...(intent.psmProjectUid && {psmProjectUid:intent.psmProjectUid}), routerThreadId: this.routerThreadId(),
+      id, requestId: intent.requestId, ...(intent.parentRequestId && {parentRequestId:intent.parentRequestId}),
+      ...(intent.psmProjectUid && {psmProjectUid:intent.psmProjectUid}), routerThreadId: this.routerThreadId(),
       sourceRouterTurnId: intent.sourceRouterTurnId ?? null,
       projectId: intent.projectId, threadId: intent.threadId ?? null, turnId: null,
       instruction: intent.instruction, mode: intent.mode, status: 'queued', createdAt: now, updatedAt: now,
+      ...(intent.sessionSelected && { sessionSelected: true }),
       ...(intent.worker ? {worker:intent.worker} : {}),
       ...(intent.workerAction && { workerAction: intent.workerAction, expectedTurnId: intent.expectedTurnId, approvedSettings: intent.approvedSettings }),
     }
@@ -272,7 +287,8 @@ export class RouterDispatcher {
     if (typeof text !== 'string' || !text.trim() || text.length > 12000) throw new HubError('codex-cli/bad-request', '回答为空或过长')
     const { question, task, turn } = await this.currentQuestion(id)
     if (this.closed || this.store.get('message', id)?.status !== 'pending') throw new HubError('codex-cli/router-stale', '问题已失效')
-    const save = status => this.store.put('message', id, { ...question, status })
+    const save = status => this.store.put('message', id, { ...question, status,
+      ...(status === 'answered' && { receiptEvidence: { choices: publicQuestionChoices(question.questions, text) } }) })
     if (turn.status === 'inProgress') {
       // Persist before steering. A lost native acknowledgement must not send the same answer twice.
       save('unknown')
@@ -380,7 +396,14 @@ export class RouterDispatcher {
       const text = task.mode === 'new'
         ? '你就是用户指定的 Worker。原文中的新建、选择会话和派发步骤已由 Router 完成。请在当前会话亲自执行业务任务，向用户提问和申请审批均使用当前会话的原生工具。\n\n用户原文：\n' + task.instruction
         : task.workerAction === 'restart' ? continuationPrompt : task.instruction
-      const queued = await this.hub.routerAddWorkerMessage(threadId, task.id, text)
+      let selectionContext
+      if (task.mode === 'resume' && !task.workerAction && !task.requestId?.startsWith('worker-question:')) {
+        const target = [project.name, detail.thread.name].filter(Boolean).join(' · ')
+        selectionContext = (task.sessionSelected ? '用户已选定当前项目和会话。' : '') +
+          'Router 已将任务交付当前 Worker（' + target + '）。只执行用户原文中属于本项目的业务步骤。' +
+          '会话续接和其他项目的派工由工作台处理。需要用户批准命令时，用当前会话的原生命令审批，等待用户决定。\n\n用户原文：\n'
+      }
+      const queued = await this.hub.routerAddWorkerMessage(threadId, task.id, text, selectionContext)
       if (!queued?.id || queued.clientUserMessageId !== task.id) throw new Error('缺少原生队列确认')
       const current = this.get(task.id)
       this.update(task.id, {
@@ -514,6 +537,16 @@ export class RouterDispatcher {
     if (this.closed || !['turn/started', 'turn/completed', 'item/upsert', 'approval/requested',
       'approval/resolved', 'followups/changed', 'connection', 'thread/status', 'thread/archived', 'thread/deleted'].includes(event.type)) return
     if (event.threadId) {
+      if (event.type === 'approval/resolved' && event.turnId && event.payload?.reason === 'answered' && event.payload.submitted) {
+        const owners = this.list(-1).filter(task => task.routerThreadId === this.routerThreadId() && !terminal.has(task.status) &&
+          ((task.threadId === event.threadId && task.turnId === event.turnId) || task.children?.some(c => c.id === event.threadId)))
+        if (owners.length === 1) {
+          const [owner] = owners
+          const {instanceId,submitted} = event.payload
+          this.store.put('task',owner.id,{...owner,nativeAnswers:[...(owner.nativeAnswers ?? []).filter(a => a.instanceId !== instanceId),
+            {instanceId,...submitted}].slice(-16)})
+        }
+      }
       if (event.type === 'item/upsert' && event.payload?.item?.type === 'userMessage') {
         for (const message of this.store.list('message', 80)) {
           if (message.questions && message.threadId === event.threadId && message.dispatchId !== event.payload.item.clientId &&

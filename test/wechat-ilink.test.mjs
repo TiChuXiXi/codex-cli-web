@@ -27,10 +27,22 @@ test('fixed QR host, self bind and PIN headers, bearer posts, exact opaque curso
   assert.equal(JSON.parse(calls[2].body).get_updates_buf,'/a+=')
   assert.equal(JSON.parse(calls[3].body).msg.client_id,'fixed')
   assert.equal(JSON.parse(calls[3].body).msg.context_token,'a')
+  await ilink.typingTicket(account,'opaque-context')
+  await ilink.typing(account,'opaque-ticket',1)
+  await ilink.typing(account,'opaque-ticket',2)
+  const empty = new ILinkClient(async()=>new Response(null,{status:204}))
+  await empty.typing(account,'opaque-ticket',2)
+  await assert.rejects(empty.send(account,{text:'x',context:'c',clientId:'id'}))
+  assert.deepEqual(calls.slice(4).map(c=>new URL(c.url).pathname),['/ilink/bot/getconfig','/ilink/bot/sendtyping','/ilink/bot/sendtyping'])
+  assert.equal(JSON.parse(calls[4].body).context_token,'opaque-context')
+  assert.deepEqual(calls.slice(5).map(c=>{const b=JSON.parse(c.body);return [b.ilink_user_id,b.typing_ticket,b.status]}),
+    [['owner','opaque-ticket',1],['owner','opaque-ticket',2]])
   for (const link of ['http://ilinkai.weixin.qq.com','https://weixin.qq.com.evil.invalid','https://name@weixin.qq.com']) assert.throws(() => apiBase(link))
 })
 
 test('network ambiguity, refusal before connect, rate limit and stale token are distinct', async () => {
+  const refused = new ILinkClient(async()=>new Response('{"ret":-1,"errcode":-200}'))
+  await assert.rejects(refused.qr(),error => error.code === -200 && error.disposition === 'rejected')
   for (const [result, type] of [[new Response('{}',{status:429}),'retry'], [new Response('{}',{status:502}),'unknown'],
     [new Response('{"errcode":-14}'),'rejected'], [new TypeError('network',{cause:{code:'ECONNREFUSED'}}),'retry']]) {
     const ilink = new ILinkClient(async () => { if (result instanceof Error) throw result; return result })

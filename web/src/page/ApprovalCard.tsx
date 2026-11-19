@@ -1,5 +1,6 @@
 /** 审批与用户输入卡片：服务端请求在这里落地成人能看懂的按钮。 */
 
+import { approvalDetails } from '../../../shared/approval-details.js'
 import * as React from 'react'
 import { useT } from '../i18n'
 import type { PendingApproval } from '../types'
@@ -31,6 +32,7 @@ export function ApprovalCard({
   const t = useT()
   const [busy, setBusy] = React.useState(false)
   const params = approval.params ?? {}
+  const details = approvalDetails(approval)
 
   const respond = async (response: any) => {
     if (busy) return
@@ -51,19 +53,20 @@ export function ApprovalCard({
   if (approval.method === 'item/commandExecution/requestApproval') {
     return (
       <Shell title={t('approval.command')} busy={busy}>
-        <pre className="dsh-codex-command">{params.command ?? ''}</pre>
-        {params.cwd ? <div className="dsh-codex-approval-meta">{t('approval.cwd')}: {params.cwd}</div> : null}
-        {params.reason ? <div className="dsh-codex-approval-meta">{t('approval.reason')}: {params.reason}</div> : null}
+        <pre className="dsh-codex-command">{details?.text}</pre>
         <Actions>
-          <button type="button" className="dsh-codex-button primary" disabled={busy} onClick={() => void respond({ decision: 'accept' })}>
+          <button type="button" className="dsh-codex-button primary" disabled={busy || !details?.allow} onClick={() => void respond({ decision: 'accept' })}>
             {t('approval.allow')}
           </button>
-          <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'acceptForSession' })}>
+          <button type="button" className="dsh-codex-button" disabled={busy || !details?.session} onClick={() => void respond({ decision: 'acceptForSession' })}>
             {t('approval.allowSession')}
           </button>
-          <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'decline' })}>
+          {details?.deny && <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'decline' })}>
             {t('approval.deny')}
-          </button>
+          </button>}
+          {details?.cancel && <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'cancel' })}>
+            {t('approval.cancel')}
+          </button>}
         </Actions>
       </Shell>
     )
@@ -72,18 +75,20 @@ export function ApprovalCard({
   if (approval.method === 'item/fileChange/requestApproval') {
     return (
       <Shell title={t('approval.file')} busy={busy}>
-        {params.grantRoot ? <div className="dsh-codex-approval-meta">{t('approval.grantRoot')}: {params.grantRoot}</div> : null}
-        {params.reason ? <div className="dsh-codex-approval-meta">{t('approval.reason')}: {params.reason}</div> : null}
+        <pre className="dsh-codex-pre">{details?.text}</pre>
         <Actions>
-          <button type="button" className="dsh-codex-button primary" disabled={busy} onClick={() => void respond({ decision: 'accept' })}>
+          <button type="button" className="dsh-codex-button primary" disabled={busy || !details?.allow} onClick={() => void respond({ decision: 'accept' })}>
             {t('approval.allow')}
           </button>
-          <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'acceptForSession' })}>
+          <button type="button" className="dsh-codex-button" disabled={busy || !details?.session} onClick={() => void respond({ decision: 'acceptForSession' })}>
             {t('approval.allowSession')}
           </button>
-          <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'decline' })}>
+          {details?.deny && <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'decline' })}>
             {t('approval.deny')}
-          </button>
+          </button>}
+          {details?.cancel && <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void respond({ decision: 'cancel' })}>
+            {t('approval.cancel')}
+          </button>}
         </Actions>
       </Shell>
     )
@@ -92,14 +97,12 @@ export function ApprovalCard({
   if (approval.method === 'item/permissions/requestApproval') {
     return (
       <Shell title={t('approval.permissions')} busy={busy}>
-        {params.cwd ? <div className="dsh-codex-approval-meta">{t('approval.cwd')}: {params.cwd}</div> : null}
-        {params.reason ? <div className="dsh-codex-approval-meta">{t('approval.reason')}: {params.reason}</div> : null}
-        <pre className="dsh-codex-pre">{JSON.stringify(params.permissions ?? {}, null, 2)}</pre>
+        <pre className="dsh-codex-pre">{details?.text}</pre>
         <Actions>
           <button
             type="button"
             className="dsh-codex-button primary"
-            disabled={busy}
+            disabled={busy || !details?.allow}
             onClick={() => void respond({ permissions: params.permissions ?? {}, scope: 'turn' })}
           >
             {t('approval.allowTurn')}
@@ -107,7 +110,7 @@ export function ApprovalCard({
           <button
             type="button"
             className="dsh-codex-button"
-            disabled={busy}
+            disabled={busy || !details?.allow}
             onClick={() => void respond({ permissions: params.permissions ?? {}, scope: 'session' })}
           >
             {t('approval.allowSession')}

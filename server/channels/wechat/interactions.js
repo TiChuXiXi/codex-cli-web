@@ -1,4 +1,6 @@
-import { randomBytes } from 'node:crypto'
+import { approvalDetails } from '../../../shared/approval-details.js'
+import { describeWorkerSettings } from '../../router/projects.js'
+import { createHash, randomBytes } from 'node:crypto'
 
 const command = 'item/commandExecution/requestApproval'
 const file = 'item/fileChange/requestApproval'
@@ -6,19 +8,47 @@ const permission = 'item/permissions/requestApproval'
 const input = 'item/tool/requestUserInput'
 const elicitation = 'mcpServer/elicitation/request'
 const decisionMethods = new Set([command, file, permission])
-const allow = /^(?:1|允许|同意|批准)$/
+const allow = /^(?:1|允许本次|允许|同意|批准)$/
 const deny = /^(?:2|拒绝|不同意)$/
-const indexOfChoice = (text, labels) => {
-  if (/^[1-9]\d*$/.test(text)) {
-    const index = Number(text) - 1
+const normalize = text => text.normalize('NFKC').trim().toLowerCase().replace(/[。.!！]$/, '').trim()
+
+function choiceIndex(text, labels, partial = false) {
+  const answer = normalize(text)
+  const number = /^(?:第\s*)?([1-9]\d*|[一二三四])\s*(?:个|项)?$/.exec(answer)
+  if (number) {
+    const index = /^\d+$/.test(number[1]) ? Number(number[1]) - 1 : '一二三四'.indexOf(number[1])
     return index < labels.length ? index : -1
   }
-  const answer = text.replace(/[。.!！]$/, '').trim()
-  for (const choice of [answer, answer.replace(/^(?:继续使用|继续用|使用|选择)\s*/, '')]) {
-    if (labels.filter(label => label === choice).length === 1) return labels.indexOf(choice)
-  }
-  return -1
+  const key = answer.replace(/^(?:继续使用|继续用|使用|选择|选)\s*/, '').replace(/\s*(?:那个|那项)$/, '').trim()
+  if (!key) return -1
+  const normalized = labels.map(normalize)
+  const exact = normalized.flatMap((label, i) => label === key ? [i] : [])
+  if (exact.length) return exact.length === 1 ? exact[0] : -2
+  if (!partial || key.length < 2) return -1
+  const hits = normalized.flatMap((label, i) => label.includes(key) ? [i] : [])
+  return hits.length === 1 ? hits[0] : hits.length ? -2 : -1
 }
+
+function choiceTitle(item, candidate) {
+  if (item.kind === 'session') {
+    const title = candidate.phoneTitle || '历史会话'
+    const crossProject = item.candidates.some(other => other.projectId !== candidate.projectId)
+    return crossProject && candidate.project ? candidate.project + ' · ' + title : title
+  }
+  return candidate.name
+}
+
+function selectedIndex(item, text) {
+  if (item.candidates.length === 1 && /^(确定|确认)$/.test(text)) return 0
+  return choiceIndex(text, item.candidates.map(c => choiceTitle(item, c)), true)
+}
+
+export function ambiguousChoice(card, text) {
+  return card?.type === 'choice' && selectedIndex(card.item, text) === -2
+}
+
+export const approvalFingerprint = request => createHash('sha256')
+  .update(JSON.stringify([request.instanceId, request.dispatchId, request.method, request.params])).digest('hex')
 
 export function liveCards(router) {
   const result = new Map()
@@ -32,9 +62,10 @@ export function liveCards(router) {
     result.set(key, { key, type: 'question', message, label: message.label })
   }
   for (const item of router.store.list('clarification')) {
-    if (item.status !== 'pending' || item.expiresAt <= Date.now() || !item.candidates.length) continue
+    if (item.status !== 'pending' || item.expiresAt <= Date.now() || (item.routerThreadId && item.routerThreadId !== router.session?.id) ||
+        (!item.candidates.length && item.kind !== 'projectRoot')) continue
     const key = 'choice:' + item.id + ':' + item.revision
-    result.set(key, { key, type: 'choice', item, label: item.label })
+    result.set(key, { key, type: item.kind === 'projectRoot' ? 'root' : 'choice', item, label: item.label })
   }
   return result
 }
@@ -51,30 +82,27 @@ export function questions(card) {
     options: q.options?.map(label => ({ label })), isOther: true }))
 }
 
-function approvalDetails({ method, params }) {
-  let scope
-  if (method === command && params.command) scope = '执行命令\n' + params.command
-  if (method === file && (params.grantRoot || params.cwd || params.reason)) {
-    scope = '文件变更授权范围：' + (params.grantRoot || params.cwd || '当前变更')
-  }
-  if (method === permission && params.permissions) scope = '本回合权限：' + JSON.stringify(params.permissions)
-  if (!scope) return null
-  const details = [scope, params.cwd && '目录：' + params.cwd, params.reason, '1 允许本次　2 拒绝'].filter(Boolean).join('\n')
-  return details.length <= 3200 ? details : null
-}
-
 export function renderCard(card, index = 0) {
-  const prefix = '【' + (card.type === 'approval' ? '需要审批' : '当前待办') + '】' + card.label
+  const label = card.type === 'choice' && card.item.semanticChoice ? '你想继续哪个任务？' : card.label
+  const prefix = '【' + (card.type === 'approval' ? '需要审批' : '当前待办') + '】' + String(label).replace(/^Worker · /,'')
   let body
   if (card.type === 'approval') {
-    body = approvalDetails(card.request)
-    if (!body) {
-      return prefix + '\n完整请求请在 Web 查看。也可回复“拒绝”或“下一个”。'
-    }
+    const details = approvalDetails(card.request)
+    body = [details.text, details.allow && '1 允许本次', details.deny && '2 拒绝',
+      details.cancel && (details.deny ? '3 取消' : '2 取消')].filter(Boolean).join('\n')
   } else if (card.type === 'elicitation') {
     body = [card.request.params.message?.slice(0, 1600), '可回复“拒绝”或“取消”。'].filter(Boolean).join('\n')
+  } else if (card.type === 'root') {
+    body = '请回复新项目父目录的绝对路径，或回复“取消”。确认后会保存为默认目录并继续等待此设置的项目。'
   } else if (card.type === 'choice') {
-    body = card.item.candidates.map((c, i) => (i + 1) + '. ' + [c.project, c.name, c.summary].filter(Boolean).join(' · ')).join('\n')
+    const item = card.item
+    body = item.candidates.map((candidate, i) => {
+      const details = item.kind === 'session' ? candidate.phoneSummary : candidate.summary
+      return (i + 1) + '. ' + [choiceTitle(item, candidate), details].filter(Boolean).join(' · ')
+    }).join('\n')
+    if (item.kind === 'session' && item.candidates.some(c => c.pendingProject || c.grant || c.settingsReview)) {
+      body += '\n选定后会展示需要确认的权限。'
+    }
     body += '\n可直接回复选项序号、名称或“取消”。'
   } else {
     const list = questions(card)
@@ -89,12 +117,37 @@ export function renderCard(card, index = 0) {
 }
 
 export async function answerCard(router, card, text, values) {
+  if (card.type === 'root') {
+    if (text === '取消') {
+      await router.confirm({ id: card.item.id, revision: card.item.revision }, true)
+      return { done: true, summary: '已取消' }
+    }
+    if (values.length && text === '确认设置') {
+      await router.setupProjectRoot({ projectRoot: values[0], clarification: card.item.id, revision: card.item.revision,
+        waitingIds: values[1] })
+      return { done: true, summary: '已设置默认目录，正在继续原请求' }
+    }
+    if (!text.startsWith('/')) return { hint: '请回复绝对路径或“取消”。' }
+    const waiting = router.store.list('clarification').filter(c => c.kind === 'projectRoot' && c.status === 'pending')
+    return { answers: [text, waiting.map(c => c.id).sort()], hint: '默认父目录将设为 ' + text + '。将继续：' +
+      waiting.map(c => c.intent.projectId).join('、') + '。回复“确认设置”或“取消”。' }
+  }
   if (card.type === 'choice') {
     const item = card.item
-    const candidate = item.candidates[indexOfChoice(text, item.candidates.map(c => c.name))]
-    if (!candidate && text !== '取消') return { hint: '请回复候选编号或“取消”。' }
-    await router.confirm({ id: item.id, revision: item.revision, candidateId: candidate?.id }, text === '取消')
-    return { done: true, summary: candidate ? '已选择 ' + candidate.name : '已取消' }
+    const cancel = ['取消','都不是'].includes(text)
+    const authorized = values.length && text === '确认授权'
+    const candidate = authorized ? item.candidates.find(c => c.id === values[0]) : item.candidates[selectedIndex(item, text)]
+    if (!candidate && !cancel) return { hint: '请回复唯一的候选编号或“都不是”。' }
+    if (candidate && !authorized && (candidate.settingsReview || candidate.grant || (candidate.pendingProject && item.kind !== 'psmAccess'))) {
+      const scope = [candidate.pendingProject && '授权使用项目 ' + candidate.pendingProject.cwd, candidate.settingsReview,
+        candidate.grant && '沿用 ' + describeWorkerSettings(candidate.grant.settings) + '，之后相同设置可直接续接'].filter(Boolean)
+      return { answers: [candidate.id], hint: '已选 ' + choiceTitle(item, candidate) + '。\n' +
+        scope.join('；') + '。回复“确认授权”或“取消”。' }
+    }
+    const result = await router.confirm({ id: item.id, revision: item.revision, candidateId: candidate?.id }, cancel)
+    return { done: true, dispatchId: result?.id && router.store.get('task', result.id)?.id,
+      interactionMethod: cancel ? 'clarification/cancel' : 'clarification/' + item.kind, summary: cancel ? (text === '都不是' ? '已取消这次选择。请补充项目名称或任务线索。' : '已取消') :
+      '已选择 ' + choiceTitle(item, candidate) }
   } else if (card.type === 'elicitation') {
     if (!['拒绝','取消'].includes(text)) return { hint: '此 MCP 请求支持拒绝或取消。' }
     const { dispatchId, instanceId } = card.request
@@ -102,19 +155,23 @@ export async function answerCard(router, card, text, values) {
     return { done: true, summary: '已' + text + ' MCP 请求' }
   } else if (card.type === 'approval') {
     const { method, params, dispatchId, instanceId } = card.request
-    if (!allow.test(text) && !deny.test(text)) return { hint: '请明确回复允许或拒绝。' }
     const yes = allow.test(text)
-    if (yes && !approvalDetails(card.request)) return { hint: '请在 Web 查看完整请求后审批。' }
+    const details = approvalDetails(card.request)
+    if (details.cancel && (text === '取消' || text === (details.deny ? '3' : '2'))) {
+      router.respond({dispatchId,instanceId,response:{decision:'cancel'}})
+      return {done:true,receiptEvidence:{decision:'cancel'},summary:'已取消本次请求'}
+    }
+    if (!(yes ? details.allow : deny.test(text) && details.deny)) return { hint: '请按当前审批卡显示的选项回答。' }
     const response = method === permission ? { scope: 'turn', permissions: yes ? params.permissions ?? {} : {} } :
       { decision: yes ? 'accept' : 'decline' }
     router.respond({ dispatchId, instanceId, response })
-    return { done: true, summary: yes ? '已允许本次请求' : '已拒绝本次请求' }
+    return { done: true, receiptEvidence: { decision: yes ? 'allowOnce' : 'deny' }, summary: yes ? '已允许本次请求' : '已拒绝本次请求' }
   } else {
     const list = questions(card)
     const q = list[values.length]
     if (!q) return { hint: '该问题已失效。' }
     const labels = (q.options ?? []).map(opt => opt.label)
-    const selected = labels[indexOfChoice(text, labels)]
+    const selected = labels[choiceIndex(text, labels)]
     if (!q.isSecret && labels.length && !selected && /^[0-9]+$/.test(text)) return { hint: '请回复有效的选项编号或填写自定义答案。' }
     const answers = [...values, q.isSecret ? text : selected ?? text]
     if (answers.length < list.length) return { answers, hint: renderCard(card, answers.length) }
@@ -122,14 +179,23 @@ export async function answerCard(router, card, text, values) {
       router.respond({ dispatchId: card.request.dispatchId, instanceId: card.request.instanceId,
         response: { answers: Object.fromEntries(list.map((question, i) => [question.id, { answers: [answers[i]] }])) } })
     } else await router.answerQuestion({ id: card.message.id, text: list.map((q,i) => q.question + '\n' + answers[i]).join('\n\n') })
-    return { done: true, summary: list.some(q => q.isSecret) ? '已提交私密回答' : '已回答：' + answers.join('、') }
+    // Only public, predefined options can be included in a receipt. Never copy
+    // secret or free-form user input into the automatic Router turn.
+    const choices = list.flatMap((question, i) => {
+      if (question.isSecret || !question.options?.some(option => option.label === answers[i])) return []
+      return [{ question: question.question?.slice(0, 240), selected: answers[i].slice(0, 120) }]
+    }).slice(0, 8)
+    return { done: true, receiptEvidence: { choices },
+      ...(card.type === 'question' && { interactionMethod: 'worker/question', questionId: card.message.id }),
+      summary: list.some(q => q.isSecret) ? '已提交私密回答' : '已回答：' + answers.join('、') }
   }
 }
 
 export function matchesShortAnswer(card, text, index) {
   if (card.type === 'elicitation') return ['拒绝','取消'].includes(text)
-  if (card.type === 'approval') return allow.test(text) || deny.test(text)
-  if (card.type === 'choice') return text === '取消' || indexOfChoice(text, card.item.candidates.map(c => c.name)) >= 0
+  if (card.type === 'approval') return allow.test(text) || deny.test(text) || ['3','取消'].includes(text)
+  if (card.type === 'root') return text.startsWith('/') || ['确认设置','取消'].includes(text)
+  if (card.type === 'choice') return ['取消','都不是','确认授权'].includes(text) || selectedIndex(card.item, text) >= 0
   const q = questions(card)[index]
-  return !!q && indexOfChoice(text, (q.options ?? []).map(opt => opt.label)) >= 0
+  return !!q && choiceIndex(text, (q.options ?? []).map(opt => opt.label)) >= 0
 }

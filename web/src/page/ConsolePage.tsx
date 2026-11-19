@@ -427,7 +427,7 @@ export function ConsolePage(props: ConsolePageProps) {
         }
         switch (event.type) {
           case 'router/changed':
-            if (typeof event.payload?.phase === 'string') setRouterStatus({ enabled: true, phase: event.payload.phase, promptProjectRoot: event.payload.promptProjectRoot })
+            if (typeof event.payload?.phase === 'string') setRouterStatus({ enabled: true, phase: event.payload.phase, displayName:event.payload.displayName, promptProjectRoot: event.payload.promptProjectRoot })
             setRouterRevision(value => value + 1)
             break
           case 'projects/changed':
@@ -918,7 +918,7 @@ export function ConsolePage(props: ConsolePageProps) {
         <ToastHost />
         <header className="dsh-codex-workbench-header">
           <IconButton icon="panelLeft" label="展开或折叠项目栏" aria-expanded={appearance.navOpen||!appearance.collapsed} aria-controls="dsh-codex-project-nav" onClick={appearance.toggleNav}/>
-          <h1>{settingsOpen?'设置':routerOpen?'Router':detail?threadTitle(detail.thread):'Codex 工作台'}</h1>
+          <h1>{settingsOpen?'设置':routerOpen?(routerStatus?.displayName || 'Router'):detail?threadTitle(detail.thread):'Codex 工作台'}</h1>
           {routerOpen && !settingsOpen && <nav ref={setRouterNav} className="dsh-codex-router-tabs" aria-label="Router 视图"/>}
           <span className="dsh-codex-spacer"/>
           <IconButton icon={appearance.theme==='dark'?'sun':'moon'} label={appearance.theme==='dark'?'切换浅色模式':'切换深色模式'} aria-disabled={appearance.busy} onClick={appearance.toggleTheme}/>
@@ -965,7 +965,7 @@ export function ConsolePage(props: ConsolePageProps) {
           onNewProject={() => goToWorkspace(openNewProject)}
           onSettings={showSettings}
           routerOpen={routerOpen}
-          routerPhase={routerStatus?.phase}
+          routerPhase={routerStatus?.phase} routerName={routerStatus?.displayName}
           onRouter={routerStatus?.enabled ? () => goToWorkspace(() => {setRouterOpen(true);appearance.closeNav()}) : undefined}
           onRefresh={() => void refresh()}
           onExit={onExit}

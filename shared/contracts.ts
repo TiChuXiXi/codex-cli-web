@@ -49,6 +49,7 @@ export interface ModelOption {
 }
 
 export interface RouterSnapshot {
+  displayName?: string
   primaryThreadId?: string
   previousThreads?: string[]
   enabled: boolean

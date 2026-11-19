@@ -4,7 +4,8 @@
   "publicOrigin": "http://192.168.1.182:8787",
   "authMode": "network",
   "allowedClients": [
-    "192.168.1.80"
+    "192.168.1.80",
+    "127.0.0.1"
   ],
   "settingsFirewall": {
     "enabled": true,

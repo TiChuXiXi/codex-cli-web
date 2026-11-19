@@ -108,7 +108,7 @@ test('Router restores a choice and handles the selected Worker approval in chat'
         status: workerFinished ? 'completed' : 'awaiting_approval',
         receiptStatus: workerFinished ? 'unknown' : null, updatedAt: Date.now(), summary: null, error: null }] : [],
       interactions: accepted && !workerFinished ? [{ requestId: 7, instanceId: 'instance-1', dispatchId: 'task-1',
-        method: 'item/commandExecution/requestApproval', params: { command: 'touch approved.txt' },
+        method: 'item/commandExecution/requestApproval', params: { command: 'touch approved.txt', cwd: '/fixture' },
         worker: '验收项目 · 验收会话', instruction: '创建验收标记' }] : [],
     }
     await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } } })

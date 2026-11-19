@@ -29,7 +29,7 @@ export function parseMessageJson(text) {
 export class ILinkClient {
   constructor(fetchImpl = fetch) { this.fetch = fetchImpl }
 
-  async request(base, path, { body, token, signal, timeout = 15000 } = {}) {
+  async request(base, path, { body, token, signal, timeout = 15000, allowEmpty = false } = {}) {
     const headers = { 'iLink-App-Id': 'bot', 'iLink-App-ClientVersion': String(3 << 16) }
     if (body) Object.assign(headers, { 'Content-Type': 'application/json', AuthorizationType: 'ilink_bot_token',
       'X-WECHAT-UIN': Buffer.from(String(randomBytes(4).readUInt32BE())).toString('base64') })
@@ -50,10 +50,14 @@ export class ILinkClient {
     }
     if (!response.ok) throw new ILinkError(response.status, response.status === 429 ? 'retry' :
       [400,401,403,404].includes(response.status) ? 'rejected' : 'unknown')
-    const result = parseMessageJson(await response.text())
+    const raw = await response.text()
+    if (allowEmpty && !raw.trim()) return {}
+    let result
+    try { result = parseMessageJson(raw) }
+    catch { throw new ILinkError('invalid-response') }
     if (!result || typeof result !== 'object' || Array.isArray(result)) throw new ILinkError('invalid-response')
     if ([result.ret, result.errcode].includes(-14)) throw new ILinkError(-14, 'rejected')
-    for (const code of [result.ret, result.errcode]) {
+    for (const code of [result.errcode, result.ret]) {
       if (code !== undefined && code !== 0) throw new ILinkError(code, 'rejected')
     }
     return result
@@ -69,6 +73,15 @@ export class ILinkClient {
   updates(account, cursor, timeout, signal) {
     return this.request(account.base, 'getupdates', { token: account.token, signal, timeout,
       body: { get_updates_buf: cursor, base_info: baseInfo } })
+  }
+  async typingTicket(account, context, signal) {
+    const result = await this.request(account.base, 'getconfig', { token: account.token, signal, timeout: 3500,
+      body: { ilink_user_id: account.owner, context_token: context, base_info: baseInfo } })
+    return typeof result.typing_ticket === 'string' ? result.typing_ticket : null
+  }
+  typing(account, ticket, status, signal) {
+    return this.request(account.base, 'sendtyping', { token: account.token, signal, timeout: 3500, allowEmpty:true,
+      body: { ilink_user_id: account.owner, typing_ticket: ticket, status, base_info: baseInfo } })
   }
   send(account, { clientId, context, text }, signal) {
     return this.request(account.base, 'sendmessage', { token: account.token, signal, body: {

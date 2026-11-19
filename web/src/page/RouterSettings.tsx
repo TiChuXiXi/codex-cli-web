@@ -5,7 +5,16 @@ import { PsmSettings } from './PsmSettings'
 import { DirectoryPickerDialog } from './DirectoryPickerDialog'
 import { useT } from '../i18n'
 
+import { defaultPresentation } from '../../../shared/router-presentation.js'
+
+const voiceFields = [
+  ['displayName','助手名称',32], ['selfName','自称',32], ['personality','人格描述',320],
+  ['style','语言风格',240], ['wechatStyle','微信表达偏好',320],
+] as const
+
 interface Defaults {
+  presentation: Record<typeof voiceFields[number][0] | 'brevity',string> &
+    { typing:boolean; processingSeconds:number; stageSeconds:number }
   models: ModelOption[]
   model: { model: string; effort: string }
   projectRoot: string
@@ -20,7 +29,8 @@ export function RouterSettings({ api, onDirtyChange }: { api: Api; onDirtyChange
   const [saving, setSaving] = React.useState(false)
   const [message, setMessage] = React.useState('')
   const [error, setError] = React.useState('')
-  const dirty = !!(draft && saved && (draft.projectRoot !== saved.projectRoot || draft.model.model !== saved.model.model || draft.model.effort !== saved.model.effort))
+  const dirty = !!(draft && saved && (draft.projectRoot !== saved.projectRoot || draft.model.model !== saved.model.model || draft.model.effort !== saved.model.effort ||
+    JSON.stringify(draft.presentation) !== JSON.stringify(saved.presentation)))
   React.useEffect(() => { onDirtyChange(dirty); return () => onDirtyChange(false) }, [dirty, onDirtyChange])
   React.useEffect(() => {
     if (!dirty) return
@@ -31,7 +41,8 @@ export function RouterSettings({ api, onDirtyChange }: { api: Api; onDirtyChange
   const load = React.useCallback(async () => {
     try {
       const value = await api<Defaults>('router/settings/read')
-      setSaved(value); setDraft(value); setError(''); setMessage('')
+      const current = { ...value,presentation:{...defaultPresentation,...value.presentation} }
+      setSaved(current); setDraft(current); setError(''); setMessage('')
     } catch (cause) { setError(cause instanceof Error ? cause.message : '加载失败') }
   }, [api])
   React.useEffect(() => { void load() }, [load])
@@ -40,8 +51,8 @@ export function RouterSettings({ api, onDirtyChange }: { api: Api; onDirtyChange
     if (!draft || !dirty || saving) return
     setSaving(true); setError('')
     try {
-      const { model, projectRoot, revision } = draft
-      const value = await api<Defaults>('router/settings/save', { model, projectRoot, revision })
+      const { model, projectRoot, revision, presentation } = draft
+      const value = await api<Defaults>('router/settings/save', { model, projectRoot, revision, presentation })
       setDraft(value); setSaved(value); setMessage('中枢设置已保存')
     } catch (cause) { setError(cause instanceof Error ? cause.message : '保存失败') }
     finally { setSaving(false) }
@@ -66,6 +77,26 @@ export function RouterSettings({ api, onDirtyChange }: { api: Api; onDirtyChange
             <button type="button" className="dsh-codex-button" onClick={() => setBrowse(true)}>浏览目录</button></div>
           <small>新建和克隆的项目会分别存入此目录下的独立文件夹。</small>
         </div>
+      </fieldset>
+      <fieldset className="settings-router-fields" disabled={saving}>
+        <legend>助手与表达</legend>
+        {voiceFields.map(([key,label,max]) => <label key={key}>{label}
+          <input maxLength={max} required value={draft.presentation[key]}
+            onChange={e => edit({...draft,presentation:{...draft.presentation,[key]:e.target.value}})}/>
+        </label>)}
+        <label>回复详略<select value={draft.presentation.brevity}
+          onChange={e => edit({...draft,presentation:{...draft.presentation,brevity:e.target.value}})}>
+          {['简洁','适中','详细'].map(v=><option key={v}>{v}</option>)}
+        </select></label>
+      </fieldset>
+      <fieldset className="settings-router-fields" disabled={saving}>
+        <legend>微信处理反馈</legend>
+        <label><input type="checkbox" checked={draft.presentation.typing}
+          onChange={e => edit({...draft,presentation:{...draft.presentation,typing:e.target.checked}})}/>显示“正在输入”</label>
+        <label>开始提示前等待（秒）<input type="number" min={1} max={60} required value={draft.presentation.processingSeconds}
+          onChange={e => edit({...draft,presentation:{...draft.presentation,processingSeconds:Number(e.target.value)}})}/></label>
+        <label>阶段提醒前等待（秒）<input type="number" min={draft.presentation.processingSeconds} max={600} required value={draft.presentation.stageSeconds}
+          onChange={e => edit({...draft,presentation:{...draft.presentation,stageSeconds:Number(e.target.value)}})}/></label>
       </fieldset>
       <div className="settings-form-actions"><button type="submit" className="settings-primary" disabled={!dirty || saving || !levels.length}>保存中枢设置</button></div>
     </form>}

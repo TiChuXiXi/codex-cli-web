@@ -90,6 +90,24 @@ test('Worker retains a separate Hub reference, restores it on reconnect, and rea
   assert.deepEqual(calls.find(call => call.method === 'thread/queue/start').params, {
     threadId, queuedSubmissionId: 'older-queue-entry',
   })
+  await hub.routerAddWorkerMessage(threadId,'selected-dispatch','原始任务','用户已选定当前会话。')
+  const selected = calls.find(call => call.params?.clientUserMessageId === 'selected-dispatch')
+  assert.deepEqual(selected.params.input.map(part => part.text), ['用户已选定当前会话。','原始任务'])
+  const identity = { threadId, turnId:'older', itemId:'build-command' }
+  connections[1].emit({id:101,method:'item/commandExecution/requestApproval',params:identity})
+  await waitUntil(()=>hub.pendingApprovals().length===1)
+  const instance = hub.pendingApprovals()[0].instanceId
+  assert.throws(()=>hub.respondApproval(101,{decision:'accept'},instance), /不支持/)
+  const item = {id:identity.itemId,type:'commandExecution',command:'npm run build',cwd:'/fixture'}
+  connections[1].emit({method:'item/started',params:{...identity,turnId:'different',item}})
+  assert.equal(hub.pendingApprovals()[0].params.command,undefined)
+  connections[1].emit({method:'item/started',params:{...identity,item}})
+  assert.equal(hub.pendingApprovals()[0].params.command,'npm run build')
+  assert.equal(hub.pendingApprovals()[0].instanceId,instance)
+  hub.respondApproval(101,{decision:'accept'},instance)
+  assert.deepEqual(events.findLast(e=>e.type==='approval/resolved').payload.submitted,
+    {method:'item/commandExecution/requestApproval',decision:'allowOnce'})
+  assert.throws(()=>hub.respondApproval(101,{decision:'accept'},instance), /失效/)
   assert.equal((await hub.closeThread(threadId, { routerWorker: true })).subscribers, 0)
   assert.equal(calls.filter(call => call.method === 'thread/unsubscribe').length, 1)
 })

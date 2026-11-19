@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { liveCards } from './interactions.js'
+import { redact } from '../../router/psm-index.js'
+import { approvalFingerprint, liveCards } from './interactions.js'
 
 const labels = { completed: '回合已结束', failed: '执行失败', interrupted: '执行中断' }
 
@@ -16,12 +17,23 @@ export class WeChatDelivery {
       createdAt: Date.now(), ...options, body: this.channel.seal(text) })
   }
 
+  hasSubmittedAnswer(dispatchId) {
+    return this.store.answeredInteractions(dispatchId).some(({ method }) =>
+      method === 'item/tool/requestUserInput' || method === 'worker/question')
+  }
+
   terminal(task, receipt) {
     const { channel } = this
     if (!channel.account?.results || task.routerThreadId !== channel.router.session?.id) return
     const label = channel.router.dispatcher.workerLabel(task)
-    this.enqueue('worker:' + task.id, label + '：' + labels[task.status] + '。详细记录已保存在工作台。', {
-      category: 'results', tasks: [task.id], readyAt: Date.now() + (receipt ? 60000 : 0),
+    const result = task.finalReply || task.error || task.summary
+    const content = result ? result.replace(/```[\s\S]*?(?:```|$)/g, '（代码已省略）').slice(0, 1200) : '暂时没有可核实的结果说明。'
+    const shortFinal = Boolean(task.status === 'completed' && task.finalReply?.trim() && task.finalReply.length <= 500 &&
+      !task.finalReply.includes('```'))
+    const direct = shortFinal && this.hasSubmittedAnswer(task.id)
+    const message = direct ? '【任务结果】\n' + redact(task.finalReply.trim()) : label + '：' + labels[task.status] + '。\n' + content
+    this.enqueue('worker:' + task.id, message, {
+      category: 'results', tasks: [task.id], readyAt: Date.now() + (receipt ? 60000 : 0), directFinal: direct, shortFinal,
     })
   }
 
@@ -30,6 +42,23 @@ export class WeChatDelivery {
     const rows = batch.dispatchIds.map(id => this.store.wxRead('out', 'worker:' + id))
     const eligible = rows.filter(row => row?.state === 'pending')
     if (!eligible.length) return
+    if (rows.length === 1) {
+      const [row] = eligible
+      if (row.directFinal) {
+        this.store.wxSave('out', { ...row, readyAt: 0 })
+        return
+      }
+      // A Worker can finish while the channel still awaits acknowledgement of the answer.
+      const [dispatchId] = batch.dispatchIds
+      if (row.shortFinal && this.hasSubmittedAnswer(dispatchId)) {
+        const reply = this.store.get('message', 'worker-result:' + dispatchId)?.text
+        if (reply) {
+          this.store.wxSave('out', { ...row, readyAt: 0, directFinal: true,
+            body: this.channel.seal('【任务结果】\n' + redact(reply.trim())) })
+          return
+        }
+      }
+    }
     // Only a complete, still-eligible batch can use its Router-written summary.
     if (eligible.length === rows.length && text && !text.startsWith('Worker 执行回执\n')) {
       const summary = text.replace(/```[\s\S]*?(?:```|$)/g, '（详见工作台）').slice(0, 900)
@@ -49,6 +78,10 @@ export class WeChatDelivery {
     pending.sort((a,b) => Number(Boolean(a.card)) - Number(Boolean(b.card)))
     for (const row of pending) {
       if (signal.aborted || account !== channel.account) return
+      if (row.progress && !channel.progress.valid(row.progress)) {
+        this.store.wxSave('out',{...row,state:'cancelled',body:null})
+        continue
+      }
       if (row.readyAt > Date.now()) continue
       if (row.after) {
         const queue = this.store.wxRead('queue','active')
@@ -75,6 +108,7 @@ export class WeChatDelivery {
         if (card.deferred || channel.queueHead()?.id !== card.id) continue
         const queue = this.store.wxRead('queue','active')
         if (queue?.state === 'paused') {
+          if (queue.menu) continue
           this.enqueue('handoff:' + queue.after, '上一项待办已处理或失效。发“继续”查看下一项。', {
             category:row.category, inbox:row.inbox, after:queue.after,
           })
@@ -96,12 +130,28 @@ export class WeChatDelivery {
       }
       const context = row.inbox ? this.store.wxRead('in', row.inbox)?.context : account.context
       if (!context) continue
+      if (card?.fingerprint) {
+        const entry = liveCards(channel.router).get(card.key)
+        if (entry?.type !== 'approval' || approvalFingerprint(entry.request) !== card.fingerprint) {
+          channel.cardsDirty = true
+          continue
+        }
+      }
+      const body = channel.unseal(row.body)
+      const parts = card?.fingerprint && body.length > 3000 ? body.match(/[\s\S]{1,1400}/gu) : [body]
+      const index = row.part ?? 0
+      const last = index === parts.length - 1
+      const content = parts.length === 1 ? body : '待办 #' + card.id + '（' + (index + 1) + '/' + parts.length + '）\n' + parts[index]
       this.store.wxSave('out', { ...row, state: 'sending' })
       try {
         const response = await channel.client.send(account, { clientId: row.clientId,
-          text: channel.unseal(row.body), context: channel.unseal(context) }, signal)
+          text: content, context: channel.unseal(context) }, signal)
         if (account !== channel.account || signal.aborted) return
         this.store.transaction(() => {
+          if (!last) {
+            this.store.wxSave('out', { ...row, state: 'pending', part: index + 1, clientId: randomUUID() })
+            return
+          }
           this.store.wxSave('out', { ...row, state: 'sent', body: null, serverId: response.message_id, sentAt: Date.now() })
           if (card) {
             const current = this.store.wxRead('card', card.id)
@@ -117,7 +167,9 @@ export class WeChatDelivery {
         if (account !== channel.account || signal.aborted) return
         const stale = error.code === -14 || error.code === 401 || error.code === 403
         const retry = stale || error.disposition === 'retry'
-        this.store.wxSave('out', { ...row, state: retry ? 'pending' :
+        const errorCode = Number.isSafeInteger(error.code) || ['timeout','network','invalid-response'].includes(error.code)
+          ? error.code : 'unknown'
+        this.store.wxSave('out', { ...row, errorCode, errorAt: Date.now(), state: retry ? 'pending' :
           error.disposition === 'rejected' ? 'failed' : 'unknown', attempts: (row.attempts ?? 0) + 1,
           readyAt: Date.now() + Math.min(60000, 2000 * 2 ** Math.min(5, row.attempts ?? 0)) })
         if (stale) channel.expire()

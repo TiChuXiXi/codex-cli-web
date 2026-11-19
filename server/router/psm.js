@@ -464,6 +464,17 @@ export class ProjectSessionMemory {
       if (this.sync) this.sync.error = '记忆检索待重新同步'
     })
   }
+  confirmedTopic(project, threadId) {
+    if (!this.preference.enabled) return ''
+    const uid = this.identity(project)
+    if (!uid) return ''
+    // Automatic choice records contain the original user instruction, not a title.
+    const row = this.store.list('psm-entry').find(entry => entry.uid === uid && entry.threadId === threadId &&
+      entry.projectId === project.id && entry.kind === 'topic' && entry.state === 'active' &&
+      entry.level === 'user_confirmed' && !entry.id.startsWith('choice-'))
+    return row?.value ?? ''
+  }
+
   recordChoice({ uid, projectId, threadId, row }) {
     const value = redact(row.original).slice(0, 1200)
     const id = 'choice-' + fingerprint(value.normalize('NFKC').trim().toLowerCase())
