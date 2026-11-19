@@ -4,6 +4,7 @@ import type { Api } from '../rpc'
 import { PsmSettings } from './PsmSettings'
 import { DirectoryPickerDialog } from './DirectoryPickerDialog'
 import { useT } from '../i18n'
+import { SelectMenu } from '../components/SelectMenu'
 
 import { defaultPresentation } from '../../../shared/router-presentation.js'
 
@@ -62,16 +63,14 @@ export function RouterSettings({ api, onDirtyChange }: { api: Api; onDirtyChange
     <header><h2>中枢默认设置</h2><p>会话选择「默认模型」时使用这里的模型和思考强度。</p></header>
     {draft && <form onSubmit={event => { event.preventDefault(); void save() }}>
       <fieldset className="settings-router-fields" disabled={saving}>
-        <label>默认模型<select value={draft.model.model} onChange={e => {
-          const option = draft.models.find(row => row.id === e.target.value)!
+        <label>默认模型<SelectMenu label="默认模型" value={draft.model.model} options={draft.models.map(option=>({value:option.id,label:option.displayName}))} onChange={value => {
+          const option = draft.models.find(row => row.id === value)!
           const choices = option.supportedReasoningEfforts ?? []
           const effort = choices.some(row => row.reasoningEffort === draft.model.effort) ? draft.model.effort :
             choices.find(row => row.reasoningEffort === option.defaultReasoningEffort)?.reasoningEffort ?? choices[0]?.reasoningEffort ?? ''
           edit({ ...draft, model: { model: option.id, effort } })
-        }}>{draft.models.map(option => <option key={option.id} value={option.id}>{option.displayName}</option>)}</select></label>
-        <label>默认思考强度<select value={draft.model.effort} onChange={e => edit({ ...draft, model: { ...draft.model, effort: e.target.value } })}>
-          {levels.map(level => <option key={level.reasoningEffort} value={level.reasoningEffort}>{t('composer.effort.' + level.reasoningEffort)}</option>)}
-        </select></label>
+        }} /></label>
+        <label>默认思考强度<SelectMenu label="默认思考强度" value={draft.model.effort} onChange={value => edit({ ...draft, model: { ...draft.model, effort: value } })} options={levels.map(level=>({value:level.reasoningEffort,label:t('composer.effort.' + level.reasoningEffort)}))} /></label>
         <div className="settings-router-root"><label htmlFor="router-project-root">新项目父目录</label>
           <div><input id="router-project-root" value={draft.projectRoot} onChange={e => edit({ ...draft, projectRoot: e.target.value })}/>
             <button type="button" className="dsh-codex-button" onClick={() => setBrowse(true)}>浏览目录</button></div>
@@ -81,17 +80,19 @@ export function RouterSettings({ api, onDirtyChange }: { api: Api; onDirtyChange
       <fieldset className="settings-router-fields" disabled={saving}>
         <legend>助手与表达</legend>
         {voiceFields.map(([key,label,max]) => <label key={key}>{label}
-          <input maxLength={max} required value={draft.presentation[key]}
-            onChange={e => edit({...draft,presentation:{...draft.presentation,[key]:e.target.value}})}/>
+          {key === 'displayName' || key === 'selfName'
+            ? <input maxLength={max} required value={draft.presentation[key]}
+                onChange={e => edit({...draft,presentation:{...draft.presentation,[key]:e.target.value}})}/>
+            : <textarea maxLength={max} required rows={3} value={draft.presentation[key]}
+                onChange={e => edit({...draft,presentation:{...draft.presentation,[key]:e.target.value}})}/>}
         </label>)}
-        <label>回复详略<select value={draft.presentation.brevity}
-          onChange={e => edit({...draft,presentation:{...draft.presentation,brevity:e.target.value}})}>
-          {['简洁','适中','详细'].map(v=><option key={v}>{v}</option>)}
-        </select></label>
+        <label>回复详略<SelectMenu label="回复详略" value={draft.presentation.brevity}
+          onChange={value => edit({...draft,presentation:{...draft.presentation,brevity:value}})}
+          options={['简洁','适中','详细'].map(v=>({value:v,label:v}))} /></label>
       </fieldset>
       <fieldset className="settings-router-fields" disabled={saving}>
         <legend>微信处理反馈</legend>
-        <label><input type="checkbox" checked={draft.presentation.typing}
+        <label className="settings-checkbox"><input type="checkbox" checked={draft.presentation.typing}
           onChange={e => edit({...draft,presentation:{...draft.presentation,typing:e.target.checked}})}/>显示“正在输入”</label>
         <label>开始提示前等待（秒）<input type="number" min={1} max={60} required value={draft.presentation.processingSeconds}
           onChange={e => edit({...draft,presentation:{...draft.presentation,processingSeconds:Number(e.target.value)}})}/></label>

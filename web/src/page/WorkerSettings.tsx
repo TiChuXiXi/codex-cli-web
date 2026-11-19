@@ -3,6 +3,7 @@ import { workerModes, workerPermissions } from '../../../shared/worker-options.j
 import type { ModelOption } from '../../../shared/contracts'
 import type { Api } from '../rpc'
 import { useT } from '../i18n'
+import { SelectMenu } from '../components/SelectMenu'
 
 type Defaults = { defaultModel: string; defaultEffort: string; defaultPermission: string; defaultExecutionMode: string; revision: string }
 
@@ -43,19 +44,15 @@ export function WorkerSettings({api, onDirtyChange}: {api: Api; onDirtyChange: (
   return <section className="settings-access"><header><h2>Worker 默认设置</h2>
     <p>新会话使用这些设置。Router 派发时可为单个任务指定模型、思考强度、权限和执行模式。</p></header>
     {draft && <form onSubmit={e=>{e.preventDefault();void save()}}><fieldset disabled={busy} className="settings-router-fields">
-      <label>默认模型<select value={draft.defaultModel} onChange={e=>{
-        const m=models.find(row=>row.id===e.target.value)!
+      <label>默认模型<SelectMenu label="默认模型" value={draft.defaultModel} options={models.map(m=>({value:m.id,label:m.displayName}))} onChange={value=>{
+        const m=models.find(row=>row.id===value)!
         const levels=m.supportedReasoningEfforts ?? []
         edit({defaultModel:m.id,defaultEffort:levels.some(x=>x.reasoningEffort===draft.defaultEffort)?draft.defaultEffort:m.defaultReasoningEffort || levels[0]?.reasoningEffort || ''})
-      }}>{models.map(m=><option key={m.id} value={m.id}>{m.displayName}</option>)}</select></label>
-      <label>默认思考强度<select value={draft.defaultEffort} onChange={e=>edit({defaultEffort:e.target.value})}>
-        {levels.map(x=><option key={x.reasoningEffort} value={x.reasoningEffort}>{t('composer.effort.'+x.reasoningEffort)}</option>)}</select></label>
-      <label>新会话权限<select value={draft.defaultPermission} onChange={e=>edit({defaultPermission:e.target.value})}>
-        <option value="inherit">沿用项目或 Codex 配置</option>
-        {workerPermissions.map(x=><option key={x} value={x}>{t('permission.'+x)}</option>)}</select></label>
+      }} /></label>
+      <label>默认思考强度<SelectMenu label="默认思考强度" value={draft.defaultEffort} onChange={value=>edit({defaultEffort:value})} options={levels.map(x=>({value:x.reasoningEffort,label:t('composer.effort.'+x.reasoningEffort)}))} /></label>
+      <label>新会话权限<SelectMenu label="新会话权限" value={draft.defaultPermission} onChange={value=>edit({defaultPermission:value})} options={[{value:'inherit',label:'沿用项目或 Codex 配置'},...workerPermissions.map(x=>({value:x,label:t('permission.'+x)}))]} /></label>
       {draft.defaultPermission==='full' && <small>完全访问允许 Worker 在工作区外修改文件、访问网络并免审批执行命令。</small>}
-      <label>默认执行模式<select value={draft.defaultExecutionMode} onChange={e=>edit({defaultExecutionMode:e.target.value})}>
-        {workerModes.map(x=><option key={x} value={x}>{x==='plan'?'计划模式':'普通执行'}</option>)}</select></label>
+      <label>默认执行模式<SelectMenu label="默认执行模式" value={draft.defaultExecutionMode} onChange={value=>edit({defaultExecutionMode:value})} options={workerModes.map(x=>({value:x,label:x==='plan'?'计划模式':'普通执行'}))} /></label>
       </fieldset><div className="settings-form-actions"><button className="settings-primary" disabled={!dirty||busy||!levels.length}>保存 Worker 设置</button></div></form>}
     {error && <p role="alert">{error} <button className="dsh-codex-button" onClick={()=>void load()}>重新加载</button></p>}
     {message && <p role="status">{message}</p>}

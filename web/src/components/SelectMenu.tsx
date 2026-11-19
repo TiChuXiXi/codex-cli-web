@@ -19,6 +19,9 @@ export function SelectMenu({label, value, options, onChange, direction = 'down'}
     list.current?.focus()
     return () => document.removeEventListener('pointerdown', outside)
   }, [open])
+  React.useEffect(() => {
+    if (open) document.getElementById(id + '-' + active)?.scrollIntoView({block:'nearest'})
+  }, [open, active, id])
   const show = () => {setActive(Math.max(0, selected)); setOpen(true)}
   const choose = (index: number) => { const option = options[index]; if (option) onChange(option.value); setOpen(false); trigger.current?.focus() }
   return <div ref={root} className={'dsh-codex-select-control ' + (direction === 'up' ? 'opens-up' : '')}>
@@ -27,7 +30,7 @@ export function SelectMenu({label, value, options, onChange, direction = 'down'}
     }}><span>{options[selected]?.label ?? value}</span><Icon name="chevronDown" size={15}/></button>
     {open && <div ref={list} tabIndex={-1} className="dsh-codex-select-menu" role="listbox" aria-label={label} aria-activedescendant={id + '-' + active} onKeyDown={event => {
       if (event.key === 'Escape') {event.preventDefault(); event.stopPropagation(); setOpen(false); trigger.current?.focus()}
-      else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length)}
+      else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && options.length) {event.preventDefault(); setActive(i => (i + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length)}
       else if (event.key === 'Home' || event.key === 'End') {event.preventDefault(); setActive(event.key === 'Home' ? 0 : options.length - 1)}
       else if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); choose(active)}
       else if (event.key === 'Tab') setOpen(false)

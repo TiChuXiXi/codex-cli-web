@@ -8,6 +8,10 @@
 - 原宿主返回入口改为同位置“退出 Web 登录”；视觉对比只屏蔽该控件。
 - runtime 从新工程文件生成 buildId/instanceId；前端请求地址统一通过 URL helper。
 
+## 设置面板下拉框
+
+Worker、中枢及项目与会话记忆设置复用工作台的 SelectMenu，保留原有选项、联动和保存逻辑。中枢表达设置使用多行文本域，复选框、PSM 和微信操作组适配设置页布局。
+
 ## 新项目修复
 
 - 严格 TypeScript 检查修正了 Ref 初值、词典索引、turn.durationMs、BlobPart、品牌 ID 和 cloneElement props 类型。

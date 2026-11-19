@@ -1,5 +1,6 @@
 import * as React from 'react'
 import type { Api } from '../rpc'
+import { SelectMenu } from '../components/SelectMenu'
 
 interface Status {
   enabled: boolean
@@ -146,55 +147,49 @@ export function PsmSettings({ api }: { api: Api }) {
           {status.enabled && status.policy === 2 && status.migration !== 'ready' && (
             <p>{status.migration === 'waiting' ? '等待中枢空闲后切换会话' : status.migration}</p>
           )}
-          {button(status.enabled ? 'disable' : 'enable', status.enabled ? '关闭 PSM' : '启用 PSM')}
+          <div className="settings-psm-actions">
+            {button(status.enabled ? 'disable' : 'enable', status.enabled ? '关闭 PSM' : '启用 PSM')}
+            {status.enabled && <>
+              {button(status.paused ? 'resume' : 'pause', status.paused ? '恢复索引' : '暂停索引')}
+              {!status.paused && <>
+                {button('sync', '增量同步')}
+                {!!status.failed || status.phase === 'failed' ? button('retry', '重试失败项') : null}
+              </>}
+              {button('rebuild', '重建 L1 索引')}
+            </>}
+          </div>
           {status.enabled && (
             <>
-              {button(status.paused ? 'resume' : 'pause', status.paused ? '恢复索引' : '暂停索引')}
-              {!status.paused && (
-                <>
-                  {button('sync', '增量同步')}
-                  {!!status.failed || status.phase === 'failed' ? button('retry', '重试失败项') : null}
-                </>
-              )}
-              {button('rebuild', '重建 L1 索引')}
-              <p>
-                <label>
-                  项目档案{' '}
-                  <select value={project} onChange={(e) => {setProject(e.target.value);setDraft(undefined);setProfile(undefined)}}>
-                    <option value="">选择项目</option>
-                    {profile?.projects.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </p>
+              <div className="settings-router-fields"><label>项目档案
+                <SelectMenu label="项目档案" value={project} onChange={value => {setProject(value);setDraft(undefined);setProfile(undefined)}}
+                  options={[{value:'',label:'选择项目'},...(profile?.projects.map(p=>({value:p.id,label:p.name})) ?? [])]} />
+              </label></div>
               {project && (
                 <>
                   <ul>
                     {profile?.entries.map((entry) => (
                       <li key={entry.id}>
                         {entry.value} · {entry.level === 'user_confirmed' ? '用户确认' : 'Router 推断'}
-                        <button type="button" disabled={busy} onClick={() => setDraft({entry,target:project,thread:entry.threadId ?? '',text:entry.value})}>
+                        <span className="settings-psm-entry-actions"><button type="button" className="dsh-codex-button" disabled={busy} onClick={() => setDraft({entry,target:project,thread:entry.threadId ?? '',text:entry.value})}>
                           纠正
                         </button>
-                        <button type="button" disabled={busy} onClick={() => void correct(entry, true)}>
+                        <button type="button" className="dsh-codex-button" disabled={busy} onClick={() => void correct(entry, true)}>
                           撤销
-                        </button>
+                        </button></span>
                       </li>
                     ))}
                   </ul>
                   {draft && <form onSubmit={event=>{event.preventDefault();void correct(draft.entry)}}>
                     <fieldset className="settings-router-fields" disabled={busy}>
                       <label>记忆内容<input required maxLength={1200} value={draft.text} onChange={event=>setDraft({...draft,text:event.target.value})}/></label>
-                      <label>目标项目<select value={draft.target} onChange={event=>setDraft({...draft,target:event.target.value,thread:''})}>
-                        {profile?.projects.filter(p=>!p.id.startsWith('source:')).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
-                      </select></label>
+                      <label>目标项目<SelectMenu label="目标项目" value={draft.target} onChange={value=>setDraft({...draft,target:value,thread:''})}
+                        options={profile?.projects.filter(p=>!p.id.startsWith('source:')).map(p=>({value:p.id,label:p.name})) ?? []} /></label>
                       <label>关联会话 ID（项目记忆可留空）<input value={draft.thread} onChange={event=>setDraft({...draft,thread:event.target.value})}/></label>
                     </fieldset>
-                    <button type="submit" disabled={busy}>保存纠正</button>
-                    <button type="button" onClick={()=>setDraft(undefined)}>取消</button>
+                    <div className="settings-psm-correction-actions">
+                      <button type="submit" className="dsh-codex-button" disabled={busy}>保存纠正</button>
+                      <button type="button" className="dsh-codex-button" onClick={()=>setDraft(undefined)}>取消</button>
+                    </div>
                   </form>}
                   {button('purge', '彻底清除此项目 PSM 数据')}
                 </>
