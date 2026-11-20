@@ -13,6 +13,7 @@ import {
 const textInput = text => [{ type: 'text', text, text_elements: [] }]
 const startParams = cwd => ({ cwd, approvalPolicy: 'never', sandbox: 'read-only', environments: [] })
 
+const rccOnly = process.argv.includes('--rcc-p0')
 const command = process.env.CODEX_WEB_CODEX_PATH
 if (process.env.CODEX_WEB_ROUTER_A1 !== '1' || !command || !isAbsolute(command)) {
   throw new Error('Set CODEX_WEB_ROUTER_A1=1 and CODEX_WEB_CODEX_PATH to an absolute Codex executable path')
@@ -22,7 +23,7 @@ const currentNetns = await readlink('/proc/self/ns/net')
 if (!process.env.ROUTER_A1_PARENT_NETNS) {
   const child = spawnSync('/usr/bin/unshare', [
     '--user', '--map-root-user', '--net', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL',
-    '--', process.execPath, fileURLToPath(import.meta.url),
+    '--', process.execPath, fileURLToPath(import.meta.url), ...(rccOnly ? ['--rcc-p0'] : []),
   ], {
     env: {
       CODEX_WEB_ROUTER_A1: '1',
@@ -222,6 +223,13 @@ async function run() {
 
     report.queue = await checkQueue({ app, close, connect, cwd, model })
     report.workerHub = await checkWorkerHub({ command, root, env })
+    if (rccOnly) {
+      assert.ok(report.workerHub.controls.parallel, 'P0 requires the complete Steer and parallel delivery probes')
+      assert.deepEqual(model.unexpected, [])
+      console.log(JSON.stringify({ cli: version, network: report.network, queue: report.queue,
+        controls: report.workerHub.controls, rccP0Passed: true }, null, 2))
+      return
+    }
     const nativePath = process.env.CODEX_WEB_ROUTER_NATIVE_PATH
     if (nativePath) {
       assert.ok(isAbsolute(nativePath))
@@ -310,7 +318,10 @@ async function checkWorkerHub({ command, root, env }) {
     assert.equal(writableSettings.sandbox?.type, 'workspaceWrite')
     assert.equal(workerDispatchIssue({ cwd, sandbox: 'workspace-write' }, writableSettings), null)
     assert.ok(workerDispatchIssue({ cwd, sandbox: 'read-only' }, writableSettings))
-    return { newWorker: true, verifiedSettings: true, queued: true, completed: true, historyCorrelated: true, workspaceWriteBounded: true }
+    const controls = ['0.170.0', '0.171.0'].includes(hub.status().codexVersion)
+      ? await checkControls({ hub, bus, fixture, root, cwd, threadId: thread.id, events })
+      : { skipped: 'Unverified Steer version' }
+    return { controls, newWorker: true, verifiedSettings: true, queued: true, completed: true, historyCorrelated: true, workspaceWriteBounded: true }
   } catch (error) {
     error.message += '\nRecent Worker Hub events: ' + JSON.stringify(
       events.slice(-8).map(event => ({ type: event.type, payload: event.payload }))).slice(-3000)
@@ -319,6 +330,175 @@ async function checkWorkerHub({ command, root, env }) {
     await hub.stop()
     bus.dispose()
     await fixture.close()
+  }
+}
+
+// Only target selection is scripted. The input FIFO, tool guard, SQLite, Dispatcher,
+// Hub, private Worker and its native approvals and history use the workbench paths.
+async function checkControls({ hub, bus, fixture, root, cwd, threadId, events }) {
+  const { RouterService } = await import('../server/router/service.js')
+  const { FollowupQueue } = await import('../server/services/followups.js')
+  const followups = new FollowupQueue({ hub, bus })
+  const router = new RouterService({ hub, bus, followups, stateDir: join(root, 'rcc'),
+    config: { enabled: true, projects: [{ id: 'rcc', name: 'RCC', cwd, sandbox: 'read-only' }] },
+    wakePolicy: { mergeMs: 60000 }, connect: async ({ directory }) => {
+      const workspace = join(directory, 'workspace')
+      return { cwd: workspace, selected: { model: 'fixture' },
+        start: async () => ({ thread: { id: 'rcc-router', cwd: workspace } }),
+        send: async (_id, _text, requestId) => ({ turn: { id: 'source-' + requestId } }),
+        close() {} }
+    } })
+  // Observe the commit notification and the actual Hub call on a monotonic clock.
+  const committed = new Map()
+  const incoming = new Map()
+  const native = new Map()
+  const stop = bus.subscribe(e => {
+    if (e.type === 'router/changed' && e.payload?.type === 'task.queued' && !committed.has(e.payload.id)) {
+      committed.set(e.payload.id, performance.now())
+    }
+  })
+  const steer = hub.steerTurn.bind(hub)
+  hub.steerTurn = async params => {
+    const sent = performance.now()
+    const result = await steer(params)
+    native.set(params.clientUserMessageId, { sent, ack: performance.now() })
+    return result
+  }
+  async function send(text, options = {}) {
+    const requestId = 'rcc-protocol-' + text
+    const arrived = performance.now()
+    await router.send({ requestId, text })
+    const turnId = router.active.turnId
+    const result = await router.onTool({ namespace: 'codex_web_router', tool: 'dispatch_task',
+      threadId: router.session.id, turnId, callId: requestId,
+      arguments: { requestId, projectId: 'rcc', threadId, mode: 'resume', instruction: text, ...options } })
+    assert.ok(result.success, JSON.stringify(result))
+    const task = JSON.parse(result.contentItems[0].text)
+    assert.equal(task.status, 'queued', JSON.stringify(task))
+    router.onEvent('turn/completed', { threadId: router.session.id, turn: { id: turnId, status: 'completed' } })
+    incoming.set(task.id, arrived)
+    return task.id
+  }
+  async function until(read, description) {
+    for (let i = 0; i < 500; i++) {
+      const result = read()
+      if (result) return result
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    throw new Error('RCC timeout ' + description + ' ' + JSON.stringify(router.read().tasks))
+  }
+  const latency = []
+  const report = {}
+  let release
+  try {
+    router.start()
+    await router.opening
+    assert.equal(router.phase, 'ready')
+    router.setMode({mode:'task',revision:router.routing().modeRevision})
+    for (const scenario of ['running', 'approval', 'input', 'interrupt']) {
+      const isInput = scenario === 'input'
+      const tool = isInput ? 'request_user_input' : 'exec_command'
+      const args = isInput ? { questions: [{ id: 'q', header: 'Choice', question: 'Choose', options: [
+        { label: 'One', description: 'First option' }, { label: 'Two', description: 'Second option' }] }] }
+        : { cmd: 'pwd', sandbox_permissions: 'require_escalated', justification: 'Allow the fixture to print its temporary cwd?' }
+      const offset = fixture.requests.length
+      fixture.enqueue(scenario === 'running' ? () => new Promise(resolve => {
+        release = () => resolve(assistantMessage('running response'))
+      }) : { type: 'function_call', name: tool, call_id: 'call-' + scenario, arguments: JSON.stringify(args) })
+      if (scenario !== 'interrupt') fixture.enqueue(assistantMessage('Worker fixture finished'))
+      const owner = await send('start-' + scenario, isInput ? { executionMode: 'plan' } : {})
+      const card = await until(() => scenario === 'running' ? release : router.read().interactions.find(r => r.dispatchId === owner), scenario)
+      const ownerTurn = await until(() => router.getTask(owner).turnId, 'owner turn')
+      const ids = []
+      for (let i = 0; i < (scenario === 'running' ? 3 : 1); i++) ids.push(await send('extra-' + scenario + '-' + i))
+      await until(() => ids.every(id => router.getTask(id).delivery.ackAt), 'Steer acknowledgement')
+      if (scenario === 'running') {
+        for (const id of ids) {
+          const admitted = incoming.get(id)
+          const queued = committed.get(id)
+          const { sent, ack } = native.get(id)
+          assert.ok(admitted <= queued && queued <= sent && sent <= ack)
+          latency.push([queued - admitted, sent - queued, ack - sent, ack - admitted].map(ms => Number(ms.toFixed(2))))
+        }
+        release()
+      } else {
+        assert.ok(router.read().interactions.some(r => r.instanceId === card.instanceId), 'original pending instance changed: ' + scenario)
+        assert.equal(card.method, isInput ? 'item/tool/requestUserInput' : 'item/commandExecution/requestApproval')
+        if (scenario === 'interrupt') {
+          const stop = router.requestStop(owner,{requestId:'rcc-stop-native',text:'纠正误派'},true)
+          const card = router.store.get('clarification',stop.id)
+          await router.confirm({id:stop.id,revision:card.revision,candidateId:owner})
+        }
+        else router.respond({ dispatchId: owner, instanceId: card.instanceId,
+          response: isInput ? { answers: { q: { answers: ['One'] } } } : { decision: 'accept' } })
+      }
+      const end = await waitFor(events, e => e.type === 'turn/completed' && e.turnId === ownerTurn, scenario + ' terminal')
+      const history = (await hub.routerReadWorker(threadId)).turns.find(t => t.id === ownerTurn)
+      const hits = history.items.filter(i => ids.includes(i.clientId)).map(i => i.clientId)
+      const expected = scenario === 'interrupt' ? [] : ids
+      assert.deepEqual(hits, expected)
+      const messages = history.items.filter(item => item.type === 'userMessage')
+      assert.deepEqual(messages.map(item => item.content.map(part => part.text)), [
+        ['start-' + scenario],
+        ...expected.map((_, i) => ['extra-' + scenario + '-' + i]),
+      ])
+      assert.equal(end.payload.turn.status, scenario === 'interrupt' ? 'interrupted' : 'completed')
+      const modelInputs = JSON.stringify(fixture.requests.slice(offset).map(body => body.input))
+      for (let i = 0; i < ids.length; i++) assert.equal(modelInputs.includes('extra-' + scenario + '-' + i), scenario !== 'interrupt')
+      if (scenario !== 'interrupt') await until(() => ids.every(id => router.getTask(id).delivery.historyAt), 'stored history evidence')
+      else assert.equal(router.getTask(ids[0]).delivery.historyAt, undefined)
+      const receipts = router.store.db.prepare('SELECT count(*) AS n FROM router_receipts WHERE worker_turn_id=?').get(ownerTurn).n
+      assert.equal(receipts, 1)
+      for (const id of ids) assert.equal(router.getTask(id).receiptStatus, null)
+      if (scenario === 'interrupt') await until(()=>router.store.get('stop',owner)?.state==='interrupted','verified interrupt outcome')
+      report[scenario] = { acknowledgements: ids.length, historyItems: hits.length, receipts, turnStatus: history.status }
+    }
+    if (rccOnly) {
+      const newThread = () => hub.newThread({ cwd, sandbox: 'read-only', approvalPolicy:'on-request' }, {routerWorker:true})
+      const b = await newThread()
+      const c = await newThread()
+      const add = hub.routerAddWorkerMessage.bind(hub)
+      const observed = new Map()
+      let heldAt
+      hub.routerAddWorkerMessage = async (target, ...params) => {
+        if (target === threadId) {
+          heldAt = performance.now()
+          await new Promise(resolve => setTimeout(resolve, 30000))
+        }
+        const ack = await add(target, ...params)
+        observed.set(target, performance.now() - heldAt)
+        return ack
+      }
+      try {
+        fixture.enqueue(...Array.from({ length: 3 }, () => assistantMessage('parallel fixture finished')))
+        const aId = await send('parallel-a')
+        await until(() => heldAt, 'A held at Hub')
+        const bId = await send('parallel-b', { threadId: b.id })
+        const cId = await send('parallel-c', { threadId: c.id })
+        await until(() => [bId,cId].every(id => router.getTask(id).status === 'completed'), 'B and C completed while A held')
+        assert.equal(router.getTask(aId).delivery.state, 'delivering')
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, heldAt + 30000 - performance.now())))
+        await until(() => router.getTask(aId).status === 'completed', 'A completed after hold')
+        for (const [target, id] of [[threadId,aId],[b.id,bId],[c.id,cId]]) {
+          const detail = await hub.routerReadWorker(target)
+          assert.equal(detail.turns.flatMap(t => t.items.filter(i => i.clientId === id)).length, 1)
+        }
+        report.parallel = { holdMs:30000, ackAfterHoldStartMs:[threadId,b.id,c.id].map(id => Number(observed.get(id).toFixed(2))) }
+      } finally { delete hub.routerAddWorkerMessage }
+    }
+    assert.deepEqual(fixture.unexpected, [])
+    assert.equal(fixture.remaining, 0)
+    const quantiles = latency[0].map((_, col) => {
+      const sorted = latency.map(row => row[col]).sort((a,b) => a-b)
+      return { p50: sorted[1], p95: sorted[2] }
+    })
+    return { ...report, timingColumns: ['admitToCommit','commitToRpc','rpcToAck','admitToAck'], milliseconds: latency, quantiles }
+  } finally {
+    release?.()
+    await router.close()
+    followups.dispose()
+    stop()
+    delete hub.steerTurn
   }
 }
 
@@ -594,6 +774,9 @@ async function checkQueue({ app, close, connect, cwd, model }) {
     const first = await add(app, 'a1-queue-fresh')
     assert.equal(first.queuedSubmission.clientUserMessageId, 'a1-queue-fresh')
     const firstEvent = await waitForUser(app, 'a1-queue-fresh')
+    const cancelled = await add(app,'rcc-withdraw-before-start')
+    assert.equal((await app.request('thread/queue/delete',{threadId:thread.id,queuedSubmissionId:cancelled.queuedSubmission.id})).deleted,true)
+    assert.ok(!(await readQueue(app)).data.some(q=>q.id===cancelled.queuedSubmission.id))
     const second = await add(app, 'a1-queue-busy')
     await assert.rejects(app.request('thread/queue/start', {
       threadId: thread.id, queuedSubmissionId: second.queuedSubmission.id,

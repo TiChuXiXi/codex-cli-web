@@ -55,7 +55,7 @@ async function observe() {
   let sawHello = false
   const phoneInput = (m,text) => m.role === 'user' && m.label === '你 · 微信' && m.text === text
   stdout.write('测试工作台 ' + origin.origin + '，测试项目 ' + project + '，测试账号 ' + env.WECHAT_TEST_ACCOUNT + '\n' +
-    '1. 用指定账号扫码绑定，从微信发送「' + hello + '」。\n' +
+    '1. 用指定账号扫码绑定，从微信发送「切换任务模式」，收到模式回执后发送「' + hello + '」。\n' +
     '2. 准备好两个可区分的历史测试会话，关闭 Web，在手机发送「' + taskPrompt + '」。核对候选后回复“第二个”。\n' +
     '3. 在手机完成两项待办、收到任务结果后，发送「' + follow + '」。\n')
   while (Date.now() < deadline) {
@@ -75,7 +75,7 @@ async function observe() {
     }
     const completed = tasks.some(task => task.status === 'completed' && ['clarification/session','item/commandExecution/requestApproval',
       'item/tool/requestUserInput'].every(method => handled.get(task.id)?.has(method)))
-    if (channel.canNotify && channel.lastSent >= started && completed && dispatchedFromPhone &&
+    if (snapshot.routing?.mode === 'task' && channel.canNotify && channel.lastSent >= started && completed && dispatchedFromPhone &&
         sawHello && snapshot.messages.some(m => phoneInput(m,follow))) {
       const prompt = createInterface({input:stdin,output:stdout})
       try {

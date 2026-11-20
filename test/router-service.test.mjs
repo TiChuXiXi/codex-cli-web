@@ -18,7 +18,7 @@ import { RouterStore } from '../server/router/store.js'
 import { normalizeRouterConfig } from '../server/router/app-server.js'
 import { routerNamespace } from '../server/router/tools.js'
 
-async function fixture(t, { discover = false, resumeExistingPermissions = false, projectSandbox = 'read-only', createChannel, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
+async function fixture(t, { taskMode = true, discover = false, resumeExistingPermissions = false, projectSandbox = 'read-only', projectName = 'Alpha', createChannel, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'router-service-'))
   const cwd = join(root, 'worker')
   await mkdir(cwd)
@@ -71,9 +71,9 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
     renameThread: async () => {},
     routerWorkerSettings: async id => createdSettings.get(id) ?? ({ cwd: threads.get(id)?.thread.cwd, approvalPolicy: policy, approvalsReviewer: 'user', sandbox }),
     routerWorkerProfile: async id => ({ ...await hub.routerWorkerSettings(id), model: 'worker-default', effort: 'medium', collaborationMode: { mode: 'default' } }),
-    routerAddWorkerMessage: async (threadId, clientUserMessageId, text, selectionContext) => {
+    routerAddWorkerMessage: async (threadId, clientUserMessageId, text, correction) => {
       const queued = { id: 'queued-' + clientUserMessageId, clientUserMessageId }
-      submitted.push({ threadId, text, ...(selectionContext && {selectionContext}), ...queued })
+      submitted.push({ threadId, text, ...(correction && {correction}), ...queued })
       if (loseReply) throw new Error('fixture acknowledgement lost')
       return queued
     },
@@ -140,7 +140,7 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
       },
     }
   }
-  const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: 'Alpha', cwd, sandbox: projectSandbox, resumeExistingPermissions }] }
+  const config = { enabled: true, projects: discover ? [] : [{ id: 'alpha-project', name: projectName, cwd, sandbox: projectSandbox, resumeExistingPermissions }] }
   async function boot() {
     router = new RouterService({ config, stateDir, hub, bus, connect, wakePolicy, createChannel })
     router.start()
@@ -154,6 +154,7 @@ async function fixture(t, { discover = false, resumeExistingPermissions = false,
     await rm(root, { recursive: true, force: true })
   })
   await boot()
+  if (taskMode) router.setMode({mode:'task',revision:router.routing().modeRevision})
   return {
     get router() { return router }, hub, stateDir, cwd, threads, submitted, creations, interrupts, bus, retained, sent, routerHistory,
     set wakeBehavior(value) { wakeBehavior = value },
@@ -196,6 +197,38 @@ test('voice and feedback settings are revision-checked and live on the existing 
   assert.equal(fx.router.settings().presentation.stageSeconds,12)
   assert.equal(fx.router.session.id,session)
   assert.equal(fx.starts,1)
+})
+
+test('Web and phone permission cards use current self-name, including pending cards saved before personalization', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, {createChannel: router => new WeChatChannel(router, client)})
+  const router = fx.router
+  const channel = router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  fx.sandbox = {type:'dangerFullAccess'}
+  fx.policy = 'never'
+  channel.accept({msgs:[inbound('self-name', '继续之前的项目任务')]})
+  await until(() => router.active?.turnId)
+  const result = await fx.tool('dispatch_task', args('current'))
+  assert.equal(result.value.status, 'needs_confirmation')
+  fx.finish()
+  const initial = '可以让我沿用这个会话的现有权限继续任务吗？'
+  await until(() => client.sent.some(m => m.text.includes('【当前待办】' + initial)))
+  assert.equal(router.read().clarifications[0].label, initial)
+  const card = router.store.get('clarification', result.value.id)
+  delete card.permissionQuestion
+  router.store.put('clarification', card.id, {...card, label:'允许 Router 按这个会话的现有权限续接？'})
+  const settings = router.settings()
+  await router.saveSettings({...settings, presentation:{...settings.presentation, displayName:'南桥', selfName:'小桥'}})
+  const changed = '可以让小桥沿用这个会话的现有权限继续任务吗？'
+  const view = router.read()
+  assert.equal(view.displayName, '南桥')
+  assert.equal(view.clarifications[0].label, changed)
+  channel.accept({msgs:[inbound('show-again','待办')]})
+  await until(() => client.sent.some(m => m.text.includes('【当前待办】' + changed)))
+  assert.equal(router.store.get('clarification',card.id).status,'pending')
+  assert.equal(fx.submitted.length, 0)
 })
 
 test('legacy dispatch options reach the chosen Worker without changing the original task or the workbench defaults', async t => {
@@ -346,7 +379,8 @@ test('saving a root in settings continues queued project work once and respects 
   for (let i = 0; i < 100 && !fx.submitted.length; i++) await delay(10)
   assert.equal(fx.submitted.length, 1)
   assert.equal(fx.submitted[0].threadId, 'new-project-worker')
-  assert.ok(fx.submitted[0].text.endsWith(text))
+  assert.equal(fx.submitted[0].text, text)
+  assert.equal(fx.submitted[0].correction, undefined)
   assert.equal(fx.router.read().tasks.length, 1)
   assert.equal(fx.router.read().tasks[0].cwd, join(root, '新项目'))
   assert.equal(fx.router.read().clarifications.length, 0)
@@ -639,7 +673,7 @@ test('explicit parallel resumes keep project confirmations, retries and Worker h
   await fx.router.dispatcher.sweep()
   await until(()=>fx.submitted.length===2)
   assert.deepEqual(fx.submitted.map(row=>row.threadId).sort(),['worker-a','worker-b'])
-  assert.ok(fx.submitted.every(row=>row.text===text && row.selectionContext.includes('只执行用户原文中属于本项目的业务步骤')))
+  assert.ok(fx.submitted.every(row => row.text === text && row.correction === undefined))
   assert.equal(fx.router.store.get('operation',requestId),null)
 })
 
@@ -1045,7 +1079,8 @@ test('structured Worker questions steer their live turn or queue exactly one fol
   }
   await fx.restart()
   const replies = []
-  fx.hub.steerTurn = async body => { replies.push(body) }
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
+  fx.hub.steerTurn = async body => { replies.push(body); return { turnId: body.turnId } }
   for (const task of [a,b]) {
     const q = fx.router.read().messages.find(m => m.questions && m.id.includes(task.id))
     const text = task.id === a.id ? '颜色\n靛蓝' : '靛蓝'
@@ -1055,7 +1090,9 @@ test('structured Worker questions steer their live turn or queue exactly one fol
       {method:'worker/question',choices:[{question:'颜色',selected:'靛蓝'}]},
     ])
   }
-  assert.deepEqual(replies, [{ threadId: a.threadId, turnId: 'turn-' + a.id, text: '颜色\n靛蓝' }])
+  await until(() => replies.length)
+  const command = fx.router.dispatcher.list().find(t => t.instruction === '颜色\n靛蓝')
+  assert.deepEqual(replies, [{ threadId: a.threadId, turnId: 'turn-' + a.id, text: '颜色\n靛蓝', clientUserMessageId: command.id }])
   assert.equal(fx.router.dispatcher.list().filter(task => task.instruction === '靛蓝' && task.threadId === b.threadId).length, 1)
 })
 
@@ -1200,7 +1237,7 @@ test('v1 state migration preserves old terminal tasks without seeding receipts',
   try {
     assert.equal(migrated.get('task', 'old').status, 'completed')
     assert.equal(migrated.receiptState('old'), null)
-    assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 3)
+    assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 4)
   } finally { migrated.close() }
 })
 
@@ -1223,7 +1260,7 @@ test('a failed receipt insert rolls back Worker terminal state before history re
 
 test('Web and WeChat share a durable FIFO and owner-only replies across restart with no browser', async t => {
   const client = fakeClient()
-  const fx = await fixture(t,{createChannel: router => new WeChatChannel(router,client)})
+  const fx = await fixture(t,{taskMode:false,createChannel: router => new WeChatChannel(router,client)})
   let channel = fx.router.wechat
   channel.bind()
   await until(() => channel.account)
@@ -1255,7 +1292,7 @@ test('Web and WeChat share a durable FIFO and owner-only replies across restart 
 
 test('WeChat sends no Router reply if a legacy turn ends after progress and a tool without final text', async t => {
   const client = fakeClient()
-  const fx = await fixture(t, { createChannel: router => new WeChatChannel(router, client) })
+  const fx = await fixture(t, {taskMode:false, createChannel: router => new WeChatChannel(router, client) })
   const channel = fx.router.wechat
   channel.bind()
   await until(() => channel.account)
@@ -1272,7 +1309,7 @@ test('WeChat sends no Router reply if a legacy turn ends after progress and a to
 
 test('a Web-dispatched Worker sends one committed Router receipt; a phone follow-up carries its dispatch reference', async t => {
   const client = fakeClient()
-  const fx = await fixture(t, {createChannel: router => new WeChatChannel(router,client)})
+  const fx = await fixture(t, {taskMode:false, createChannel: router => new WeChatChannel(router,client)})
   const channel = fx.router.wechat
   channel.bind()
   await until(() => channel.account)
@@ -1280,6 +1317,7 @@ test('a Web-dispatched Worker sends one committed Router receipt; a phone follow
   await until(() => fx.router.active?.text === '你好')
   fx.finish('你好！')
   await until(() => client.sent.length === 1)
+  fx.router.setMode({ mode: 'task', revision: fx.router.routing().modeRevision })
   const task = await dispatch(fx,'web-dispatched-worker')
   const repeat = completeWorker(fx,task)
   repeat()
@@ -1289,8 +1327,8 @@ test('a Web-dispatched Worker sends one committed Router receipt; a phone follow
   assert.match(client.sent[1].text,/提前完成的回执/)
   assert.doesNotMatch(client.sent[1].text,/关联 Worker 的最终答复/)
   channel.accept({msgs:[inbound('next','刚才那个任务再检查一下')]})
-  await until(() => fx.router.active?.text === '刚才那个任务再检查一下')
-  assert.deepEqual(fx.router.active.origin.relatedTasks,[task.id])
+  await until(() => fx.router.dispatcher.list().some(t => t.instruction === '刚才那个任务再检查一下'))
+  assert.equal(fx.router.dispatcher.list().find(t => t.instruction === '刚才那个任务再检查一下').threadId, task.threadId)
   assert.equal(fx.router.getTask(task.id).receiptStatus,'delivered')
 })
 
@@ -1313,9 +1351,89 @@ test('a phone clarification is delivered once and its original instruction reach
   channel.accept({msgs:[inbound('selected','第二个')]})
   await until(() => fx.submitted.length === 1)
   assert.equal(fx.submitted[0].threadId,'worker-b')
-  assert.match(fx.submitted[0].selectionContext,/用户已选定当前项目和会话/)
+  assert.equal(fx.submitted[0].correction, undefined)
   assert.equal(fx.submitted[0].text,source.text)
   assert.equal(fx.sent.length,1)
+})
+
+test('phone target reply after a missed dispatch survives restart and permission approval with the complete original question', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, {projectName:'certbase-offline', createChannel: r => new WeChatChannel(r, client)})
+  let channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  const question = '离线版数字证书柜项目新任务：查看在线版主分支领先的提交是否有我们需要借鉴移植的更新优化？请先阅读相关代码列出来'
+  channel.accept({msgs:[inbound('original', question)]})
+  await until(() => fx.router.active?.turnId)
+  const originalId = fx.router.active.requestId
+  const call = {mode:'new', projectId:'alpha-project', instruction:'模型改写的任务'}
+  const rejected = await fx.tool('dispatch_task', {...call, requestId: originalId.slice(0, -12)})
+  assert.equal(rejected.success, false)
+  fx.finish('请选择目标项目')
+  await until(() => client.sent.some(m => m.text.includes('消息编号不匹配')))
+  assert.equal(fx.submitted.length, 0)
+  await fx.restart()
+  channel = fx.router.wechat
+  fx.hub.config.defaultPermission = 'ask'
+  channel.accept({msgs:[inbound('unrecognized', '不存在的项目')]})
+  await until(() => client.sent.some(m => m.text.includes('原问题已保留')))
+  const named = inbound('project', 'certbase offline项目')
+  channel.accept({msgs:[named, named]})
+  await until(() => fx.router.active?.turnId)
+  assert.equal(fx.router.active.text, 'certbase offline项目')
+  assert.equal(fx.router.active.targetAnswer.originalId, originalId)
+  assert.equal(fx.sent.at(-1).text, question)
+  assert.equal((await fx.tool('dispatch_task', {...call, requestId:'current', projectId:'another'})).success, false)
+  const allowed = await fx.tool('dispatch_task', {...call, requestId:'current'})
+  assert.equal(allowed.value.status, 'needs_confirmation')
+  assert.equal(fx.router.store.get('clarification',allowed.value.id).intent.instruction, question)
+  fx.finish()
+  await until(() => channel.queueHead()?.shown)
+  const answer = inbound('grant', '1')
+  channel.accept({msgs:[answer, answer]})
+  await until(() => fx.submitted.length === 1)
+  assert.equal(fx.submitted[0].text, question)
+  assert.equal(fx.submitted[0].correction, undefined)
+  assert.equal(fx.router.dispatcher.list().length, 1)
+})
+
+test('a phone dispatch uses its active turn without copying an inbox hash; an explicitly new task starts independently', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, {createChannel: r => new WeChatChannel(r, client)})
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  channel.accept({msgs:[inbound('unresolved','读代码并列出可移植的提交。')]})
+  await until(() => fx.router.active?.turnId)
+  fx.finish('请指定项目')
+  await until(() => client.sent.some(m => m.text.includes('指明目标')))
+  channel.accept({msgs:[inbound('separate','任务：Alpha项目')]})
+  await until(() => fx.router.active?.turnId)
+  assert.equal(fx.router.active.targetAnswer, undefined)
+  const requestId = fx.router.active.requestId
+  const call = await fx.tool('dispatch_task',args('current'))
+  assert.equal(call.success, true)
+  await until(() => fx.submitted.length === 1)
+  assert.equal(fx.router.dispatcher.get(call.value.id).requestId, requestId)
+  assert.equal(fx.submitted[0].text, 'Alpha项目')
+})
+
+test('a session name shared by two Workers keeps the original question pending until one session is identified', async t => {
+  const fx = await fixture(t)
+  const question = '请对照最近的提交，列出要移植的代码。'
+  await fx.router.send({requestId:'unresolved-session-task',text:question})
+  fx.finish('哪个会话？')
+  for (const item of fx.threads.values()) item.thread.name = '同名审查'
+  await fx.router.send({requestId:'ambiguous-session-name',text:'同名审查会话'})
+  assert.equal(fx.submitted.length, 0)
+  assert.equal(fx.sent.length, 1)
+  await fx.router.send({requestId:'unique-session-name',text:'worker-b会话'})
+  assert.equal(fx.sent.at(-1).text, question)
+  assert.equal((await fx.tool('dispatch_task', args('unique-session-name','worker-a'))).success, false)
+  assert.equal((await fx.tool('dispatch_task', args('unique-session-name','worker-b'))).success, true)
+  await until(() => fx.submitted.length === 1)
+  assert.equal(fx.submitted[0].text, question)
+  assert.equal(fx.submitted[0].threadId, 'worker-b')
 })
 
 test('a phone approval answers the original child Worker while the shared Router is busy', async t => {
@@ -1660,4 +1778,339 @@ test('a candidate call missing explicit read and plan settings cannot inherit a 
   assert.equal(applied[0].executionMode,'plan')
   assert.equal(fx.submitted[0].text,instruction)
   assert.equal(r.store.get('worker-grant','worker-b'),null)
+})
+
+async function enqueueControl(fx, requestId, threadId = 'worker-a') {
+  const text = '补充 ' + requestId
+  await fx.router.send({ requestId, text })
+  const call = await fx.tool('dispatch_task', args(requestId, threadId))
+  assert.equal(call.success, true, JSON.stringify(call.value))
+  fx.finish()
+  return call.value.id
+}
+
+async function activeWorker(fx) {
+  const owner = await dispatch(fx, 'rcc-active-owner')
+  const turn = { id: 'turn-' + owner.id, status: 'inProgress', items: [{ type: 'userMessage', clientId: owner.id }] }
+  const detail = fx.threads.get(owner.threadId)
+  detail.turns = [turn]
+  detail.thread.status = { type: 'active', activeFlags: [] }
+  await fx.router.dispatcher.reconcile(fx.router.dispatcher.get(owner.id))
+  return { owner, turn }
+}
+
+test('lost Steer ack blocks one Worker, survives restart, alerts once and closes without synthetic acceptance', async t => {
+  const fx = await fixture(t)
+  const { owner, turn } = await activeWorker(fx)
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
+  const sends = []
+  fx.hub.steerTurn = async body => {
+    sends.push(body.clientUserMessageId)
+    if (sends.length === 1) throw new Error('lost ack')
+    return { turnId: turn.id }
+  }
+  const a = await enqueueControl(fx, 'rcc-lost-ack-01')
+  const b = await enqueueControl(fx, 'rcc-lost-ack-02')
+  await until(() => fx.router.getTask(a).status === 'unknown')
+  await fx.restart()
+  for (let i = 0; i < 6; i++) {
+    fx.router.store.patchCommand(a, { lastCheckAt: Date.now() - 13000 })
+    await fx.router.dispatcher.sweep()
+  }
+  assert.deepEqual(sends, [a])
+  const pending = fx.router.getTask(a)
+  assert.equal(pending.delivery.checks, 5)
+  assert.ok(pending.delivery.alertAt && pending.delivery.lastCheckAt)
+  assert.equal(fx.router.read().messages.filter(m => m.id === 'control-alert:' + a).length, 1)
+  assert.equal(fx.router.getTask(b).status, 'queued')
+  const request = { method: 'item/commandExecution/requestApproval', instanceId: 'still-live', requestId: 35, params: { threadId: owner.threadId, turnId: turn.id } }
+  fx.hub.pendingApprovals = () => [request]
+  fx.hub.respondApproval = (id, result) => {
+    fx.hub.pendingApprovals = () => []
+    return { id, result }
+  }
+  assert.equal(fx.router.respond({ dispatchId: owner.id, instanceId: request.instanceId, response: { decision: 'decline' } }).id, 35)
+  await fx.router.dispatcher.interrupt(owner.id, turn.id)
+  assert.equal(fx.interrupts.length, 1)
+  fx.router.dismissUnknown({ dispatchId: a, updatedAt: pending.updatedAt, confirmed: true })
+  await until(() => fx.router.getTask(b).delivery.ackAt)
+  assert.deepEqual(sends, [a,b])
+  const closed = fx.router.getTask(a).delivery
+  assert.equal(closed.state, 'unknown')
+  assert.ok(closed.closedAt)
+  assert.equal(closed.ackAt, undefined)
+})
+
+test('lost Steer acknowledgement recovers only from the matching item on the pinned Turn', async t => {
+  const fx = await fixture(t)
+  const { turn } = await activeWorker(fx)
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
+  let calls = 0
+  fx.hub.steerTurn = async body => {
+    calls++
+    turn.items.push({ type: 'userMessage', clientId: body.clientUserMessageId })
+    throw new Error('lost ack after admission')
+  }
+  const id = await enqueueControl(fx, 'rcc-reconcile-01')
+  await until(() => calls === 1)
+  await fx.restart()
+  await until(() => fx.router.getTask(id).status === 'attached')
+  const { delivery } = fx.router.getTask(id)
+  assert.ok(delivery.historyAt)
+  assert.equal(delivery.ackAt, undefined)
+  assert.equal(calls, 1)
+})
+
+test('an in-flight Worker Hub call does not delay later submissions to B or C', async t => {
+  const fx = await fixture(t)
+  fx.threads.set('worker-c', { thread: { ...fx.threads.get('worker-b').thread, id: 'worker-c' }, turns: [] })
+  const add = fx.hub.routerAddWorkerMessage
+  const hold = Promise.withResolvers()
+  let heldAt
+  fx.hub.routerAddWorkerMessage = async (...params) => {
+    if (params[0] === 'worker-a') {
+      heldAt = Date.now()
+      await hold.promise
+    }
+    return add(...params)
+  }
+  const a = await enqueueControl(fx, 'rcc-parallel-slow')
+  await until(() => heldAt)
+  try {
+    const b = await enqueueControl(fx, 'rcc-parallel-fast-b', 'worker-b')
+    const c = await enqueueControl(fx, 'rcc-parallel-fast-c', 'worker-c')
+    await until(() => fx.router.getTask(b).delivery.ackAt && fx.router.getTask(c).delivery.ackAt)
+    assert.equal(fx.router.getTask(a).delivery.state, 'delivering')
+  } finally { hold.resolve() }
+  await until(() => fx.router.getTask(a).delivery.ackAt)
+})
+
+test('a definite Turn-end rejection reuses the command on the same idle Thread', async t => {
+  const fx = await fixture(t)
+  const { turn } = await activeWorker(fx)
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
+  let calls = 0
+  fx.hub.steerTurn = async () => {
+    calls++
+    turn.status = 'completed'
+    fx.threads.get('worker-a').thread.status = { type: 'idle' }
+    throw Object.assign(new Error('no active turn to steer'), { code: -32600 })
+  }
+  const id = await enqueueControl(fx, 'rcc-turn-ended-01')
+  await until(() => fx.router.getTask(id).delivery.ackAt)
+  assert.equal(calls, 1)
+  assert.deepEqual(fx.submitted.filter(v => v.clientUserMessageId === id).map(v => [v.threadId, v.text]),
+    [['worker-a', '补充 rcc-turn-ended-01']])
+})
+
+test('unverified waiting scenarios defer across restart and drain in order on the original thread', async t => {
+  const fx = await fixture(t)
+  const { turn } = await activeWorker(fx)
+  let steers = 0
+  fx.hub.steerTurn = async () => { steers++; return { turnId: turn.id } }
+  const id = await enqueueControl(fx, 'rcc-fallback-1691')
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.router.getTask(id).delivery.state, 'deferred')
+  const next = await enqueueControl(fx, 'rcc-fallback-0170')
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
+  fx.hub.pendingApprovals = () => [{ method: 'item/fileChange/requestApproval', params: { threadId: 'worker-a', turnId: turn.id } }]
+  await fx.restart()
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.router.getTask(next).delivery.state, 'queued')
+  assert.equal(steers, 0)
+  turn.status = 'completed'
+  fx.hub.pendingApprovals = () => []
+  fx.threads.get('worker-a').thread.status = { type: 'idle' }
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.router.getTask(id).status, 'submitted')
+  assert.equal(fx.router.getTask(next).status, 'queued')
+  fx.threads.get('worker-a').turns.push({ id: 'new-turn', status: 'completed', items: [{ type:'userMessage', clientId:id }] })
+  await fx.router.dispatcher.sweep()
+  assert.deepEqual(fx.submitted.slice(-2).map(v => v.clientUserMessageId), [id,next])
+})
+
+test('redelivered phone input owns one control, and unresolved delivery alerts its bound phone once', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, { createChannel: router => new WeChatChannel(router, client) })
+  await activeWorker(fx)
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  const message = inbound('rcc-mobile-1', '补充一条原始任务说明')
+  channel.accept({ msgs: [message, message] })
+  await until(() => fx.router.active?.origin?.inbox)
+  const requestId = fx.router.active.requestId
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
+  let calls = 0
+  fx.hub.steerTurn = async () => { calls++; throw new Error('ambiguous result') }
+  const { value:task } = await fx.tool('dispatch_task', args(requestId))
+  fx.finish()
+  await until(() => fx.router.getTask(task.id).status === 'unknown')
+  fx.router.store.patchCommand(task.id, { unknownSince: Date.now() - 120001 })
+  await fx.router.dispatcher.sweep()
+  await until(() => client.sent.some(m => m.text.includes('交付仍待核对')))
+  channel.accept({ msgs: [message] })
+  await fx.router.dispatcher.sweep()
+  assert.equal(calls, 1)
+  assert.equal(fx.router.dispatcher.list().filter(t => t.requestId === requestId).length, 1)
+  assert.equal(client.sent.filter(m => m.text.includes('交付仍待核对')).length, 1)
+})
+
+test('chat is the persisted default, mode commands bypass a busy Router and stale tools cannot dispatch', async t => {
+  const fx = await fixture(t,{taskMode:false})
+  const r = fx.router
+  assert.equal(r.read().routing.mode,'chat')
+  await r.send({requestId:'rcc-chat-only-01',text:'请修改项目代码'})
+  assert.equal((await fx.tool('dispatch_task',args('rcc-chat-only-01'))).success,false)
+  await r.send({requestId:'rcc-mode-task-01',text:'开始处理任务'})
+  assert.equal(r.routing().mode,'task')
+  assert.equal((await fx.tool('dispatch_task',args('rcc-chat-only-01'))).success,false)
+  fx.finish('可切换到任务模式')
+  await r.send({requestId:'rcc-task-busy-01',text:'帮我检查代码'})
+  await r.send({requestId:'rcc-mode-chat-01',text:'先别派发，我想讨论一下'})
+  assert.equal((await fx.tool('dispatch_task',args('rcc-task-busy-01'))).success,false)
+  fx.finish()
+  await fx.restart()
+  assert.equal(fx.router.routing().mode,'chat')
+  assert.equal(fx.router.routing().modeRevision,2)
+  assert.equal(fx.router.dispatcher.list().length,0)
+})
+
+test('explicit Worker overrides focus, and channel focus and read-only queries survive restart', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t,{createChannel:r=>new WeChatChannel(r,client)})
+  const a = await dispatch(fx,'rcc-focus-worker-a')
+  const b = await dispatch(fx,'rcc-focus-worker-b','worker-b')
+  fx.router.wechat.bind()
+  await until(()=>fx.router.wechat.account)
+  const origin = {generation:fx.router.wechat.account.generation}
+  await fx.router.setFocus({dispatchId:a.id,revision:fx.router.routing().focusRevision})
+  await fx.router.setFocus({dispatchId:b.id,revision:0},origin)
+  const web = fx.router.routing()
+  await fx.router.send({requestId:'rcc-focus-query1',text:'查询同名测试乙任务的状态'})
+  assert.deepEqual(fx.router.routing(),web)
+  await fx.router.send({requestId:'rcc-wrong-target',text:'让同名测试乙处理新需求'})
+  assert.equal((await fx.tool('dispatch_task',args('rcc-wrong-target','worker-a'))).success,false)
+  assert.equal((await fx.tool('dispatch_task',args('rcc-wrong-target','worker-b'))).success,true)
+  fx.finish()
+  await fx.router.setFocus({dispatchId:a.id,revision:fx.router.routing().focusRevision})
+  await fx.router.send({requestId:'rcc-focus-fast-01',text:'你检查一下这个实现是否合理'})
+  assert.equal(fx.router.dispatcher.list().find(t=>t.requestId==='rcc-focus-fast-01').threadId,'worker-a')
+  await fx.restart()
+  assert.equal(fx.router.routing(origin).focus.threadId,'worker-b')
+  assert.equal(fx.router.routing().focus.threadId,'worker-a')
+  assert.equal(fx.router.routing().mode,'task')
+})
+
+test('stop cancels during preflight, or deletes exactly one native queued submission',async t=>{
+  const fx=await fixture(t)
+  const first=await enqueueControl(fx,'rcc-cancel-local')
+  const request={id:first,turnId:null,correction:true}
+  const result=await fx.router.dispatcher.stopCommand(request)
+  assert.equal(result.state,'cancelled')
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.submitted.length,0)
+  const second=await dispatch(fx,'rcc-cancel-native')
+  const deleted=[]
+  fx.hub.routerDeleteWorkerMessage=async (threadId,id)=>{
+    deleted.push([threadId,id])
+    return true
+  }
+  assert.equal((await fx.router.dispatcher.stopCommand({...request,id:second.id})).state,'withdrawn')
+  await fx.router.dispatcher.stopCommand({...request,id:second.id})
+  assert.deepEqual(deleted,[[second.threadId,'queued-'+second.id]])
+  assert.equal(fx.router.getTask(second.id).status,'cancelled')
+  assert.equal(fx.router.store.list('correction').length,0)
+})
+
+test('corrected misdispatch interrupts only the pinned turn and carries one correction on the next normal resume',async t=>{
+  const fx=await fixture(t)
+  const {owner,turn}=await activeWorker(fx)
+  await fx.router.send({requestId:'rcc-wrong-stop-01',text:'刚才发错了，停下。'})
+  const card=fx.router.read().clarifications.find(c=>c.kind==='interrupt')
+  assert.ok(card)
+  assert.deepEqual(fx.interrupts,[])
+  await fx.router.confirm({id:card.id,revision:card.revision,candidateId:card.candidates[0].id})
+  assert.equal(fx.router.store.get('stop',owner.id).state,'requested')
+  assert.deepEqual(fx.interrupts,[{threadId:owner.threadId,turnId:turn.id}])
+  turn.status='interrupted'
+  fx.threads.get(owner.threadId).thread.status={type:'idle'}
+  fx.bus.publish('turn/completed',{turn},{threadId:owner.threadId,turnId:turn.id})
+  await until(()=>fx.router.store.get('stop',owner.id).state==='interrupted')
+  await fx.restart()
+  assert.equal(fx.submitted.length,1)
+  await fx.router.send({requestId:'rcc-normal-resume',text:'继续'})
+  await until(()=>fx.submitted.length===2)
+  assert.equal(fx.submitted[1].threadId,owner.threadId)
+  assert.match(fx.submitted[1].correction,/误派/)
+  assert.equal(fx.router.store.get('correction',owner.id).commandId,fx.submitted[1].clientUserMessageId)
+})
+
+test('same-batch WeChat continuation uses its preceding focus selection', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, { createChannel: router => new WeChatChannel(router, client) })
+  const a = await dispatch(fx, 'batch-target-alpha')
+  const b = await dispatch(fx, 'batch-target-beta', 'worker-b')
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  const origin = { generation: channel.account.generation }
+  await fx.router.setFocus({ dispatchId: a.id, revision: 0 }, origin)
+  channel.accept({ msgs: [inbound('select-b', '切换到同名测试乙'), inbound('continue-b', '继续')] })
+  await until(() => fx.router.dispatcher.list().some(row => row.instruction === '继续'))
+  assert.equal(fx.router.dispatcher.list().find(row => row.instruction === '继续').threadId, b.threadId)
+  assert.equal(fx.router.routing(origin).focus.threadId, b.threadId)
+})
+
+test('redirecting a completed mistake reports its original result and queues the original instruction once', async t => {
+  const fx = await fixture(t)
+  const to = await dispatch(fx, 'redirect-destination', 'worker-b')
+  const from = await dispatch(fx, 'redirect-origin')
+  completeWorker(fx, from)
+  await fx.router.send({ requestId: 'redirect-confirmation', text: '这个应该交给同名测试乙' })
+  const [card] = fx.router.read().clarifications
+  assert.equal(card.kind, 'interrupt')
+  assert.equal(card.candidates[0].id, from.id)
+  await fx.router.confirm({ id: card.id, revision: card.revision, candidateId: from.id })
+  const transfer = () => fx.router.store.get('redirect', 'redirect-redirect-confirmation')
+  await until(() => transfer()?.status !== 'pending')
+  assert.equal(transfer().status, 'queued')
+  assert.match(fx.router.getTask(from.id).stop.message, /关联 Worker 的最终答复/)
+  assert.equal(fx.router.getTask(from.id).status, 'completed')
+  const newTask = fx.router.dispatcher.get(transfer().newDispatchId)
+  assert.equal(newTask.threadId, to.threadId)
+  assert.equal(newTask.instruction, fx.router.dispatcher.get(from.id).instruction)
+  assert.deepEqual(fx.interrupts, [])
+  await fx.restart()
+  assert.equal(fx.router.dispatcher.list().length, 3)
+})
+
+test('phone questions move between projects and a same-batch follow-up stays with the last question', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, { createChannel: router => new WeChatChannel(router, client) })
+  const otherCwd = join(fx.cwd, '..', 'bbb')
+  await mkdir(otherCwd)
+  const projects = await loadRouterProjects([{ id: 'bbb', name: 'bbb', cwd: otherCwd }], fx.router.directory)
+  fx.router.projects.set('bbb', projects.get('bbb'))
+  fx.threads.get('worker-b').thread.cwd = otherCwd
+  completeWorker(fx, await dispatch(fx, 'web-original-alpha'))
+  fx.hub.status = () => ({ phase: 'ready', kind: 'daemon', codexVersion: '0.171.0' })
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+  const questions = ['Alpha 的测试覆盖哪些情况？', 'bbb 的测试为什么失败？', '怎么修？']
+  channel.accept({ msgs: questions.map((question, i) => inbound('business-question-' + i, question)) })
+  await until(() => fx.router.dispatcher.list().some(task => task.instruction === questions[2]))
+  const selected = questions.map(question => fx.router.dispatcher.list().filter(row => row.instruction === question))
+  assert.deepEqual(selected.map(rows => rows.map(row => row.threadId)), [['worker-a'], ['worker-b'], ['worker-b']])
+  assert.equal(fx.router.routing().focus.threadId, 'worker-a')
+  assert.equal(fx.router.routing({ generation: channel.account.generation }).focus.threadId, 'worker-b')
+  assert.deepEqual(fx.router.read().clarifications, [])
+  await fx.router.send({ requestId: 'list-with-no-switch', text: '任务列表' })
+  assert.doesNotMatch(fx.router.store.get('message', 'control:list-with-no-switch').text, /焦点|切换/)
+  assert.ok(!fx.router.read().messages.some(row => /焦点|接下来继续/.test(row.text)))
+  await fx.router.dispatcher.sweep()
+  assert.equal(fx.router.getTask(selected[0][0].id).status, 'submitted')
+  assert.equal(fx.router.getTask(selected[1][0].id).status, 'submitted')
+  assert.deepEqual(fx.submitted.filter(row => questions.includes(row.text)).map(row => row.threadId).sort(), ['worker-a', 'worker-b'])
 })

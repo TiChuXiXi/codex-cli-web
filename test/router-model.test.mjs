@@ -48,6 +48,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   assert.equal(sent.model, 'gpt-6.1-terra')
   assert.equal(sent.effort, 'high')
   assert.match(sent.input[0].text, /当前 Router requestId/)
+  const inboxId = 'wx-' + 'a'.repeat(64)
+  const phone = (await app.send('previous-sol-thread', '原问题', inboxId, {channel:'wechat'})).params
+  assert.equal(phone.clientUserMessageId, inboxId)
+  assert.match(phone.input[0].text, /当前 Router requestId: current\]/)
+  assert.ok(!phone.input[0].text.includes(inboxId))
   const context = sent.additionalContext?.['router-instructions']
   assert.equal(context?.kind, 'application')
   assert.equal(context.value, resumed.developerInstructions)

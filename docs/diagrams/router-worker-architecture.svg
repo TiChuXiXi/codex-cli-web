@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1220" viewBox="0 0 1600 1220" role="img" aria-labelledby="router-worker-architecture-title router-worker-architecture-desc" xml:lang="zh-CN" id="router-worker-architecture-root">
+<title id="router-worker-architecture-title">Router + Worker Agent 系统架构</title>
+<desc id="router-worker-architecture-desc">Codex CLI Web 的 Router 与 Worker 模块拓扑，以及从 Web 和微信接收任务、在原生 Worker 执行、审批交互和回传结果的链路。</desc>
+<defs>
+      <style>#router-worker-architecture-root { color: #172B3F; font-family: "Noto Sans CJK SC","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif; }
+      #router-worker-architecture-root .diagram-container { overflow-x:auto }
+      #router-worker-architecture-root text { fill:#172B3F;font-family:"Noto Sans CJK SC","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif }
+      #router-worker-architecture-root .hero { font-size:42px;font-weight:700 }
+      #router-worker-architecture-root .eyeline { font-size:13px;font-weight:700;letter-spacing:2.2px;fill:#356998 }
+      #router-worker-architecture-root .subtitle { font-size:17px;fill:#455C70 }
+      #router-worker-architecture-root .section { font-size:25px;font-weight:700 }
+      #router-worker-architecture-root .zone { font-size:15px;font-weight:700;fill:#49647A }
+      #router-worker-architecture-root .focus { font-size:24px;font-weight:700 }
+      #router-worker-architecture-root .card-title { font-size:19px;font-weight:700 }
+      #router-worker-architecture-root .node-small { font-size:17px;font-weight:700 }
+      #router-worker-architecture-root .body { font-size:15px;fill:#455C70 }
+      #router-worker-architecture-root .code, #router-worker-architecture-root .mono, #router-worker-architecture-root .step-num { font-family:"DejaVu Sans Mono","SFMono-Regular",Consolas,monospace }
+      #router-worker-architecture-root .code { font-size:12px;fill:#49647A }
+      #router-worker-architecture-root .mono { font-size:14px;font-weight:700;fill:#172B3F }
+      #router-worker-architecture-root .psm, #router-worker-architecture-root .caption, #router-worker-architecture-root .edge, #router-worker-architecture-root .legend { font-size:13px;fill:#455C70 }
+      #router-worker-architecture-root .edge, #router-worker-architecture-root .legend { font-weight:500 }
+      #router-worker-architecture-root .step-num { font-size:14px;font-weight:700 }</style>
+<marker id="router-worker-architecture-arrow-blue" viewBox="0 0 8 8" markerWidth="7" markerHeight="7" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 Z" fill="#356998"/></marker>
+<marker id="router-worker-architecture-arrow-teal" viewBox="0 0 8 8" markerWidth="7" markerHeight="7" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 Z" fill="#26766A"/></marker>
+<marker id="router-worker-architecture-arrow-gray" viewBox="0 0 8 8" markerWidth="7" markerHeight="7" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 Z" fill="#718294"/></marker>
+</defs>
+<rect x="0" y="0" width="1600" height="1220" rx="0" fill="#F8FAFC" stroke="none" />
+<text x="48" y="52" class="eyeline" >CODEX CLI WEB</text>
+<text x="48" y="102" class="hero" >Router + Worker Agent 系统架构</text>
+<text x="48" y="134" class="subtitle" >Web 和微信共用 Router 会话，由工作台校验并派发，Worker 在自己的 Codex 线程中执行。</text>
+<line x1="48" y1="153" x2="1552" y2="153" stroke="#CBD8E4"/>
+<text x="48" y="189" class="section" >模块拓扑</text>
+<line data-edge="blue" x1="1032" y1="184" x2="1064" y2="184" fill="none" stroke="#356998" stroke-width="2"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<text x="1074" y="189" class="legend" >请求 / 派发</text>
+<line data-edge="teal" x1="1192" y1="184" x2="1224" y2="184" fill="none" stroke="#26766A" stroke-width="2" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<text x="1234" y="189" class="legend" >事件 / 回传</text>
+<line data-edge="gray" x1="1352" y1="184" x2="1384" y2="184" fill="none" stroke="#718294" stroke-width="2" stroke-dasharray="2 4"  marker-end="url(#router-worker-architecture-arrow-gray)"/>
+<text x="1394" y="189" class="legend" >持久化 / 索引</text>
+<rect x="48" y="208" width="268" height="492" rx="8" fill="#F1F5F9" stroke="#CBD8E4" />
+<rect x="344" y="208" width="844" height="492" rx="8" fill="#EDF3F8" stroke="#CBD8E4" />
+<rect x="1216" y="208" width="336" height="492" rx="8" fill="#F0F6F4" stroke="#CBDDD6" />
+<text x="64" y="236" class="zone" >用户入口</text>
+<text x="364" y="236" class="zone" >Node.js Web 服务</text>
+<text x="1236" y="236" class="zone" >Codex App Server 运行时</text>
+<line data-edge="Web RPC" x1="300" y1="292" x2="364" y2="292" fill="none" stroke="#356998" stroke-width="2"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="SSE / read" x1="364" y1="332" x2="300" y2="332" fill="none" stroke="#26766A" stroke-width="2" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="WeChat message / response" x1="300" y1="464" x2="364" y2="464" fill="none" stroke="#356998" stroke-width="2"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="WeChat output" x1="364" y1="504" x2="300" y2="504" fill="none" stroke="#26766A" stroke-width="2" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="Router send" x1="688" y1="292" x2="1236" y2="292" fill="none" stroke="#356998" stroke-width="2"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="Router dynamic tool and events" x1="1236" y1="332" x2="688" y2="332" fill="none" stroke="#26766A" stroke-width="2" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="intent" x1="688" y1="464" x2="744" y2="464" fill="none" stroke="#356998" stroke-width="2"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="receipt ready" x1="744" y1="504" x2="688" y2="504" fill="none" stroke="#26766A" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="Worker command" x1="968" y1="464" x2="1000" y2="464" fill="none" stroke="#356998" stroke-width="2"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="Worker events" x1="1000" y1="504" x2="968" y2="504" fill="none" stroke="#26766A" stroke-width="2" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="Worker RPC" x1="1172" y1="464" x2="1236" y2="464" fill="none" stroke="#356998" stroke-width="2"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="Worker requests and events" x1="1236" y1="504" x2="1172" y2="504" fill="none" stroke="#26766A" stroke-width="2" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="PSM search and memory" x1="688" y1="392" x2="816" y2="392" fill="none" stroke="#718294" stroke-width="2" stroke-dasharray="2 4"  marker-end="url(#router-worker-architecture-arrow-gray)"/>
+<line data-edge="Worker history" x1="1032" y1="424" x2="1032" y2="432" fill="none" stroke="#718294" stroke-width="1.5" marker-end="url(#router-worker-architecture-arrow-gray)" />
+<line data-edge="RouterStore" x1="520" y1="544" x2="520" y2="588" fill="none" stroke="#718294" stroke-width="2" stroke-dasharray="2 4"  marker-end="url(#router-worker-architecture-arrow-gray)"/>
+<line data-edge="DispatcherStore" x1="852" y1="544" x2="852" y2="588" fill="none" stroke="#718294" stroke-width="2" stroke-dasharray="2 4"  marker-end="url(#router-worker-architecture-arrow-gray)"/>
+<text x="968" y="281" class="edge" text-anchor="middle">stdio JSON-RPC · 启动与提交回合</text>
+<text x="1094" y="353" class="edge" text-anchor="middle">动态工具调用与回合事件</text>
+<text x="752" y="381" class="edge" text-anchor="middle">检索 / 记忆</text>
+<g data-node="web">
+<rect x="64" y="256" width="236" height="112" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="web"/>
+<text x="80" y="285" class="card-title" >Web 工作台</text>
+<text x="80" y="307" class="code" >RouterView.tsx</text>
+<text x="80" y="332" class="body" >发送消息、答复交互</text>
+<text x="80" y="351" class="body" >订阅 SSE 并重读会话</text>
+</g>
+<g data-node="wechat">
+<rect x="64" y="432" width="236" height="112" rx="8" fill="#FCFEFD" stroke="#CBD8E4" data-bound="wechat"/>
+<text x="80" y="461" class="card-title" >微信 · iLink</text>
+<text x="80" y="483" class="code" >channel.js · delivery.js</text>
+<text x="80" y="508" class="body" >绑定后轮询入箱、发件箱</text>
+<text x="80" y="527" class="body" >回复、待办与按偏好通知</text>
+</g>
+<g data-node="router-service">
+<rect x="364" y="256" width="324" height="288" rx="8" fill="#EAF3FB" stroke="#B5CBDF" data-bound="router-service"/>
+<text x="384" y="289" class="focus" >RouterService</text>
+<text x="384" y="313" class="code" >server/router/service.js</text>
+<line x1="384" y1="329" x2="668" y2="329" stroke="#CBD8E4"/>
+<text x="384" y="356" class="mono" >admit / drainInput</text>
+<text x="384" y="379" class="body" >Web 与微信共享持久输入队列</text>
+<text x="384" y="411" class="mono" >onTool / prepare / execute</text>
+<text x="384" y="434" class="body" >工具与回合校验、项目匹配、权限确认</text>
+<text x="384" y="466" class="mono" >RouterWakeScheduler · wake.js</text>
+<text x="384" y="489" class="body" >空闲时合批唤起 Router 生成汇报</text>
+<text x="384" y="521" class="caption" >Web 入口经 auth.js / api/routes.js</text>
+</g>
+<g data-node="router-app">
+<rect x="1236" y="256" width="296" height="112" rx="8" fill="#F7FBFA" stroke="#BCD9CE" data-bound="router-app"/>
+<text x="1252" y="285" class="card-title" >Router Agent</text>
+<text x="1252" y="307" class="code" >router/app-server.js</text>
+<text x="1252" y="332" class="body" >专用工作目录与 CODEX_HOME</text>
+<text x="1252" y="351" class="body" >启动器摘要校验、动态工具白名单</text>
+</g>
+<g data-node="psm">
+<rect x="816" y="360" width="356" height="64" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="psm"/>
+<text x="832" y="385" class="node-small" >项目与会话记忆 · PSM</text>
+<text x="832" y="406" class="psm" >psm*.js · 授权检索 · FTS5 · Worker 历史同步</text>
+</g>
+<g data-node="dispatcher">
+<rect x="744" y="432" width="224" height="112" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="dispatcher"/>
+<text x="760" y="461" class="card-title" >RouterDispatcher</text>
+<text x="760" y="483" class="code" >router/dispatcher.js</text>
+<text x="760" y="508" class="body" >线程与权限复核</text>
+<text x="760" y="527" class="body" >提交、事件关联与对账</text>
+</g>
+<g data-node="hub">
+<rect x="1000" y="432" width="172" height="112" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="hub"/>
+<text x="1016" y="461" class="card-title" >CodexHub</text>
+<text x="1016" y="483" class="code" >codex/hub.js</text>
+<text x="1016" y="508" class="body" >RPC 与 EventBus</text>
+<text x="1016" y="527" class="body" >解析事件与原生请求</text>
+</g>
+<g data-node="worker">
+<rect x="1236" y="432" width="296" height="112" rx="8" fill="#EAF6F1" stroke="#AED2C4" data-bound="worker"/>
+<text x="1252" y="461" class="card-title" >Worker Agent</text>
+<text x="1252" y="483" class="code" >Worker App Server</text>
+<text x="1252" y="508" class="body" >daemon 或 stdio · 项目线程</text>
+<text x="1252" y="527" class="body" >原生队列、审批、工具和回合历史</text>
+</g>
+<text x="64" y="580" class="node-small" >Web 传输</text>
+<text x="64" y="605" class="code" >POST /codex-cli</text>
+<text x="64" y="626" class="code" >GET /codex-cli/events · SSE</text>
+<text x="64" y="655" class="caption" >来源与工作台认证由服务校验</text>
+<g data-node="store">
+<rect x="364" y="588" width="808" height="88" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="store"/>
+<text x="384" y="618" class="card-title" >RouterStore · router.sqlite</text>
+<text x="384" y="643" class="body" >store.js · 输入、任务 / 提交证据、确认、审计、原始结果、回执和微信收发记录</text>
+<text x="770" y="664" class="caption" >PSM 检索索引另存 psm-index.sqlite</text>
+</g>
+<text x="1236" y="580" class="node-small" >运行时边界</text>
+<text x="1236" y="606" class="body" >Router 调用受限动态工具。</text>
+<text x="1236" y="628" class="body" >工作台经 thread/queue/add 等接口派发。</text>
+<text x="1236" y="650" class="body" >Worker 使用自己的线程与审批。</text>
+<line x1="48" y1="724" x2="1552" y2="724" stroke="#CBD8E4"/>
+<text x="48" y="762" class="section" >一次任务如何往返</text>
+<text x="1552" y="762" class="caption" text-anchor="end">每行从左到右</text>
+<g aria-label="任务下发">
+<rect x="48" y="788" width="150" height="100" rx="8" fill="#EAF3FB" stroke="none" />
+<text x="64" y="813" class="step-num" fill="#356998">01</text>
+<text x="64" y="841" class="node-small" >任务下发</text>
+<text x="64" y="865" class="caption" >输入 → 交付</text>
+<line data-edge="01.1" x1="544" y1="838" x2="568" y2="838" fill="none" stroke="#356998" stroke-width="1.5"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="01.2" x1="876" y1="838" x2="900" y2="838" fill="none" stroke="#356998" stroke-width="1.5"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="01.3" x1="1208" y1="838" x2="1232" y2="838" fill="none" stroke="#356998" stroke-width="1.5"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<g data-node="stage-01-1">
+<rect x="236" y="788" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-01-1"/>
+<text x="252" y="818" class="node-small" >消息入队</text>
+<text x="252" y="845" class="body" >Web router/send 或微信 admit</text>
+<text x="252" y="866" class="body" >按请求 ID 去重，串行启动 Router</text>
+</g>
+<g data-node="stage-01-2">
+<rect x="568" y="788" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-01-2"/>
+<text x="584" y="818" class="node-small" >Router 选择目标</text>
+<text x="584" y="845" class="body" >检索项目、线程与 PSM</text>
+<text x="584" y="866" class="body" >歧义或超授权时向用户确认</text>
+</g>
+<g data-node="stage-01-3">
+<rect x="900" y="788" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-01-3"/>
+<text x="916" y="818" class="node-small" >Dispatcher 落盘</text>
+<text x="916" y="845" class="body" >保存任务及提交意图</text>
+<text x="916" y="866" class="body" >复核目录、线程归属和执行配置</text>
+</g>
+<g data-node="stage-01-4">
+<rect x="1232" y="788" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-01-4"/>
+<text x="1248" y="818" class="node-small" >Worker 原生交付</text>
+<text x="1248" y="845" class="body" >空闲且无前序普通消息时入原生队列</text>
+<text x="1248" y="866" class="body" >符合条件的忙碌回合走 turn/steer</text>
+</g>
+</g>
+<g aria-label="执行与交互">
+<rect x="48" y="906" width="150" height="100" rx="8" fill="#EFF3F8" stroke="none" />
+<text x="64" y="931" class="step-num" fill="#356998">02</text>
+<text x="64" y="959" class="node-small" >执行与交互</text>
+<text x="64" y="983" class="caption" >回合 → 用户 → 回合</text>
+<line data-edge="02.1" x1="544" y1="956" x2="568" y2="956" fill="none" stroke="#356998" stroke-width="1.5"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="02.2" x1="876" y1="956" x2="900" y2="956" fill="none" stroke="#356998" stroke-width="1.5"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<line data-edge="02.3" x1="1208" y1="956" x2="1232" y2="956" fill="none" stroke="#356998" stroke-width="1.5"   marker-end="url(#router-worker-architecture-arrow-blue)"/>
+<g data-node="stage-02-1">
+<rect x="236" y="906" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-02-1"/>
+<text x="252" y="936" class="node-small" >Worker 执行</text>
+<text x="252" y="963" class="body" >新建或续用项目线程</text>
+<text x="252" y="984" class="body" >沿用或应用指定模型、权限和模式</text>
+</g>
+<g data-node="stage-02-2">
+<rect x="568" y="906" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-02-2"/>
+<text x="584" y="936" class="node-small" >工作台关联事件</text>
+<text x="584" y="963" class="body" >通过 EventBus 接收原生事件</text>
+<text x="584" y="984" class="body" >关联 Worker / 直接子代理的请求</text>
+</g>
+<g data-node="stage-02-3">
+<rect x="900" y="906" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-02-3"/>
+<text x="916" y="936" class="node-small" >用户处理卡片</text>
+<text x="916" y="963" class="body" >Web 或微信展示原生审批 / 问题</text>
+<text x="916" y="984" class="body" >用户选择允许、拒绝或作答</text>
+</g>
+<g data-node="stage-02-4">
+<rect x="1232" y="906" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-02-4"/>
+<text x="1248" y="936" class="node-small" >回送 Worker</text>
+<text x="1248" y="963" class="body" >按请求实例答复原生请求</text>
+<text x="1248" y="984" class="body" >结构化异步答案经调度续接</text>
+</g>
+</g>
+<g aria-label="结果回传">
+<rect x="48" y="1024" width="150" height="100" rx="8" fill="#EAF6F1" stroke="none" />
+<text x="64" y="1049" class="step-num" fill="#26766A">03</text>
+<text x="64" y="1077" class="node-small" >结果回传</text>
+<text x="64" y="1101" class="caption" >终态 → 原文 → 汇报</text>
+<line data-edge="03.1" x1="544" y1="1074" x2="568" y2="1074" fill="none" stroke="#26766A" stroke-width="1.5" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="03.2" x1="876" y1="1074" x2="900" y2="1074" fill="none" stroke="#26766A" stroke-width="1.5" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<line data-edge="03.3" x1="1208" y1="1074" x2="1232" y2="1074" fill="none" stroke="#26766A" stroke-width="1.5" stroke-dasharray="5 4"  marker-end="url(#router-worker-architecture-arrow-teal)"/>
+<g data-node="stage-03-1">
+<rect x="236" y="1024" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-03-1"/>
+<text x="252" y="1054" class="node-small" >结束事件或历史恢复</text>
+<text x="252" y="1081" class="body" >Hub 通知 Dispatcher 处理终态</text>
+<text x="252" y="1102" class="body" >漏报或不明确的提交以历史对账</text>
+</g>
+<g data-node="stage-03-2">
+<rect x="568" y="1024" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-03-2"/>
+<text x="584" y="1054" class="node-small" >终态与回执落盘</text>
+<text x="584" y="1081" class="body" >同事务写任务、回执和 Worker 原文</text>
+<text x="584" y="1102" class="body" >Web 经 SSE 刷新会话和任务</text>
+</g>
+<g data-node="stage-03-3">
+<rect x="900" y="1024" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-03-3"/>
+<text x="916" y="1054" class="node-small" >Router 空闲合批</text>
+<text x="916" y="1081" class="body" >wake.js 发起自动回执回合</text>
+<text x="916" y="1102" class="body" >仅可查询该批次的任务结果</text>
+</g>
+<g data-node="stage-03-4">
+<rect x="1232" y="1024" width="308" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E4" data-bound="stage-03-4"/>
+<text x="1248" y="1054" class="node-small" >汇报分发</text>
+<text x="1248" y="1081" class="body" >Router 汇报写入共享历史</text>
+<text x="1248" y="1102" class="body" >微信按绑定和通知偏好发件</text>
+</g>
+</g>
+<line x1="48" y1="1150" x2="1552" y2="1150" stroke="#CBD8E4"/>
+<text x="48" y="1178" class="legend" >恢复语义</text>
+<text x="128" y="1178" class="caption" >提交结果不明时保留证据并暂停该线程的自动派发。对账依据包括 clientUserMessageId、原生队列 ID 与回合历史。</text>
+<text x="1552" y="1178" class="code" text-anchor="end">Codex CLI Web  ·  feature/router</text>
+</svg>

@@ -1,3 +1,4 @@
+import { clarificationLabel } from '../../../shared/router-presentation.js'
 import { approvalDetails } from '../../../shared/approval-details.js'
 import { describeWorkerSettings } from '../../router/projects.js'
 import { createHash, randomBytes } from 'node:crypto'
@@ -61,11 +62,12 @@ export function liveCards(router) {
     const key = message.id
     result.set(key, { key, type: 'question', message, label: message.label })
   }
+  const selfName = router.presentation?.().selfName
   for (const item of router.store.list('clarification')) {
     if (item.status !== 'pending' || item.expiresAt <= Date.now() || (item.routerThreadId && item.routerThreadId !== router.session?.id) ||
         (!item.candidates.length && item.kind !== 'projectRoot')) continue
     const key = 'choice:' + item.id + ':' + item.revision
-    result.set(key, { key, type: item.kind === 'projectRoot' ? 'root' : 'choice', item, label: item.label })
+    result.set(key, { key, type: item.kind === 'projectRoot' ? 'root' : 'choice', item, label: clarificationLabel(item, selfName) })
   }
   return result
 }
@@ -116,7 +118,7 @@ export function renderCard(card, index = 0) {
   return prefix + '\n' + body + '\n发“下一个”可暂缓，发“待办”可回看。另发任务用“任务：…”'
 }
 
-export async function answerCard(router, card, text, values) {
+export async function answerCard(router, card, text, values, origin) {
   if (card.type === 'root') {
     if (text === '取消') {
       await router.confirm({ id: card.item.id, revision: card.item.revision }, true)
@@ -178,7 +180,7 @@ export async function answerCard(router, card, text, values) {
     if (card.type === 'input') {
       router.respond({ dispatchId: card.request.dispatchId, instanceId: card.request.instanceId,
         response: { answers: Object.fromEntries(list.map((question, i) => [question.id, { answers: [answers[i]] }])) } })
-    } else await router.answerQuestion({ id: card.message.id, text: list.map((q,i) => q.question + '\n' + answers[i]).join('\n\n') })
+    } else await router.answerQuestion({ id: card.message.id, text: list.map((q,i) => q.question + '\n' + answers[i]).join('\n\n') }, origin)
     // Only public, predefined options can be included in a receipt. Never copy
     // secret or free-form user input into the automatic Router turn.
     const choices = list.flatMap((question, i) => {
@@ -187,6 +189,7 @@ export async function answerCard(router, card, text, values) {
     }).slice(0, 8)
     return { done: true, receiptEvidence: { choices },
       ...(card.type === 'question' && { interactionMethod: 'worker/question', questionId: card.message.id }),
+      ...(card.type === 'question' && { hint: '回答已排队，可在工作台的任务列表查看交付状态。' }),
       summary: list.some(q => q.isSecret) ? '已提交私密回答' : '已回答：' + answers.join('、') }
   }
 }

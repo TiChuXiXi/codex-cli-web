@@ -31,7 +31,8 @@ export class WeChatProgress {
 
   tool(message, activity) {
     if (!message.origin || !['psm_search','psm_get','list_sessions','get_session'].includes(activity.tool.name)) return
-    this.notify(message,'lookup','我正在查找相关的项目和会话。',message.startedAt+1000*this.settings().stageSeconds,undefined,activity.id)
+    const { selfName = defaultPresentation.selfName, stageSeconds } = this.settings()
+    this.notify(message,'lookup',selfName + '正在查找相关的项目和会话。',message.startedAt+1000*stageSeconds,undefined,activity.id)
   }
 
   worker(event, immediate = false) {
@@ -66,7 +67,7 @@ export class WeChatProgress {
   }
 
   fallback(m) {
-    if (this.active()?.id === m.id) this.notify(m,'processing','我正在处理这条消息。',0)
+    if (this.active()?.id === m.id) this.notify(m,'processing',(this.settings().selfName ?? defaultPresentation.selfName) + '正在处理这条消息。',0)
   }
 
   recordTyping(state, phase, outcome) {

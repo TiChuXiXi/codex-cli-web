@@ -5,7 +5,7 @@ import { checkProject, checkThread, shortText, workerDispatchIssue, workerIdenti
 
 const continuationPrompt = '请继续本会话刚才中断的原任务。先查看已有对话和当前工作区，核对已完成的步骤与未提交的改动，从未完成处继续。保留已有改动，避免重复执行。需要用户确认、审批或补充信息时，使用本会话的原生交互，完成后汇报结果。'
 const turnTerminal = new Set(['completed', 'failed', 'interrupted'])
-const terminal = new Set(['created', ...turnTerminal])
+const terminal = new Set(['created', 'attached', 'cancelled', ...turnTerminal])
 const waiting = new Set(['awaiting_approval', 'awaiting_input'])
 
 export function finalAnswer(items = []) {
@@ -47,7 +47,8 @@ function waitStatus(requests, flags = []) {
   }
   return flags.includes('waitingOnApproval') || requests.length ? 'awaiting_approval' : 'running'
 }
-const verifiedWorkerVersions = new Set(['0.169.1', '0.170.0'])
+const steerWaitMethods = new Map([['waitingOnApproval', 'item/commandExecution/requestApproval'],
+  ['waitingOnUserInput', 'item/tool/requestUserInput']])
 const workerVisibilityGraceMs = 30000
 const taskEvents = {
   queued: 'task.queued', running: 'task.started', completed: 'task.completed',
@@ -56,12 +57,23 @@ const taskEvents = {
 }
 
 export class RouterDispatcher {
-  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, targetIssue }) {
-    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, targetIssue })
+  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, onControlAlert, onStop, onThreadCreated, targetIssue }) {
+    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, onControlAlert, onStop, onThreadCreated, targetIssue })
     this.off = bus.subscribe(event => this.onEvent(event))
     this.retained = new Set()
+    this.lanes = new Map()
+    this.stopping = new Map()
     this.timer = setInterval(() => this.schedule(), 12000)
     this.timer.unref()
+  }
+
+  supportsSteer(worker) {
+    return worker.codexVersion === '0.170.0' || (worker.codexVersion === '0.171.0' &&
+      (worker.kind === 'stdio' || worker.kind === 'daemon'))
+  }
+
+  supportsQueue(worker) {
+    return worker.codexVersion === '0.169.1' || this.supportsSteer(worker)
   }
 
   get(id) {
@@ -91,12 +103,20 @@ export class RouterDispatcher {
       sourceRouterTurnId: intent.sourceRouterTurnId ?? null,
       projectId: intent.projectId, threadId: intent.threadId ?? null, turnId: null,
       instruction: intent.instruction, mode: intent.mode, status: 'queued', createdAt: now, updatedAt: now,
-      ...(intent.sessionSelected && { sessionSelected: true }),
       ...(intent.worker ? {worker:intent.worker} : {}),
       ...(intent.workerAction && { workerAction: intent.workerAction, expectedTurnId: intent.expectedTurnId, approvedSettings: intent.approvedSettings }),
     }
     const event = this.store.transaction(() => {
       this.store.put('dispatch-key', intent.requestId, { id, fingerprint })
+      const source = this.store.get('message', 'user:' + (intent.parentRequestId ?? intent.requestId))
+      const origin = source?.origin ?? intent.origin
+      this.store.patchCommand(id, {
+        state: 'queued', queuedAt: now, admittedAt: source?.admittedAt ?? now,
+        channel: origin ? 'wechat' : 'web', generation: origin?.generation,
+        kind: intent.workerAction ?? intent.mode, allowSteer: intent.mode === 'resume' &&
+          !intent.workerAction && !intent.workerPermission && !intent.workerModel && !intent.workerEffort && !intent.executionMode,
+        questionTurnId: intent.questionTurnId,
+      })
       this.store.put('task', id, task)
       onCommit?.(task)
       return this.recordEvent(task)
@@ -120,10 +140,24 @@ export class RouterDispatcher {
 
   dismissUnknown(id, updatedAt) {
     const task = this.get(id)
+    const stop = this.store.get('stop', id)
+    if (stop?.state === 'unknown' && !stop.reviewedAt && task.updatedAt === updatedAt) {
+      return this.store.transaction(() => {
+        this.store.put('stop', id, { ...stop, reviewedAt: Date.now(), message: '停止结果已经人工核对并关闭。' })
+        // A queued native item may still exist. Never restart it on manual closure.
+        const closed = ['submitted', 'submitting', 'unknown', 'creating'].includes(task.status)
+          ? this.update(id, { status: 'failed', error: '已由用户核对并关闭' }, false,
+            { state: this.store.command(id)?.state ?? 'unknown', closedAt: Date.now() })
+          : task
+        this.schedule()
+        this.publish({ id })
+        return closed
+      })
+    }
     if (task.status !== 'unknown' || task.updatedAt !== updatedAt) {
       throw new HubError('codex-cli/router-stale', '任务状态已经变化，请重新核对')
     }
-    const closed = this.update(id, { status: 'failed', error: '已由用户核对并关闭，未重发任务' })
+    const closed = this.update(id, { status: 'failed', error: '已由用户核对并关闭，未重发任务' }, false, { state: 'unknown', closedAt: Date.now() })
     this.schedule()
     return closed
   }
@@ -139,15 +173,34 @@ export class RouterDispatcher {
     this.bus.publish('router/changed', event)
   }
 
-  update(id, patch, workerTerminal = false) {
+  update(id, patch, workerTerminal = false, delivery) {
     const current = this.get(id)
     if (terminal.has(current.status)) return current
-    if (Object.entries(patch).every(([key, value]) => current[key] === value)) return current
+    if (!delivery && Object.entries(patch).every(([key, value]) => current[key] === value)) return current
     const next = { ...current, ...patch, updatedAt: Date.now() }
     const eligible = workerTerminal && next.routerThreadId === this.routerThreadId() &&
       next.routerThreadId && next.threadId && next.threadId !== next.routerThreadId && next.turnId
     let receiptAdded = false
     const event = this.store.transaction(() => {
+      if (patch.status === 'submitting' && !current.workerAction) {
+        const notes = this.store.list('correction').filter(note => note.threadId === current.threadId && !note.commandId)
+        if (notes.length) next.corrections = [...(current.corrections ?? []),...notes.map(n=>n.id)]
+        for (const note of notes) this.store.put('correction',note.id,{...note,commandId:id})
+      }
+      if (['failed','cancelled'].includes(patch.status) && current.status === 'queued') {
+        for (const noteId of current.corrections ?? []) {
+          const note = this.store.get('correction',noteId)
+          if (note?.commandId === id) this.store.put('correction',noteId,{...note,commandId:null})
+        }
+      }
+      if (delivery || patch.status === 'unknown' || patch.status === 'failed') {
+        const facts = this.store.command(id)
+        if (facts) {
+          const state = patch.status === 'unknown' ? { state: 'unknown', unknownSince: facts.unknownSince ?? Date.now() } :
+            patch.status === 'failed' && !facts.ackAt && facts.state !== 'delivered' ? { state: 'failed' } : {}
+          this.store.patchCommand(id, { ...state, ...delivery })
+        }
+      }
       if (eligible) {
         receiptAdded = this.store.addWorkerReceipt(next)
         if (!receiptAdded) {
@@ -157,7 +210,7 @@ export class RouterDispatcher {
           })
         }
       }
-      if (receiptAdded || (!workerTerminal && next.status === 'failed' && next.routerThreadId === this.routerThreadId())) {
+      if (receiptAdded || (!workerTerminal && !delivery?.closedAt && next.status === 'failed' && next.routerThreadId === this.routerThreadId())) {
         this.onTerminal?.(next, receiptAdded)
         const messageId = 'worker-result:' + id
         const outcome = { completed: 'Worker 回合已结束，未返回最终文本。', interrupted: 'Worker 回合已中断。', failed: next.error || 'Worker 回合失败。' }
@@ -169,6 +222,7 @@ export class RouterDispatcher {
         delete next.finalReply
       }
       delete next.historyRead
+      if (workerTerminal && this.store.unobservedSteer.get(next.turnId)) next.checkSteerHistory = true
       this.store.put('task', id, next)
       return this.recordEvent(next)
     })
@@ -193,7 +247,7 @@ export class RouterDispatcher {
   async inspect(task, reconcile = false) {
     const project = await checkProject(this.project(task.projectId))
     const detail = await this.hub.routerReadWorker(task.threadId, reconcile
-      ? { turnId: task.turnId, clientId: task.id, since: task.createdAt }
+      ? { turnId: task.turnId ?? this.store.command(task.id)?.expectedTurnId, clientId: task.id, since: task.createdAt }
       : undefined)
     await checkThread(project, detail.thread, this.routerThreadId())
     if (detail.thread.id !== task.threadId) throw new HubError('codex-cli/router-thread', 'Worker 会话身份不匹配')
@@ -253,7 +307,7 @@ export class RouterDispatcher {
   }
 
   recordQuestions(task, turnId, items) {
-    for (const item of items.slice(items.findLastIndex(item => item.type === 'userMessage') + 1)) {
+    for (const item of items.slice(items.findLastIndex(item => item.type === 'userMessage' && this.store.command(item.clientId ?? '')?.method !== 'steer') + 1)) {
       if (item.type !== 'agentMessage' || !item.id || !item.questions?.length) continue
       const id = 'worker-question:' + task.id + ':' + item.id
       if (this.store.get('message', id)) continue
@@ -275,7 +329,7 @@ export class RouterDispatcher {
     if (this.closed || this.store.get('message', id)?.status !== 'pending') throw stale()
     const items = turn?.items ?? []
     if (turn?.id !== question.turnId || !['completed', 'inProgress'].includes(turn.status) ||
-        !items.slice(items.findLastIndex(item => item.type === 'userMessage') + 1).some(item => item.id === question.itemId && item.questions?.length)) {
+        !items.slice(items.findLastIndex(item => item.type === 'userMessage' && this.store.command(item.clientId ?? '')?.method !== 'steer') + 1).some(item => item.id === question.itemId && item.questions?.length)) {
       this.store.put('message', id, { ...question, status: 'closed' })
       this.publish({ id: task.id })
       throw stale()
@@ -283,24 +337,16 @@ export class RouterDispatcher {
     return { question, task, turn }
   }
 
-  async answerQuestion({ id, text } = {}) {
+  async answerQuestion({ id, text } = {}, origin) {
     if (typeof text !== 'string' || !text.trim() || text.length > 12000) throw new HubError('codex-cli/bad-request', '回答为空或过长')
     const { question, task, turn } = await this.currentQuestion(id)
     if (this.closed || this.store.get('message', id)?.status !== 'pending') throw new HubError('codex-cli/router-stale', '问题已失效')
-    const save = status => this.store.put('message', id, { ...question, status,
-      ...(status === 'answered' && { receiptEvidence: { choices: publicQuestionChoices(question.questions, text) } }) })
-    if (turn.status === 'inProgress') {
-      // Persist before steering. A lost native acknowledgement must not send the same answer twice.
-      save('unknown')
-      try {
-        await this.hub.steerTurn({ threadId: task.threadId, turnId: question.turnId, text })
-        save('answered')
-      } finally { this.publish({ id: task.id }) }
-    } else {
-      this.enqueue({ projectId: task.projectId, threadId: task.threadId, requestId: id, instruction: text, mode: 'resume' },
-        () => save('answered'))
-    }
-    return { id, answered: true }
+    const command = this.enqueue({ projectId: task.projectId, threadId: task.threadId, requestId: id,
+      instruction: text, mode: 'resume', questionTurnId: turn.id, origin }, value => {
+      this.store.put('message', id, { ...question, status: 'answered', commandId: value.id,
+        receiptEvidence: { choices: publicQuestionChoices(question.questions, text) } })
+    })
+    return { id, answered: true, commandId: command.id, deliveryStatus: 'queued' }
   }
 
   async retain(threadId) {
@@ -314,7 +360,7 @@ export class RouterDispatcher {
   }
 
   async requestRestart(task, tasks) {
-    if (!this.isReady() || this.hub.status().phase !== 'ready' || !verifiedWorkerVersions.has(this.hub.status().codexVersion)) return
+    if (!this.isReady() || this.hub.status().phase !== 'ready' || !this.supportsQueue(this.hub.status())) return
     const { project, detail } = await this.inspect(task)
     const turn = detail.turns.at(-1)
     const fail = error => this.update(task.id, { status: 'failed', error })
@@ -343,28 +389,43 @@ export class RouterDispatcher {
   }
 
   async submit(task) {
+    if (this.get(task.id).status !== 'queued' || this.store.get('stop',task.id)) return
     const worker = this.hub.status()
     if (worker.phase !== 'ready') return
-    if (!verifiedWorkerVersions.has(worker.codexVersion)) {
+    if (!this.supportsQueue(worker)) {
       this.update(task.id, { error: 'Worker App Server 版本尚未通过 Router 队列验收' })
       return
     }
     try {
       let threadId = task.threadId
       if (!threadId) {
-        this.update(task.id, { status: 'creating' })
+        this.update(task.id, { status: 'creating' }, false, { state: 'delivering', method: 'create', attemptedAt: Date.now() })
         const thread = await this.createWorker(this.project(task.projectId), undefined, task.worker?.permission)
         threadId = thread.id
-        task = this.update(task.id, { threadId, status: 'queued' })
+        task = this.update(task.id, { threadId, status: 'queued' }, false, { state: 'queued' })
         this.store.put('binding', 'last', { projectId: task.projectId, threadId, at: Date.now() })
+        this.onThreadCreated?.(task)
+        if (this.followups?.withWorkerDelivery) return this.followups.withWorkerDelivery(threadId, () => this.submit(task))
       }
       if (!this.isReady() || this.closed) return
       const { project, detail } = await this.inspect(task)
-      if (detail.thread.status?.type === 'active' || detail.turns.some(turn => turn.status === 'inProgress') ||
-          this.followups?.list(threadId).entries.length) {
+      const active = detail.turns.findLast(turn => turn.status === 'inProgress')
+      const questionTurnId = this.store.command(task.id)?.questionTurnId
+      if (questionTurnId && detail.turns.at(-1)?.id !== questionTurnId) {
+        return this.update(task.id, { status: 'failed', error: '问题所属回合已改变，请核对原回答' })
+      }
+      if (detail.thread.status?.type === 'active' || active || this.followups?.list(threadId).entries.length) {
+        if (active && !this.followups?.list(threadId).entries.length) {
+          await this.trySteer(task, project, detail, active)
+        }
         if (task.workerAction === 'settings') await this.retain(threadId)
+        if (this.get(task.id).status === 'queued' && this.store.command(task.id)?.state !== 'deferred') {
+          this.update(task.id, {}, false, { state: 'deferred' })
+        }
         return
       }
+      if (this.list(-1).some(other => other.id !== task.id && other.threadId === threadId &&
+          other.turnId && !terminal.has(other.status))) return
       if (task.workerAction === 'restart' && !restartedTurnMatches(task, detail)) {
         this.update(task.id, { status: 'failed', error: '原回合未按本次请求中断，未发送续执行消息' })
         return
@@ -379,9 +440,10 @@ export class RouterDispatcher {
         return
       }
       await checkProject(project)
-      if (!this.isReady() || this.closed) return
+      if (!this.isReady() || this.closed || this.get(task.id).status !== 'queued' || this.store.get('stop',task.id)) return
       if (task.workerAction === 'settings') {
-        this.update(task.id, { status: 'completed', error: null, summary: 'Worker 会话设置已更新' })
+        this.update(task.id, { status: 'completed', error: null, summary: 'Worker 会话设置已更新' }, false,
+          { state: 'delivered', method: 'settings', settingsVerifiedAt: Date.now() })
         return
       }
       if (task.workerAction === 'restart') {
@@ -392,24 +454,19 @@ export class RouterDispatcher {
           return
         }
       }
-      this.update(task.id, { status: 'submitting', error: null, threadName: shortText(detail.thread.name, 120) })
-      const text = task.mode === 'new'
-        ? '你就是用户指定的 Worker。原文中的新建、选择会话和派发步骤已由 Router 完成。请在当前会话亲自执行业务任务，向用户提问和申请审批均使用当前会话的原生工具。\n\n用户原文：\n' + task.instruction
-        : task.workerAction === 'restart' ? continuationPrompt : task.instruction
-      let selectionContext
-      if (task.mode === 'resume' && !task.workerAction && !task.requestId?.startsWith('worker-question:')) {
-        const target = [project.name, detail.thread.name].filter(Boolean).join(' · ')
-        selectionContext = (task.sessionSelected ? '用户已选定当前项目和会话。' : '') +
-          'Router 已将任务交付当前 Worker（' + target + '）。只执行用户原文中属于本项目的业务步骤。' +
-          '会话续接和其他项目的派工由工作台处理。需要用户批准命令时，用当前会话的原生命令审批，等待用户决定。\n\n用户原文：\n'
-      }
-      const queued = await this.hub.routerAddWorkerMessage(threadId, task.id, text, selectionContext)
+      if (this.get(task.id).status !== 'queued' || this.store.get('stop',task.id)) return
+      task = this.update(task.id, { status: 'submitting', error: null, threadName: shortText(detail.thread.name, 120) }, false,
+        { state: 'delivering', method: 'queue', ownerId: undefined, expectedTurnId: undefined, attemptedAt: Date.now() })
+      const text = task.workerAction === 'restart' ? continuationPrompt : task.instruction
+      const correction = task.corrections?.length ? this.correctionText(task) : undefined
+      const queued = await this.hub.routerAddWorkerMessage(threadId, task.id, text, correction)
       if (!queued?.id || queued.clientUserMessageId !== task.id) throw new Error('缺少原生队列确认')
       const current = this.get(task.id)
       this.update(task.id, {
         queueId: queued.id,
         ...(current.status === 'submitting' ? { status: 'submitted' } : {}),
-      })
+      }, false, { state: 'delivered', ackAt: Date.now(), queueId: queued.id })
+      if (terminal.has(current.status)) this.store.patchCommand(task.id, { state: 'delivered', ackAt: Date.now(), queueId: queued.id })
     } catch (error) {
       const current = this.get(task.id)
       if (error.code === 'codex-cli/router-worker-settings') {
@@ -422,6 +479,48 @@ export class RouterDispatcher {
     }
   }
 
+  async trySteer(task, project, detail, turn) {
+    const facts = this.store.command(task.id)
+    if (!facts?.allowSteer || facts.waitForIdle || !this.supportsSteer(this.hub.status())) return
+    const pending = this.pendingFor(task.threadId, turn.id)
+    const flags = detail.thread.status?.activeFlags ?? []
+    if (pending.some(request => request.params.threadId !== task.threadId ||
+        ![...steerWaitMethods.values()].includes(request.method)) ||
+        flags.some(flag => !pending.some(request => request.method === steerWaitMethods.get(flag)))) return
+    const invalid = await this.targetIssue?.(project, task.threadId) ||
+      this.settingsIssue(task, project, await this.hub.routerWorkerSettings(task.threadId))
+    if (invalid) return this.update(task.id, { status: 'failed', error: invalid })
+    const owner = this.list(-1).find(row => row.threadId === task.threadId && row.turnId === turn.id &&
+      !terminal.has(row.status))
+    if (spawnedWorkers(turn.items ?? [], task.threadId).length || owner?.children?.length || await this.hub.routerQueueHead(task.threadId)) return
+    if (facts.expectedTurnId && facts.expectedTurnId !== turn.id) return
+    await this.retain(task.threadId)
+    await checkProject(project)
+    if (!this.isReady() || this.closed || this.get(task.id).status !== 'queued' || this.store.get('stop',task.id)) return
+    task = this.update(task.id, { status: 'submitting', error: null, threadName: shortText(detail.thread.name, 120) }, false, {
+      method: 'steer', state: 'delivering', expectedTurnId: turn.id, ownerId: owner?.id, attemptedAt: Date.now(),
+    })
+    let result
+    try {
+      result = await this.hub.steerTurn({ threadId: task.threadId, turnId: turn.id,
+        clientUserMessageId: task.id, text: task.instruction, ...(task.corrections?.length && { selectionContext:this.correctionText(task) }) })
+    } catch (error) {
+      if (error.code !== -32600 || !/no active turn to steer/i.test(error.message)) throw error
+      this.update(task.id, { status: 'queued' }, false, { state: 'deferred', waitForIdle: true })
+      this.schedule()
+      return
+    }
+    if (result?.turnId !== turn.id) throw new Error('缺少对应回合的 Steer 确认')
+    this.acceptSteer(task, turn.id, { ackAt: Date.now() })
+    this.schedule()
+  }
+
+  acceptSteer(task, turnId, evidence) {
+    const facts = this.store.command(task.id)
+    const status = facts.ownerId ? 'attached' : 'running'
+    this.update(task.id, { status, turnId, error: null }, false, { state: 'delivered', ...evidence })
+  }
+
   async reconcile(task) {
     if (!task.threadId) {
       if (task.status === 'creating') this.update(task.id, { status: 'unknown', error: '会话创建结果待核对' })
@@ -429,14 +528,27 @@ export class RouterDispatcher {
     }
     if (this.hub.status().phase !== 'ready') return
     const { project, detail } = await this.inspect(task, true)
+    const facts = this.store.command(task.id)
+    if (this.get(task.id).status !== task.status || this.closed) return
+    if (facts?.method === 'steer' && !task.turnId) {
+      const turn = detail.turns.find(turn => turn.id === facts.expectedTurnId)
+      if (turn?.items?.filter(i => i.type === 'userMessage' && i.clientId === task.id).length === 1) {
+        this.acceptSteer(task, turn.id, { historyAt: Date.now() })
+        if (!facts.ownerId) this.applyTurn(this.get(task.id), turn)
+      } else if (task.status !== 'unknown') {
+        this.update(task.id, { status: 'unknown', error: '正在核对插话的接收情况' })
+      }
+      return
+    }
     const hits = detail.turns.filter(turn => turn.id === task.turnId ||
       turn.items?.some(item => item.type === 'userMessage' && item.clientId === task.id))
-    if (hits.length > 1) {
-      this.update(task.id, { status: 'unknown', error: '多个 Worker 回合与派发记录冲突，需核对' })
+    if (hits.length > 1 || hits.some(t => t.items?.filter(i => i.type === 'userMessage' && i.clientId === task.id).length > 1)) {
+      this.update(task.id, { status: 'unknown', error: 'Worker 历史中的派发身份不唯一，需核对' })
       return
     }
     if (hits.length === 1) {
       const turn = hits[0]
+      this.observeHistory(task.threadId, turn)
       if (turn.status === 'inProgress') {
         await this.retain(task.threadId)
         const children = spawnedWorkers(turn.items, task.threadId)
@@ -454,7 +566,8 @@ export class RouterDispatcher {
     if (terminal.has(current.status) || current.turnId !== task.turnId || current.status !== task.status) return
     if (queued) {
       this.update(task.id, { status: 'submitted', queueId: queued.id,
-        ...(current.status === 'submitted' ? {} : { error: null }) })
+        ...(current.status === 'submitted' ? {} : { error: null }) }, false,
+        facts?.state === 'delivered' ? undefined : { state: 'delivered', queueObservedAt: Date.now() })
       await this.retain(task.threadId)
       if (detail.thread.status?.type === 'active' || detail.turns.some(turn => turn.status === 'inProgress') ||
           this.followups?.list(task.threadId).entries.length || !this.isReady() || this.closed) return
@@ -463,19 +576,20 @@ export class RouterDispatcher {
         this.update(task.id, { error: '续执行消息仍在原生队列，原回合状态已变化，请检查队列' })
         return
       }
-      const issue = await this.prepareWorker(task, project)
+      const issue = await this.targetIssue?.(project, task.threadId) || await this.prepareWorker(task, project)
       if (issue) {
         this.update(task.id, { error: issue })
         return
       }
-      if (this.isReady() && !this.closed) {
-        try {
-          const turn = await this.hub.routerStartWorkerMessage(task.threadId, queued.id)
-          if (turn?.id) this.applyTurn(this.get(task.id), turn)
-        } catch {
-          // 冲突或丢失回包后继续按相同队列 ID 和历史对账。
-        }
+      const start = async () => {
+        if (!this.isReady() || this.closed || this.store.get('stop',task.id) || this.get(task.id).status !== 'submitted') return
+        const turn = await this.hub.routerStartWorkerMessage(task.threadId, queued.id)
+        if (turn?.id) this.applyTurn(this.get(task.id), turn)
       }
+      try {
+        if (this.followups?.withWorkerDelivery) await this.followups.withWorkerDelivery(task.threadId, start)
+        else await start()
+      } catch { /* Reconcile the same native queue ID after conflicts or a lost response. */ }
     } else if (task.status !== 'unknown' && Date.now() - current.updatedAt >= workerVisibilityGraceMs) {
       // Native queue ownership can transfer before the corresponding turn is readable.
       this.update(task.id, { status: 'unknown', error: '暂时无法从队列或历史确认任务状态' })
@@ -515,6 +629,18 @@ export class RouterDispatcher {
     } catch (error) { return '无法应用 Worker 执行设置：' + error.message }
   }
 
+  observeHistory(threadId, turn) {
+    for (const item of turn.items ?? []) {
+      if (item.type !== 'userMessage' || !item.clientId) continue
+      const facts = this.store.command(item.clientId)
+      if (!facts || facts.historyAt || facts.closedAt || this.get(item.clientId).threadId !== threadId ||
+          (facts.method === 'steer' && facts.expectedTurnId !== turn.id)) continue
+      if (turn.items.filter(i => i.type === 'userMessage' && i.clientId === item.clientId).length === 1) {
+        this.store.patchCommand(item.clientId, { historyAt: Date.now(), state: 'delivered' })
+      }
+    }
+  }
+
   applyTurn(task, turn, runningStatus) {
     const current = this.get(task.id)
     if (!turn.id || (current.turnId && current.turnId !== turn.id)) return
@@ -547,7 +673,8 @@ export class RouterDispatcher {
             {instanceId,...submitted}].slice(-16)})
         }
       }
-      if (event.type === 'item/upsert' && event.payload?.item?.type === 'userMessage') {
+      if (event.type === 'item/upsert' && event.payload?.item?.type === 'userMessage' &&
+          this.store.command(event.payload.item.clientId ?? '')?.method !== 'steer') {
         for (const message of this.store.list('message', 80)) {
           if (message.questions && message.threadId === event.threadId && message.dispatchId !== event.payload.item.clientId &&
               ['unknown', 'pending'].includes(message.status)) {
@@ -562,9 +689,9 @@ export class RouterDispatcher {
         if (['thread/archived', 'thread/deleted'].includes(event.type) && task.status === 'queued') {
           this.update(task.id, { status: 'failed', error: 'Worker 会话已归档或删除' })
         } else if (event.type === 'item/upsert' && item?.type === 'userMessage' && item.clientId === task.id &&
-                   event.turnId && !task.turnId && !['queued', 'creating'].includes(task.status)) {
+                   event.turnId && !task.turnId && this.store.command(task.id)?.method !== 'steer' && !['queued', 'creating'].includes(task.status)) {
           const status = waitStatus(this.pendingFor(task.threadId, event.turnId))
-          this.update(task.id, { turnId: event.turnId, status })
+          this.update(task.id, { turnId: event.turnId, status }, false, { state: 'delivered', observedAt: Date.now() })
           this.schedule()
         } else if (task.turnId && task.turnId === event.turnId) {
           if (event.type === 'item/upsert' && item) {
@@ -594,37 +721,60 @@ export class RouterDispatcher {
 
   schedule() {
     if (this.closed || this.scheduled) return
-    if (this.sweeping) {
-      this.rescan = true
-      return
-    }
     this.scheduled = setTimeout(() => {
       this.scheduled = null
-      if (this.closed) return
       this.sweep().catch(() => {})
     }, 40)
     this.scheduled.unref()
   }
 
-  sweep() {
-    if (this.closed) return Promise.resolve()
-    if (this.sweeping) return this.sweeping.then(() => this.sweep())
-    this.sweeping = this.sweepTasks().finally(() => {
-      this.sweeping = null
-      if (this.rescan) {
-        this.rescan = false
-        this.schedule()
+  async sweep() {
+    if (this.closed) return
+    const stops = this.store.list('stop').filter(row => !row.finishedAt)
+    for (const row of stops) this.driveStop(row.id).catch(() => {})
+    const groups = new Map()
+    for (const task of this.list(-1).reverse()) {
+      if (terminal.has(task.status) && !task.needsFinalReply && !task.checkSteerHistory) continue
+      if (task.status === 'unknown') {
+        const facts = this.store.command(task.id)
+        if (facts?.unknownSince && Date.now() - facts.unknownSince >= 120000 && !facts.alertAt) this.alertUnknown(task, facts)
       }
-    })
-    return this.sweeping
+      const key = task.threadId ?? task.projectId
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(task)
+    }
+    const work = []
+    for (const [key, tasks] of groups) {
+      // A newly created Thread can change keys while its creating lane still owns the command.
+      const existing = this.lanes.get(key) ?? [...this.lanes.values()].find(lane => tasks.some(t => lane.ids.has(t.id)))
+      if (existing) {
+        existing.dirty = true
+        work.push(existing.promise)
+        continue
+      }
+      const lane = { ids: new Set(tasks.map(task => task.id)), dirty: false }
+      this.lanes.set(key, lane)
+      lane.promise = this.sweepWorker(tasks).finally(() => {
+        this.lanes.delete(key)
+        if (lane.dirty) this.schedule()
+      })
+      work.push(lane.promise)
+    }
+    await Promise.all(work)
+    if (this.closed) return
+    const retained = new Set(this.list(-1).filter(t => !terminal.has(t.status))
+      .flatMap(t => [t.threadId, ...(t.children ?? []).map(c => c.id)]))
+    for (const id of this.retained) {
+      if (retained.has(id)) continue
+      this.retained.delete(id)
+      await this.hub.closeThread(id, { routerWorker: true }).catch(() => {})
+    }
   }
 
-  async sweepTasks() {
-    const blocked = new Set()
-    const related = new Set()
-    const tasks = this.list(-1).reverse()
+  async sweepWorker(tasks) {
+    const serialized = (task, action) => task.threadId && this.followups?.withWorkerDelivery
+      ? this.followups.withWorkerDelivery(task.threadId, action) : action()
     for (const task of tasks) {
-      if (this.closed) return
       if (task.status === 'queued' && task.workerAction === 'restart') {
         try { await this.requestRestart(task, tasks) } catch (error) {
           if (['codex-cli/router-thread', 'codex-cli/router-project'].includes(error.code)) {
@@ -633,39 +783,67 @@ export class RouterDispatcher {
         }
       }
     }
-    for (const saved of tasks) {
-      if (this.closed) break
-      const task = saved.workerAction === 'restart' ? this.get(saved.id) : saved
+    for (const row of tasks) {
+      if (this.closed) return
+      let task = this.get(row.id)
       if (terminal.has(task.status)) {
-        if (task.needsFinalReply && this.hub.status().phase === 'ready') {
-          try { await this.recoverFinalReply(task) } catch { /* Retry from Worker history on the next sweep. */ }
+        if ((task.needsFinalReply || task.checkSteerHistory) && this.hub.status().phase === 'ready') {
+          try { await this.recoverFinalReply(task) } catch { /* Later history scan. */ }
         }
         continue
       }
-      if (task.threadId) related.add(task.threadId)
-      const key = task.threadId ?? task.projectId
-      if (blocked.has(key)) continue
-      blocked.add(key)
       if (task.status === 'queued') {
-        if (this.isReady()) await this.submit(task)
-        const latest = this.get(task.id)
-        if (latest.threadId && !terminal.has(latest.status)) related.add(latest.threadId)
+        if (this.store.list('stop').some(stop => stop.threadId && stop.threadId === task.threadId && (!stop.finishedAt || (stop.state === 'unknown' && !stop.reviewedAt)))) break
+        if (this.isReady()) await serialized(task, () => this.submit(task))
+      } else if (['unknown','creating','submitting'].includes(task.status)) {
+        await this.checkUncertain(task)
       } else {
-        try { await this.reconcile(task) } catch {}
+        try { await this.reconcile(task) } catch { /* Later history scan. */ }
       }
-      for (const child of this.get(task.id).children ?? []) related.add(child.id)
+      task = this.get(task.id)
+      if (!terminal.has(task.status) && !['running','awaiting_input','awaiting_approval'].includes(task.status)) break
     }
-    for (const threadId of this.retained) {
-      if (related.has(threadId)) continue
-      this.retained.delete(threadId)
-      await this.hub.closeThread(threadId, { routerWorker: true }).catch(() => {})
+  }
+
+  async checkUncertain(task) {
+    if (task.status !== 'unknown') task = this.update(task.id, { status: 'unknown', error: '正在核对未确认的 Worker 请求' })
+    const facts = this.store.command(task.id)
+    if (!facts || facts.alertAt) return
+    const now = Date.now()
+    if ((facts.checks ?? 0) < 5 && now - (facts.unknownSince ?? now) < 120000) {
+      if (facts.lastCheckAt && now - facts.lastCheckAt < 12000) return
+      this.store.patchCommand(task.id, { checks: (facts.checks ?? 0) + 1, lastCheckAt: now, unknownSince: facts.unknownSince ?? now })
+      try { await this.reconcile(task) } catch { /* An unreadable history is inconclusive. */ }
+      if (this.get(task.id).status !== 'unknown' || (facts.checks ?? 0) + 1 < 5) return
     }
+    this.alertUnknown(task, this.store.command(task.id))
+  }
+
+  alertUnknown(task, facts) {
+    if (facts.alertAt || this.get(task.id).status !== 'unknown') return
+    const message = this.workerLabel(task) + ' 的指令 #' + (facts.seq ?? task.id) + ' 交付仍待核对。后续普通指令已暂停，请在 Router 任务中核对并关闭此记录。'
+    this.store.transaction(() => {
+      this.store.patchCommand(task.id, { alertAt: Date.now() })
+      this.store.put('message', 'control-alert:' + task.id, { id: 'control-alert:' + task.id,
+        routerThreadId: task.routerThreadId, dispatchId: task.id, role: 'assistant', text: message, status: 'completed' })
+      this.onControlAlert?.(task, message)
+      this.store.event({ type: 'command.review_required', id: task.id, at: Date.now() })
+    })
+    this.publish({ id: task.id })
   }
 
   async recoverFinalReply(task) {
     const { detail } = await this.inspect(task, true)
-    const turn = detail.turns.find(entry => entry.id === task.turnId && entry.status === 'completed')
+    const turn = detail.turns.find(entry => entry.id === task.turnId && turnTerminal.has(entry.status))
     if (!turn || this.closed || !Array.isArray(turn.items)) return
+    this.observeHistory(task.threadId, turn)
+    task = this.get(task.id)
+    delete task.checkSteerHistory
+    if (!task.needsFinalReply) {
+      this.store.put('task', task.id, task)
+      this.publish({ id: task.id })
+      return
+    }
     this.recordQuestions(task, turn.id, turn.items)
     const text = finalAnswer(turn.items)?.text
     const id = 'worker-result:' + task.id
@@ -679,6 +857,95 @@ export class RouterDispatcher {
       this.store.put('task', task.id, task)
     })
     if (text) this.publish({ id: task.id })
+  }
+
+  correctionText(task) {
+    return '用户已纠正以下误派指令，请停止沿用这些要求，以本次原文为准：' +
+      task.corrections.map(id => '#' + this.store.command(id).seq + ' ' + shortText(this.get(id).instruction,160)).join('；')
+  }
+
+  stopCommand({ id, turnId, correction, origin }) {
+    const task = this.get(id)
+    const previous = this.store.get('stop',id)
+    if (!previous) {
+      this.store.transaction(() => {
+        this.store.put('stop',id,{ id,threadId:task.threadId,turnId,origin,correction:!!correction,state:'pending',createdAt:Date.now() })
+        if (task.status === 'queued') {
+          this.update(id,{status:'cancelled',summary:'已取消，未提交 Worker。'},false,{state:'cancelled'})
+          this.finishStop(id,'cancelled','已取消，未提交 Worker。')
+        }
+      })
+    }
+    return this.driveStop(id)
+  }
+
+  finishStop(id, state, message, finished = true) {
+    const old = this.store.get('stop',id)
+    if (old.finishedAt || (state === old.state && !finished)) return old
+    const stop = { ...old,state,message,...(finished && { finishedAt:Date.now() }) }
+    this.store.transaction(() => {
+      this.store.put('stop',id,stop)
+      const task = this.get(id)
+      if (stop.correction && stop.threadId && finished && !['cancelled','withdrawn'].includes(state))
+        this.store.put('correction',id,{id,threadId:stop.threadId})
+      const mid = 'stop:'+id+':'+state
+      this.store.put('message',mid,{id:mid,dispatchId:id,routerThreadId:task.routerThreadId,role:'assistant',status:'completed',text:message})
+      this.onStop?.(stop,task)
+      this.store.event({type:'control.'+state,id,at:Date.now()})
+    })
+    this.publish({id})
+    return stop
+  }
+
+  driveStop(id) {
+    if (this.stopping.has(id)) return this.stopping.get(id)
+    const pending = this.checkStop(id).catch(() => {
+      const stop = this.store.get('stop',id)
+      return Date.now()-stop.createdAt >= 120000 ? this.finishStop(id,'unknown','停止结果待核对，请打开原 Worker 查看。') : stop
+    }).finally(() => this.stopping.delete(id))
+    this.stopping.set(id,pending)
+    return pending
+  }
+
+  async checkStop(id) {
+    const stop = this.store.get('stop',id)
+    if (stop.finishedAt) return stop
+    const task = this.get(id)
+    const facts = this.store.command(id)
+    if (task.status === 'queued') {
+      this.update(id,{status:'cancelled',summary:'已取消，未提交 Worker。'},false,{state:'cancelled'})
+      return this.finishStop(id,'cancelled','已取消，未提交 Worker。')
+    }
+    if (!task.threadId || this.hub.status().phase !== 'ready') throw new Error('Worker 暂不可用')
+    const {project,detail} = await this.inspect(task,true)
+    const issue = await this.targetIssue?.(project,task.threadId) || this.settingsIssue(task,project,await this.hub.routerWorkerSettings(task.threadId))
+    if (issue) return this.finishStop(id,'unknown',issue+'。请核对停止结果。')
+    const turnId = stop.turnId ?? task.turnId
+    const turn = detail.turns.find(t => turnId ? t.id === turnId : t.items?.some(i => i.type === 'userMessage' && i.clientId === id))
+    if (turnTerminal.has(turn?.status)) {
+      const result = shortText(finalAnswer(turn.items)?.text,320)
+      return this.finishStop(id,turn.status,turn.status === 'interrupted' ? '原 Worker 回合已中断。' :
+        '原 Worker 回合已经结束。'+(result || '请查看原会话核对结果及已产生的改动。'))
+    }
+    if (turn?.status === 'inProgress' && !['requested','interrupting'].includes(stop.state)) {
+      this.store.put('stop',id,{...stop,state:'interrupting',threadId:task.threadId,turnId:turn.id})
+      await this.hub.interruptTurn({threadId:task.threadId,turnId:turn.id})
+      this.finishStop(id,'requested','已向原 Worker 请求中断，正在等待回合终态。',false)
+      this.schedule()
+      return this.store.get('stop',id)
+    }
+    if (!turn && facts?.method === 'queue' && stop.state === 'pending') {
+      const queued = await this.hub.routerFindWorkerMessage(task.threadId,id)
+      if (queued && queued.clientUserMessageId === id) {
+        this.store.put('stop',id,{...stop,state:'withdrawing',threadId:task.threadId})
+        if (await this.hub.routerDeleteWorkerMessage(task.threadId,queued.id)) {
+          this.update(id,{status:'cancelled',summary:'已从 Worker 原生队列撤回。'})
+          return this.finishStop(id,'withdrawn','已从 Worker 原生队列撤回。')
+        }
+      }
+    }
+    if (Date.now()-stop.createdAt >= 120000) return this.finishStop(id,'unknown','停止结果待核对，请打开原 Worker 查看。')
+    return this.store.get('stop',id)
   }
 
   async interrupt(id, expectedTurnId) {
@@ -699,7 +966,7 @@ export class RouterDispatcher {
     this.off()
     clearInterval(this.timer)
     clearTimeout(this.scheduled)
-    await this.sweeping
+    await Promise.allSettled([...this.stopping.values(), ...[...this.lanes.values()].map(lane => lane.promise)])
     await Promise.allSettled([...this.retained].map(threadId => this.hub.closeThread(threadId, { routerWorker: true })))
   }
 }

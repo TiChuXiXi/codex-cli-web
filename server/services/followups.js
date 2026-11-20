@@ -52,6 +52,12 @@ export class FollowupQueue {
     return next
   }
 
+  withWorkerDelivery(threadId, action) {
+    return this.#locked(threadId, () => {
+      if (!this.#states.get(threadId)?.entries.length) return action()
+    })
+  }
+
   async #sync(state) {
     if (!state.retained) {
       await this.hub.openThread(state.threadId)

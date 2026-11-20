@@ -9,6 +9,7 @@ export class RouterSessionUpgrade {
     const r = this.router,
       s = r.store
     if (
+      s.list('stop').some(row => !row.finishedAt) ||
       r.active ||
       r.nativeBusy ||
       r.confirming.size ||
@@ -22,7 +23,7 @@ export class RouterSessionUpgrade {
     const exists = (kind, condition) =>
       Boolean(s.db.prepare('SELECT 1 FROM router_records WHERE kind=? AND ' + condition + ' LIMIT 1').get(kind))
     if (
-      exists('task', "json_extract(value,'$.status') NOT IN ('created','completed','failed','interrupted')") ||
+      exists('task', "json_extract(value,'$.status') NOT IN ('created','completed','failed','interrupted','attached','cancelled')") ||
       exists('message', "json_extract(value,'$.status') IN ('queued','sending','accepted','unknown','pending')") ||
       s.db.prepare("SELECT 1 FROM router_receipts WHERE state IN ('pending','claimed','unknown') LIMIT 1").get() ||
       s.wakeRecovery(r.session.id).length ||

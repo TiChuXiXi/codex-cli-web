@@ -1,3 +1,4 @@
+import { routerControl } from '../../router/matching.js'
 import { approvalDetails } from '../../../shared/approval-details.js'
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -309,6 +310,7 @@ export class WeChatChannel {
         const shown = head?.shown ? [{ id: head.id, index: head.index ?? 0, presentation: head.presentation ?? 0 }] : []
         this.store.wxSave('in', { id, state: external && text.length <= 12000 ? 'pending' : 'unknown',
           body: external && text.length <= 12000 ? this.seal(text) : null, context, shown,
+          ...(external && text.length <= 12000 && this.router.captureRouting && {routing:this.router.captureRouting(text.replace(/^任务[：:]\s*/,''),{generation:account.generation},'wx-'+id)}),
           ...(Number.isSafeInteger(msg.create_time_ms) && msg.create_time_ms > 0 && { sentByUserAt: msg.create_time_ms }),
           ...(open.length && queue?.menu && { menu: queue.after }),
           privatePending:open.some(card => card.privateInput), relatedTasks: account.relatedTasks })
@@ -494,7 +496,7 @@ export class WeChatChannel {
         return
       }
       const content = answer || (message.status === 'completed' ? null : '这轮处理没有完成。')
-      if (content) this.delivery.enqueue('reply:' + (message.origin.continuedFrom ? message.requestId : inbox), content.length > 3500 ? content.slice(0,3450) + '\n（完整答复已保存在 Web Router）' : content, { inbox })
+      if (content) this.delivery.enqueue('reply:' + (message.origin.continuedFrom ? message.requestId : inbox), content.length > 3500 ? content.slice(0,3450) + '\n（完整答复可在工作台对话中查看）' : content, { inbox })
     }
   }
 
@@ -527,7 +529,7 @@ export class WeChatChannel {
     }
     let card
     let choice
-    if (!task) {
+    if (!task && !routerControl(text)) {
       const view = /^查看\s*(.+)$/u.exec(text)
       if (row.menu && row.menu !== queue?.after && !view && !explicit && text !== '待办') {
         return finish('刚才的待办列表已切换。发“待办”查看当前项目。')
@@ -584,12 +586,12 @@ export class WeChatChannel {
         }
         if (ambiguousChoice(entry, text)) return finish('有多个候选符合。请回复编号。')
         if (explicit || matchesShortAnswer(entry, text, head.index ?? 0) ||
-            isQuestion && (addressedAnswer || !q?.options?.length || q.isSecret)) card = head
+            isQuestion && (addressedAnswer || ((!q?.options?.length || q.isSecret) && row.routing?.mode !== 'task'))) card = head
         else if (entry.type === 'choice' && entry.item.semanticChoice && !head.values &&
             (addressedAnswer || /(?:那个|那项|那个会话|之前的|的那个|的那项)[。！]?$|^(?:我指的|我说的|选择|选一下)/.test(text))) {
           choice = { id: entry.item.id, revision: entry.item.revision }
         } else if (isQuestion || /^(?:确定|可以|继续|允许|同意|拒绝|取消|是|否|好|确认|\d+)$/.test(text)) {
-          return finish('请按当前题目给出的选项回答。发“待办”可重看题目，发“下一个”可暂缓。')
+          return finish('请用“回答：…”答题，或用“任务：…”另发业务补充。发“待办”可重看题目。')
         }
       } else if (row.privatePending || open.some(c => c.privateInput) || explicit || addressedAnswer ||
           /^(?:允许|批准|同意|拒绝|不同意|确定|确认授权|确认设置|都不是|第[一二三四1-4][个项]?|取消|\d+)$/.test(text)) {
@@ -602,7 +604,7 @@ export class WeChatChannel {
         // An explicitly new input after an empty queue starts a fresh conversation.
         // Replies captured against the retired card were rejected above.
         if (paused && !open.length && !row.shown.length) this.store.wxSave('queue', { id:'active', state:'ready' })
-        this.router.admit({ requestId: 'wx-' + row.id, text: task?.[1] || text }, { generation, inbox: row.id, relatedTasks: row.relatedTasks, ...(choice && { choice }) })
+        this.router.admit({ requestId: 'wx-' + row.id, text: task?.[1] || text }, { generation, inbox: row.id, relatedTasks: row.relatedTasks, ...(task && { newTask: true }), ...(choice && { choice }) }, row.routing)
         this.store.wxSave('in', { ...row, state: 'done', body: null })
       })
       this.router.kickInputs()
@@ -615,7 +617,7 @@ export class WeChatChannel {
     let response
     try {
       this.answering = card.id
-      response = await answerCard(this.router, live.get(card.key), value, card.values ? this.unseal(card.values) : [])
+      response = await answerCard(this.router, live.get(card.key), value, card.values ? this.unseal(card.values) : [], { generation, inbox: row.id })
     } catch (error) {
       if (signal.aborted || !this.owns(generation)) return
       return finish(error.code === 'codex-cli/router-stale' ? '这项请求已处理或失效。' : '响应结果待核对，请查看工作台。', 'unknown')

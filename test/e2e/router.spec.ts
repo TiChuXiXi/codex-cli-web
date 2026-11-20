@@ -99,7 +99,7 @@ test('Router restores a choice and handles the selected Worker approval in chat'
       workerFinished = true
     }
     if (request.method === 'router/read') value = {
-      enabled: true, phase: 'ready', error: null, model: null, busy: false, messages, latestEventId: accepted ? 1 : 0,
+      enabled: true, phase: 'ready', error: null, model: null, busy: false, displayName: '南桥', messages, latestEventId: accepted ? 1 : 0,
       clarifications: pending ? [{ id: 'clarify-1', revision: 1, kind: 'session', label: '选择目标会话', candidates: [
         { id: 'another-thread', name: '之前的改动', project: '验收项目' },
         { id: 'fixture-thread', name: '验收会话', project: '验收项目', reasons: ['近期活动'] },
@@ -117,7 +117,7 @@ test('Router restores a choice and handles the selected Worker approval in chat'
   await page.getByLabel('访问凭证', { exact: true }).fill('fixture-access-token-only-for-tests')
   await page.getByRole('button', { name: '登录工作台' }).click()
   await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
-  await page.getByRole('textbox', { name: '给 Router 发送消息' }).fill('继续之前的修改')
+  await page.getByRole('textbox', { name: '给南桥发送消息' }).fill('继续之前的修改')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(page.getByText('继续之前的修改', { exact: true })).toBeVisible()
   if (process.env.VISUAL === '1') await page.screenshot({ path: info.outputPath('router-desktop-light.png'), animations: 'disabled' })
@@ -141,7 +141,7 @@ test('Router restores a choice and handles the selected Worker approval in chat'
   await expect(choice).toHaveCount(0)
   await page.getByRole('button', { name: '任务 · 有更新', exact: true }).click()
   await expect(page.getByText('等待你的审批', { exact: false })).toBeVisible()
-  await page.getByRole('button', { name: '在 Router 中处理' }).click()
+  await page.getByRole('button', { name: '在对话中处理' }).click()
   const card = page.getByRole('region', { name: '验收项目 · 验收会话' })
   await expect(card.getByText('touch approved.txt')).toBeVisible()
   await card.getByRole('button', { name: '允许', exact: true }).click()
@@ -149,7 +149,7 @@ test('Router restores a choice and handles the selected Worker approval in chat'
   await page.reload()
   await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
   await page.getByRole('button', { name: '任务', exact: true }).click()
-  await expect(page.getByText('Router 回执待核对', { exact: true })).toBeVisible()
+  await expect(page.getByText('任务回执待核对', { exact: true })).toBeVisible()
   await expect(page.getByText('Worker 回合已结束', { exact: false })).toBeVisible()
 })
 
@@ -208,7 +208,7 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   await page.getByRole('button', { name: '登录工作台' }).click()
   await page.getByRole('button', { name: '中枢 Router', exact: true }).click()
   const router = page.getByRole('region', { name: 'Router', exact: true })
-  const input = page.getByRole('textbox', { name: '给 Router 发送消息' })
+  const input = page.getByRole('textbox', { name: '给助手发送消息' })
   const send = router.getByRole('button', { name: '发送', exact: true })
   await expect(router.getByRole('table')).toBeVisible()
   await expect(router.locator('pre')).toContainText('const total = 1 + 1')
@@ -231,7 +231,7 @@ test('Router shares message rendering, keyboard input, drafts and stream scrolli
   expect(ids).toHaveLength(2)
   expect(ids[0]).toBe(ids[1])
   await expect(send).toBeDisabled()
-  await expect(router.getByRole('status')).toContainText('Router 正在回复')
+  await expect(router.getByRole('status')).toContainText('助手 正在回复')
   await input.fill('排在下一轮')
   await send.click()
   await expect(router.getByText('已排队', {exact:true})).toBeVisible()
@@ -393,4 +393,80 @@ test('Router settings expose PSM progress, pause, resume and distinct rebuild co
   page.once('dialog',dialog=>dialog.accept())
   await panel.getByRole('button',{name:'重建 L1 索引'}).click()
   await expect.poll(()=>actions).toEqual(['enable','pause','resume','rebuild'])
+})
+
+test('a delivery barrier shows its blocking command and closes only after human confirmation', async ({ page }) => {
+  let closed = false
+  await page.route('**/codex-cli/status', async route => {
+    const response = await route.fetch()
+    const json = await response.json()
+    json.result.value.router = { enabled: true, phase: 'ready' }
+    await route.fulfill({ response, json })
+  })
+  await page.route('**/codex-cli/router/**', async route => {
+    const { method, rpcId, payload } = route.request().postDataJSON()
+    if (method === 'router/tasks/dismiss-unknown') {
+      expect(payload).toEqual({ dispatchId: 'lost', updatedAt: 1000, confirmed: true })
+      closed = true
+    }
+    const value = method === 'router/read' ? {
+      enabled: true, phase: 'ready', busy: false, messages: [], interactions: [], clarifications: [], tasks: [
+        { id: 'lost', project:'RCC', status: closed ? 'failed' : 'unknown', updatedAt:1000,
+          delivery:{ seq:41, state:'unknown', checks:5, lastCheckAt:1000, closedAt:closed ? 1001 : undefined } },
+        { id:'next', project:'RCC', status:'queued', updatedAt:1000, delivery:{seq:42, state:'queued', blockedBy: closed ? undefined : 41} },
+      ],
+    } : {}
+    await route.fulfill({ json:{type:'server-response', rpcId, result:{ok:true, value}} })
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证', { exact:true }).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button', { name:'登录工作台' }).click()
+  await page.getByRole('button', { name:'中枢 Router', exact:true }).click()
+  await page.getByRole('button', { name:'任务', exact:true }).click()
+  await expect(page.getByText(/指令 #41.*已核对 5 次/)).toBeVisible()
+  await expect(page.getByText(/等待前序指令 #41 核对/)).toBeVisible()
+  await page.getByRole('button', {name:'已核对，关闭任务'}).click()
+  expect(closed).toBe(false)
+  await page.getByRole('button', {name:'确认关闭'}).click()
+  await expect(page.getByText(/交付待核对记录已关闭/)).toBeVisible()
+  await expect(page.getByText('App Server 已接收')).toHaveCount(0)
+})
+
+test('mode and correction stay available without exposing automatic task selection', async ({ page }) => {
+  let mode = 'chat', revision = 0, stopped = false
+  await page.route('**/codex-cli/status', async route => {
+    const response = await route.fetch()
+    const json = await response.json()
+    json.result.value.router = { enabled: true, phase: 'ready' }
+    await route.fulfill({ response, json })
+  })
+  await page.route('**/codex-cli/router/**', async route => {
+    const { rpcId, method, payload } = route.request().postDataJSON()
+    if (method === 'router/mode') {
+      expect(payload).toEqual({ mode: 'task', revision })
+      mode = 'task'
+      revision++
+    }
+    if (method === 'router/tasks/stop') {
+      expect(payload).toEqual({ dispatchId:'job-b', updatedAt:100, correction:true })
+      stopped = true
+    }
+    const value = method === 'router/read' ? {
+      enabled:true, phase:'ready', messages:[], tasks:[{id:'job-b',projectId:'bbb',project:'bbb',threadId:'thread-b',status:'running',updatedAt:100}],
+      routing:{mode, modeRevision:revision, focusRevision:1, focus:{projectId:'bbb',threadId:'thread-b'}},
+      clarifications:stopped ? [{id:'stop',kind:'interrupt',label:'确认停止 bbb',revision:1,candidates:[{id:'job-b',name:'确认停止'}]}] : [],
+    } : {}
+    await route.fulfill({ json:{type:'server-response', rpcId, result:{ok:true,value}} })
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证', { exact: true }).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button', { name:'登录工作台' }).click()
+  await page.getByRole('button', { name:'中枢 Router', exact:true }).click()
+  await page.getByRole('button', { name:'聊天模式 · 切换到任务模式' }).click()
+  await expect(page.getByRole('button', { name:'任务模式 · 切换到聊天模式' })).toBeVisible()
+  await page.getByRole('button', { name:'任务', exact:true }).click()
+  await expect(page.getByRole('heading', { name:'bbb' })).toBeVisible()
+  await expect(page.getByText(/焦点/)).toHaveCount(0)
+  await page.getByRole('button', { name:'纠正误派' }).click()
+  await expect(page.getByRole('region', { name:'确认停止 bbb' })).toBeVisible()
 })

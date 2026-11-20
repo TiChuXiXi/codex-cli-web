@@ -12,7 +12,7 @@ export function stageRouterAnswer(source, item) {
   const message = body(item)
   if (message?.phase === 'final_answer' || source.answer?.phase !== 'final_answer') {
     source.answer = message && (!message.phase || message.phase === 'final_answer')
-      ? { type: 'agentMessage', phase: message.phase, text: message.text.slice(0, 24000) }
+      ? { id: message.id, type: 'agentMessage', phase: message.phase, text: message.text.slice(0, 24000) }
       : null
   }
 }

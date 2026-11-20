@@ -106,6 +106,7 @@ try {
   router.start()
   await poll(() => hub.status().phase === 'ready' && router.status().phase !== 'connecting', 45000)
   assert.equal(router.status().phase, 'ready', 'Policy validation or real account model selection failed')
+  router.setMode({mode:'task',revision:router.routing().modeRevision})
   assert.equal(router.read().model, model)
 
   stage = 'plain-chat'

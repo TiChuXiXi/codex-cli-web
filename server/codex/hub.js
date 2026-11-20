@@ -16,6 +16,7 @@ import { ThreadTitles } from '../services/thread-titles.js'
 import { approvalDetails } from '../../shared/approval-details.js'
 import { permissionPayload } from '../../shared/worker-options.js'
 import { basename } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { JsonRpcClient, JsonRpcError, SKIP_RESPONSE } from './jsonrpc.js'
@@ -654,8 +655,8 @@ export class CodexHub {
     }
   }
 
-  async routerAddWorkerMessage(threadId, clientUserMessageId, text, selectionContext) {
-    const input = (selectionContext ? [selectionContext, text] : [text])
+  async routerAddWorkerMessage(threadId, clientUserMessageId, text, correction) {
+    const input = (correction ? [correction, text] : [text])
       .map(part => ({ type: 'text', text: part, text_elements: [] }))
     const result = await this.#requireRpc().request('thread/queue/add', {
       threadId, clientUserMessageId, input,
@@ -682,6 +683,11 @@ export class CodexHub {
       cursor = result.nextCursor
     }
     return null
+  }
+
+  async routerDeleteWorkerMessage(threadId, queuedSubmissionId) {
+    const result = await this.#requireRpc().request('thread/queue/delete',{ threadId, queuedSubmissionId },{timeoutMs:15000})
+    return result?.deleted === true
   }
 
   async routerStartWorkerMessage(threadId, queuedSubmissionId) {
@@ -789,12 +795,13 @@ export class CodexHub {
     }
     input.push(...await this.skillInputs(params))
     const rpc = this.#requireRpc()
+    if (params.selectionContext) input.unshift({type:'text',text:params.selectionContext,text_elements:[]})
     const result = await rpc.request(
       'turn/steer',
-      { threadId, expectedTurnId: turnId, input },
+      { threadId, expectedTurnId: turnId, input, ...(params.clientUserMessageId && { clientUserMessageId: params.clientUserMessageId }) },
       { timeoutMs: 30000 },
     )
-    return { turn: compactTurn(result?.turn) }
+    return { turnId: result?.turnId ?? result?.turn?.id, turn: compactTurn(result?.turn) }
   }
 
   /** 设置会话目标。 */
@@ -986,7 +993,17 @@ export class CodexHub {
   #onServerRequest(request) {
     if (this.#titles?.isHidden(request.params?.threadId)) return defaultApprovalResponse(request.method)
     const key = String(request.id)
+    const previous = this.#pendingApprovals.get(key)
+    // thread/resume can replay the same outstanding request on the same connection.
+    if (previous?.method === request.method && isDeepStrictEqual(previous.originalParams, request.params)) {
+      return SKIP_RESPONSE
+    }
+    if (previous) {
+      clearTimeout(previous.timer)
+      previous.resolve(SKIP_RESPONSE)
+    }
     const pending = {
+      originalParams: request.params,
       id: request.id,
       instanceId: randomUUID(),
       method: request.method,

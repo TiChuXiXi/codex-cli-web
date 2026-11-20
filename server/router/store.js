@@ -10,7 +10,7 @@ export class RouterStore {
         this.lock.exec('BEGIN EXCLUSIVE; CREATE TABLE IF NOT EXISTS router_instance (id INTEGER)')
       }
       const version = this.db.prepare('PRAGMA user_version').get().user_version
-      if (version > 3) throw new Error('Router 数据库版本高于当前程序')
+      if (version > 4) throw new Error('Router 数据库版本高于当前程序')
       this.db.exec('PRAGMA busy_timeout=3000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL')
       if (version === 0) this.db.exec(`
         BEGIN IMMEDIATE;
@@ -54,6 +54,32 @@ export class RouterStore {
         PRAGMA user_version=3;
         COMMIT;
       `)
+      if (version < 4) this.db.exec(`
+        BEGIN IMMEDIATE;
+        CREATE TABLE router_commands (
+          seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, delivery TEXT NOT NULL
+        );
+        CREATE INDEX router_commands_steer_history ON router_commands(json_extract(delivery,'$.expectedTurnId'))
+          WHERE json_extract(delivery,'$.historyAt') IS NULL;
+        INSERT INTO router_commands (id,delivery)
+          SELECT id,json_object('state',CASE json_extract(value,'$.status')
+            WHEN 'queued' THEN 'queued' WHEN 'submitted' THEN 'delivered'
+            WHEN 'running' THEN 'delivered' WHEN 'awaiting_input' THEN 'delivered'
+            WHEN 'awaiting_approval' THEN 'delivered' ELSE 'unknown' END,
+            'queuedAt',json_extract(value,'$.createdAt'),'method','queue')
+          FROM router_records WHERE kind='task' AND json_extract(value,'$.status')
+            NOT IN ('created','completed','failed','interrupted') ORDER BY rowid;
+        PRAGMA user_version=4;
+        COMMIT;
+      `)
+      this.readCommand = this.db.prepare('SELECT seq,delivery FROM router_commands WHERE id=?')
+      this.saveCommand = this.db.prepare('INSERT INTO router_commands (id,delivery) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET delivery=excluded.delivery')
+      this.unobservedSteer = this.db.prepare("SELECT 1 FROM router_commands WHERE json_extract(delivery,'$.expectedTurnId')=? AND json_extract(delivery,'$.historyAt') IS NULL LIMIT 1")
+      this.priorUnknown = this.db.prepare(`
+        SELECT c.seq FROM router_records t JOIN router_commands c ON t.id=c.id
+        WHERE t.kind='task' AND json_extract(t.value,'$.status')='unknown'
+          AND json_extract(t.value,'$.threadId')=? AND c.seq<? ORDER BY c.seq LIMIT 1`)
+      this.unresolvedTasks = this.db.prepare("SELECT value FROM router_records WHERE kind='task' AND json_extract(value,'$.status')='unknown' ORDER BY rowid DESC")
       this.queuedInputCount = this.db.prepare("SELECT count(*) AS count FROM router_records WHERE kind='message' AND json_extract(value,'$.status')='queued'")
       this.nextInput = this.db.prepare("SELECT value FROM router_records WHERE kind='message' AND json_extract(value,'$.status')='queued' ORDER BY rowid LIMIT 1")
       this.read = this.db.prepare('SELECT value FROM router_records WHERE kind=? AND id=?')
@@ -85,6 +111,16 @@ export class RouterStore {
       this.db.close()
       throw error
     }
+  }
+
+  command(id) {
+    const row = this.readCommand.get(id)
+    return row && { ...JSON.parse(row.delivery), seq: row.seq }
+  }
+
+  patchCommand(id, patch) {
+    const { seq, ...previous } = this.command(id) ?? {}
+    this.saveCommand.run(id, JSON.stringify({ ...previous, ...patch }))
   }
 
   get(kind, id) {
@@ -142,6 +178,7 @@ export class RouterStore {
   }
 
   transaction(action) {
+    if (this.db.isTransaction) return action()
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const result = action()

@@ -17,17 +17,19 @@ import './router.css'
 
 const labels: Record<string, string> = {
   created: '已创建会话', queued: '已排队', creating: '正在创建会话', submitting: '正在提交', submitted: '已交给 Worker 队列',
-  running: '正在执行', awaiting_approval: '等待你的审批', awaiting_input: '等待你输入', completed: 'Worker 回合已结束', failed: '失败',
-  interrupted: '已中断', unknown: '结果待核对',
+  running: 'Worker 回合运行中', awaiting_approval: '等待你的审批', awaiting_input: '等待你输入', completed: 'Worker 回合已结束', failed: '失败',
+  cancelled: '已取消', attached: '补充指令', interrupted: '已中断', unknown: '结果待核对',
 }
 
 const receiptLabels: Record<string, string> = {
-  pending: '等待 Router 回执', claimed: 'Router 正在汇报', unknown: 'Router 回执待核对', failed: 'Router 回执失败',
+  pending: '等待任务回执', claimed: '正在汇报任务结果', unknown: '任务回执待核对', failed: '任务回执失败',
 }
 
 export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cwd: string, revision: number, nav: HTMLElement | null, onWorker: (id: string) => void }) {
   const t = useT()
   const [snapshot, setSnapshot] = React.useState<RouterSnapshot | null>(null)
+  const assistantName = snapshot?.displayName || '助手'
+  const composerLabel = '给' + assistantName + '发送消息'
   const [error, setError] = React.useState<string | null>(null)
   const [text, setText] = React.useState(() => {
     try { return sessionStorage.getItem('codex-router-draft') ?? '' } catch { return '' }
@@ -184,7 +186,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
   const renderMessage = (message: RouterSnapshot['messages'][number]) => {
 
     return <React.Fragment key={message.id}>
-      <Message api={api} cwd={cwd} kind={message.role} label={message.label ?? (message.role === 'user' ? '你' : snapshot?.displayName || 'Router')}
+      <Message api={api} cwd={cwd} kind={message.role} label={message.label ?? (message.role === 'user' ? '你' : assistantName)}
         text={message.text} muted={message.phase === 'commentary'} />
       {message.questions && <AsyncQuestions item={message} onAnswer={message.status === 'pending' ? async answer => {
         try { await api('router/questions/answer', { id: message.id, text: answer }) }
@@ -193,7 +195,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
       {message.status === 'queued' && <span className="dsh-codex-router-meta">已排队</span>}
       {message.status === 'cancelled' && <span className="dsh-codex-router-meta">已取消</span>}
       {message.status === 'unknown' && <span className="dsh-codex-router-meta">消息结果待核对</span>}
-      {message.status === 'failed' && <span className="dsh-codex-router-meta">Router 回合失败</span>}
+      {message.status === 'failed' && <span className="dsh-codex-router-meta">本轮回复失败</span>}
     </React.Fragment>
   }
 
@@ -238,17 +240,22 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
         {latestUnseen ? '任务 · 有更新' : '任务'}
       </button>
     </>, nav)}
+    {snapshot?.routing && <div className="dsh-codex-router-controls">
+      <button type="button" className="dsh-codex-button" onClick={() => void action(() => api('router/mode',{
+        mode:snapshot.routing!.mode === 'chat' ? 'task' : 'chat',revision:snapshot.routing!.modeRevision
+      }))}>{snapshot.routing.mode === 'chat' ? '聊天模式 · 切换到任务模式' : '任务模式 · 切换到聊天模式'}</button>
+    </div>}
     {error && <p className="dsh-codex-error" role="alert">{error}</p>}
     {snapshot?.error && <div className="dsh-codex-router-alert" role="status">
       <span>{snapshot.error}</span>
       <button type="button" className="dsh-codex-button" onClick={() => void action(() => api('router/reconnect'))}>重新连接</button>
     </div>}
     {!ready && !snapshot?.error && <p role="status" className="dsh-codex-router-empty">
-      {snapshot?.enabled === false ? 'Router 未启用' : '正在连接 Router…'}
+      {snapshot?.enabled === false ? assistantName + '未启用' : '正在连接' + assistantName + '…'}
     </p>}
     {snapshot?.receiptLimited && <p role="status" className="dsh-codex-router-meta">已达到自动回执限额，待回执任务将在额度恢复后处理。</p>}
-    {!!snapshot?.previousThreads?.length && <details><summary>旧中枢会话记录</summary>
-      {snapshot.previousThreads.map(id=><History key={id} api={api} threadId={id}/>)}</details>}
+    {!!snapshot?.previousThreads?.length && <details><summary>历史会话记录</summary>
+      {snapshot.previousThreads.map(id=><History key={id} api={api} threadId={id} assistantName={assistantName}/>)}</details>}
     {tab === 'chat' && <>
       <div className="dsh-codex-messages-wrap">
       <div ref={log} className="dsh-codex-messages" role="log" aria-label="Router 对话"
@@ -258,7 +265,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
           setShowJump(!stickToEnd.current)
         }}>
         {ready && !snapshot?.messages.length && <p className="dsh-codex-router-empty">
-          可以直接聊天，也可以让 Router 查找已登记项目、续接会话或查询任务。
+          可以和{assistantName}聊天、查找项目、续接会话或查询任务。
         </p>}
         <div ref={contentRef} className="dsh-codex-message-content">
         {output}
@@ -311,12 +318,12 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
       }}><Icon name="arrowDown" size={16}/></button>}
       </div>
       {snapshot?.busy && <div role="status" className="dsh-codex-running-bar">
-        <Icon name="loader" size={16} className="dsh-codex-running-spinner"/>{snapshot.displayName || 'Router'} 正在回复…{snapshot.queuedCount ? '　排队 ' + snapshot.queuedCount + ' 条' : ''}
+        <Icon name="loader" size={16} className="dsh-codex-running-spinner"/>{assistantName} 正在回复…{snapshot.queuedCount ? '　排队 ' + snapshot.queuedCount + ' 条' : ''}
       </div>}
       <form className="dsh-codex-composer-wrap" onSubmit={event => { event.preventDefault(); void submit() }}>
         <div className="dsh-codex-composer-card" aria-busy={sending || snapshot?.busy}>
-          <textarea ref={inputRef} aria-label="给 Router 发送消息" className="dsh-codex-composer-input" rows={1} maxLength={12000}
-            placeholder="给 Router 发送消息" value={text} disabled={!ready}
+          <textarea ref={inputRef} aria-label={composerLabel} className="dsh-codex-composer-input" rows={1} maxLength={12000}
+            placeholder={composerLabel} value={text} disabled={!ready}
             onChange={event => setText(event.target.value)}
             onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
             onKeyDown={event => {
@@ -344,6 +351,7 @@ export function RouterView({ api, cwd, revision, nav, onWorker }: { api: Api, cw
     {tab === 'tasks' && <div className="dsh-codex-router-scroll dsh-codex-router-tasks" aria-label="Router 任务">
       {snapshot?.tasks.length === 0 && <p className="dsh-codex-router-empty">暂无已派发任务</p>}
       {snapshot?.tasks.map(task => <TaskCard key={task.id} task={task} onWorker={onWorker}
+        onStop={snapshot.routing && !task.stop ? () => action(async () => { await api('router/tasks/stop',{dispatchId:task.id,updatedAt:task.updatedAt,correction:true});setTab('chat') }) : undefined}
         onInteraction={snapshot.interactions?.some(item => item.dispatchId === task.id) ? () => {
           stickToEnd.current = true
           setTab('chat')
@@ -359,9 +367,9 @@ function localTime(time: number) {
   return new Date(time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })
 }
 
-function TaskCard({ task, onWorker, onDismiss, onInteraction }: {
+function TaskCard({ task, onWorker, onDismiss, onInteraction, onStop }: {
   task: RouterTask, onWorker: (id: string) => void, onDismiss?: () => Promise<void>,
-  onInteraction?: () => void,
+  onInteraction?: () => void, onStop?: () => Promise<void>,
 }) {
   const [confirm, setConfirm] = React.useState(false)
   const t = useT()
@@ -369,13 +377,27 @@ function TaskCard({ task, onWorker, onDismiss, onInteraction }: {
     <h2>{task.project}</h2>
     {task.worker && <div className="dsh-codex-router-meta">{[task.worker.model,t('composer.effort.'+task.worker.effort),
       task.worker.executionMode==='plan'?'计划模式':'普通执行',task.worker.permission?t('permission.'+task.worker.permission):'沿用会话权限'].join(' · ')}</div>}
-    <div className="dsh-codex-router-meta">{task.workerAction === 'settings' && task.status === 'completed' ? '会话设置已更新' : labels[task.status] ?? task.status} · {localTime(task.updatedAt)}</div>
+    <div className="dsh-codex-router-meta">{task.delivery?.closedAt ? '交付待核对记录已关闭' : task.workerAction === 'settings' && task.status === 'completed' ? '会话设置已更新' : labels[task.status] ?? task.status} · {localTime(task.updatedAt)}</div>
+    {task.delivery && <div className="dsh-codex-router-meta">
+      指令 #{task.delivery.seq} · {task.delivery.ackAt ? 'App Server 已接收' : task.delivery.historyAt ? '原生历史已确认' :
+        ({ queued: '已排队', deferred: '等待可交付时机', delivering: '正在提交', delivered: '已在原生端确认',
+          unknown: '交付结果待核对', failed: '交付失败', cancelled: '已取消' }[task.delivery.state])}
+      {task.delivery.historyAt && task.delivery.ackAt ? ' · 原生历史已确认' : ''}
+      {task.delivery.method === 'steer' && task.delivery.turnOutcome === 'interrupted' && ' · 所属回合已中断，指令执行情况未确认'}
+      {task.delivery.blockedBy && ' · 等待前序指令 #' + task.delivery.blockedBy + ' 核对'}
+      {task.delivery.checks ? ' · 已核对 ' + task.delivery.checks + ' 次' : ''}
+      {task.delivery.lastCheckAt && ' · ' + localTime(task.delivery.lastCheckAt)}
+      {task.delivery.closedAt && ' · 人工关闭'}
+    </div>}
     {task.receiptStatus && receiptLabels[task.receiptStatus] && <div className="dsh-codex-router-meta">{receiptLabels[task.receiptStatus]}</div>}
+    {task.reviewInstruction && <p className="dsh-codex-router-text">{task.reviewInstruction}</p>}
+    {task.stop && <p role="status">{task.stop.message || '正在核对停止结果'}</p>}
+    {onStop && <button className="dsh-codex-button" onClick={onStop}>纠正误派</button>}
     {task.summary && <p className="dsh-codex-router-text">{task.summary}</p>}
     {task.error && <p className="dsh-codex-router-text">{task.error}</p>}
-    {onInteraction && <button type="button" className="dsh-codex-button" onClick={onInteraction}>在 Router 中处理</button>}
+    {onInteraction && <button type="button" className="dsh-codex-button" onClick={onInteraction}>在对话中处理</button>}
     {task.threadId && <button type="button" className="dsh-codex-button" onClick={() => onWorker(task.threadId!)}>打开 Worker 会话</button>}
-    {task.status === 'unknown' && onDismiss && (confirm
+    {(task.status === 'unknown' || (task.stop?.state === 'unknown' && !task.stop.reviewedAt)) && onDismiss && (confirm
       ? <div className="dsh-codex-router-alert">
         <span>确认已核对 Worker。关闭此任务会恢复队列，并保留任务记录。</span>
         <button type="button" className="dsh-codex-button" onClick={() => {
@@ -388,7 +410,7 @@ function TaskCard({ task, onWorker, onDismiss, onInteraction }: {
   </article>
 }
 
-function History({api,threadId}:{api:Api;threadId:string}) {
+function History({api,threadId,assistantName}:{api:Api;threadId:string;assistantName:string}) {
   const [messages,setMessages]=React.useState<{id:string;text:string;role:string}[]>([])
   const [cursor,setCursor]=React.useState<string|null|undefined>()
   const [busy,setBusy]=React.useState(false)
@@ -400,7 +422,7 @@ function History({api,threadId}:{api:Api;threadId:string}) {
       setMessages(previous=>[...previous,...page.messages]);setCursor(page.nextCursor);setError('')
     } catch(e){setError(String(e))} finally{setBusy(false)}
   }
-  return <section><strong>{threadId}</strong>{messages.map((m,i)=><p key={m.id ?? i}>{m.role==='user'?'你':'Router'} · {m.text}</p>)}
+  return <section><strong>{threadId}</strong>{messages.map((m,i)=><p key={m.id ?? i}>{m.role==='user'?'你':assistantName} · {m.text}</p>)}
     {cursor!==null && <button type="button" disabled={busy} onClick={()=>void load()}>{cursor?'读取更早记录':'读取会话记录'}</button>}
     {error && <p role="alert">{error}</p>}</section>
 }

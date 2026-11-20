@@ -19,3 +19,5 @@
 .dsh-codex-root .dsh-codex-router .dsh-codex-composer-input { max-height:240px; overflow-y:auto; }
 .dsh-codex-root .dsh-codex-router .dsh-codex-model-trigger { cursor:default; max-width:100%; }
 .dsh-codex-root .dsh-codex-router .dsh-codex-router-card { width:100%; box-sizing:border-box; }
+
+.dsh-codex-router-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .4rem .75rem; font-size: .85rem; }

@@ -11,6 +11,11 @@ export interface SubagentReadRequest {
 }
 
 export interface RouterTask {
+  stop?: {state:string; message?:string; reviewedAt?:number}
+  reviewInstruction?: string
+  delivery?: { seq: number; blockedBy?: number; state: string; method?: string; turnOutcome?: 'completed' | 'failed' | 'interrupted'; ackAt?: number; historyAt?: number;
+    admittedAt?: number; queuedAt?: number; attemptedAt?: number; unknownSince?: number;
+    checks?: number; lastCheckAt?: number; alertAt?: number; closedAt?: number }
   worker?: {model:string; effort:string; executionMode:'default'|'plan'; permission?:string}
   workerAction?: 'settings' | 'restart'
   id: string
@@ -49,6 +54,7 @@ export interface ModelOption {
 }
 
 export interface RouterSnapshot {
+  routing?: { mode:'chat'|'task'; modeRevision:number; focusRevision:number; focus:{dispatchId:string;projectId:string;threadId:string}|null }
   displayName?: string
   primaryThreadId?: string
   previousThreads?: string[]
