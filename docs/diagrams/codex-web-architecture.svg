@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1580" viewBox="0 0 1680 1580" role="img" aria-labelledby="codex-web-architecture-title codex-web-architecture-desc" xml:lang="zh-CN" id="codex-web-architecture-root">
+<title id="codex-web-architecture-title">Codex Web 面板整体架构</title>
+<desc id="codex-web-architecture-desc">浏览器通过受认证保护的 HTTP 接口连接 Node.js 工作台，访问 Codex 会话、Router 中枢和宿主工具，图中也给出状态归属和任务及事件链路。</desc><defs>
+      <style>#codex-web-architecture-root { color: #172C3F; font-family: "Noto Sans CJK SC","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif; }
+      #codex-web-architecture-root .diagram-container { overflow-x:auto }
+      #codex-web-architecture-root text { fill:#172C3F;font-family:"Noto Sans CJK SC","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif }
+      #codex-web-architecture-root .eyeline { font-size:13px;letter-spacing:2px;font-weight:700;fill:#316991 }
+      #codex-web-architecture-root .hero { font-size:43px;font-weight:700 }
+      #codex-web-architecture-root .subtitle { font-size:17px;fill:#40586E }
+      #codex-web-architecture-root .section { font-size:24px;font-weight:700 }
+      #codex-web-architecture-root .zone, #codex-web-architecture-root .legend, #codex-web-architecture-root .edge-label { font-size:14px;font-weight:600;fill:#466077 }
+      #codex-web-architecture-root .focus { font-size:22px;font-weight:700 }
+      #codex-web-architecture-root .card-title { font-size:19px;font-weight:700 }
+      #codex-web-architecture-root .node-title { font-size:16px;font-weight:700 }
+      #codex-web-architecture-root .mono { font-family:"DejaVu Sans Mono",Consolas,monospace;font-size:12px;fill:#466077 }
+      #codex-web-architecture-root .body, #codex-web-architecture-root .table-body { font-size:15px;fill:#40586E }
+      #codex-web-architecture-root .caption, #codex-web-architecture-root .table-code { font-size:14px;fill:#466077 }
+      #codex-web-architecture-root .table-head, #codex-web-architecture-root .table-key { font-size:16px;font-weight:700 }</style>
+<marker id="codex-web-architecture-arrow-blue" viewBox="0 0 10 10" markerWidth="7" markerHeight="7" refX="9" refY="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#316991"/></marker>
+<marker id="codex-web-architecture-arrow-teal" viewBox="0 0 10 10" markerWidth="7" markerHeight="7" refX="9" refY="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#267568"/></marker>
+<marker id="codex-web-architecture-arrow-violet" viewBox="0 0 10 10" markerWidth="7" markerHeight="7" refX="9" refY="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#625A89"/></marker>
+</defs>
+<rect x="0" y="0" width="1680" height="1580" rx="0" fill="#F8FAFC" stroke="none" />
+<text x="48" y="51" class="eyeline" >CODEX CLI WEB</text>
+<text x="48" y="101" class="hero" >Codex Web 面板整体架构</text>
+<text x="48" y="134" class="subtitle" >独立 React 工作台经同源 HTTP 访问 Node.js 服务，由服务端连接 Codex、Router 和宿主工具。</text>
+<text x="1632" y="132" class="mono" text-anchor="end">源码基线  b833678</text>
+<line x1="48" y1="154" x2="1632" y2="154" stroke="#CBD8E3"/>
+<text x="48" y="188" class="section" >系统拓扑</text>
+<line x1="1096" y1="182" x2="1128" y2="182" data-edge="legend request" data-points="1096,182 1128,182" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<text x="1140" y="187" class="legend" >请求与调用</text>
+<line x1="1252" y1="182" x2="1284" y2="182" data-edge="legend events" data-points="1252,182 1284,182" fill="none" stroke="#267568" stroke-width="2" stroke-dasharray="6 4"  marker-end="url(#codex-web-architecture-arrow-teal)"/>
+<text x="1296" y="187" class="legend" >事件推送</text>
+<line x1="1388" y1="182" x2="1420" y2="182" data-edge="legend optional" data-points="1388,182 1420,182" fill="none" stroke="#625A89" stroke-width="2" stroke-dasharray="3 4" marker-start="url(#codex-web-architecture-arrow-violet)" marker-end="url(#codex-web-architecture-arrow-violet)"/>
+<text x="1432" y="187" class="legend" >可选运行时或渠道</text>
+<rect x="48" y="208" width="312" height="480" rx="8" fill="#F0F5FA" stroke="#CBD8E3" />
+<rect x="384" y="208" width="792" height="480" rx="8" fill="#EFF4F9" stroke="#CBD8E3" />
+<rect x="1228" y="208" width="404" height="480" rx="8" fill="#EFF6F3" stroke="#CCDCD4" />
+<text x="64" y="233" class="zone" >浏览器</text>
+<text x="400" y="233" class="zone" >Node.js Web 服务</text>
+<text x="1252" y="233" class="zone" >宿主进程和外部服务</text>
+<line x1="344" y1="292" x2="400" y2="292" data-edge="browser to web API" data-points="344,292 400,292" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<line x1="400" y1="352" x2="344" y2="352" data-edge="SSE to browser" data-points="400,352 344,352" fill="none" stroke="#267568" stroke-width="2" stroke-dasharray="6 4"  marker-end="url(#codex-web-architecture-arrow-teal)"/>
+<line x1="704" y1="292" x2="796" y2="292" data-edge="routes to session services" data-points="704,292 796,292" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<line x1="704" y1="446" x2="796" y2="446" data-edge="routes to RouterService" data-points="704,446 796,446" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<line x1="704" y1="606" x2="796" y2="606" data-edge="routes to host services" data-points="704,606 796,606" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<line x1="1160" y1="284" x2="1252" y2="284" data-edge="worker JSON-RPC" data-points="1160,284 1252,284" fill="none" stroke="#316991" stroke-width="2"  marker-start="url(#codex-web-architecture-arrow-blue)" marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<path d="M 1160 408 L 1194 408 Q 1202 408 1202 400 L 1202 334 Q 1202 326 1194 326 L 1160 326" data-edge="dispatcher to CodexHub" data-points="1160,408 1202,408 1202,326 1160,326" fill="none" stroke="#625A89" stroke-width="2" stroke-dasharray="3 4"  marker-end="url(#codex-web-architecture-arrow-violet)"/>
+<line x1="1160" y1="432" x2="1252" y2="432" data-edge="WeChat iLink" data-points="1160,432 1252,432" fill="none" stroke="#625A89" stroke-width="2" stroke-dasharray="3 4" marker-start="url(#codex-web-architecture-arrow-violet)" marker-end="url(#codex-web-architecture-arrow-violet)"/>
+<line x1="1160" y1="494" x2="1252" y2="494" data-edge="private Router stdio" data-points="1160,494 1252,494" fill="none" stroke="#625A89" stroke-width="2" stroke-dasharray="3 4" marker-start="url(#codex-web-architecture-arrow-violet)" marker-end="url(#codex-web-architecture-arrow-violet)"/>
+<line x1="1160" y1="606" x2="1252" y2="606" data-edge="host services I/O" data-points="1160,606 1252,606" fill="none" stroke="#316991" stroke-width="2"  marker-start="url(#codex-web-architecture-arrow-blue)" marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<rect x="354" y="263" width="36" height="21" rx="3" fill="#F8FAFC" stroke="none" />
+<text x="372" y="278" class="edge-label" text-anchor="middle">RPC</text>
+<rect x="354" y="323" width="36" height="21" rx="3" fill="#F8FAFC" stroke="none" />
+<text x="372" y="338" class="edge-label" text-anchor="middle">SSE</text>
+<rect x="1164" y="255" width="84" height="21" rx="3" fill="#F8FAFC"/>
+<text x="1206" y="270" class="edge-label" text-anchor="middle">JSON-RPC</text>
+<g data-node="browser">
+<rect x="64" y="252" width="280" height="244" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="browser"/>
+<text x="80" y="283" class="focus" >React 工作台</text>
+<text x="80" y="306" class="mono" >main.tsx → ConsolePage.tsx</text>
+<line x1="80" y1="322" x2="328" y2="322" stroke="#CBD8E3"/>
+<text x="80" y="348" class="body" >会话、对话、工具流、审批、子代理</text>
+<text x="80" y="371" class="body" >Router 对话、任务和待办</text>
+<text x="80" y="394" class="body" >右栏文件、文档、终端、Git</text>
+<text x="80" y="417" class="body" >设置、版本、配额与连接状态</text>
+<line x1="80" y1="434" x2="328" y2="434" stroke="#CBD8E3"/>
+<text x="80" y="458" class="mono" >api.ts · events.ts · uploads.ts</text>
+<text x="80" y="478" class="caption" >RPC、事件订阅和附件上传</text>
+</g>
+<text x="64" y="531" class="node-title" >浏览器本地状态</text>
+<text x="64" y="557" class="body" >localStorage · 外观、选中会话等</text>
+<text x="64" y="581" class="body" >sessionStorage · 会话输入草稿</text>
+<line x1="64" y1="603" x2="344" y2="603" stroke="#CBD8E3"/>
+<text x="64" y="627" class="node-title" >esbuild 构建静态资源</text>
+<text x="64" y="651" class="mono" >scripts/build.mjs → dist/web</text>
+<g data-node="gateway">
+<rect x="400" y="252" width="304" height="412" rx="8" fill="#E9F3FC" stroke="#AFC9DF" data-bound="gateway"/>
+<text x="416" y="283" class="focus" >HTTP 入口与认证</text>
+<text x="416" y="307" class="mono" >bootstrap.js · auth.js · routes.js</text>
+<line x1="416" y1="322" x2="688" y2="322" stroke="#CBD8E3"/>
+<text x="416" y="347" class="node-title" >监听、服务装配与关闭</text>
+<text x="416" y="371" class="mono" >codex-web-ui.mjs → config.js</text>
+<text x="416" y="392" class="body" >读取应用配置、环境变量和启动参数</text>
+<line x1="416" y1="407" x2="688" y2="407" stroke="#CBD8E3"/>
+<text x="416" y="433" class="node-title" >来源与身份校验</text>
+<text x="416" y="457" class="body" >Host / Origin 与写请求来源检查</text>
+<text x="416" y="478" class="body" >Token 登录 + Cookie，或 IP 白名单</text>
+<line x1="416" y1="494" x2="688" y2="494" stroke="#CBD8E3"/>
+<text x="416" y="520" class="node-title" >浏览器 API</text>
+<text x="416" y="544" class="mono" >POST /codex-cli/&lt;method></text>
+<text x="416" y="565" class="mono" >GET /codex-cli/events · SSE</text>
+<text x="416" y="588" class="body" >认证后的上传 / 下载与长轮询</text>
+<line x1="416" y1="604" x2="688" y2="604" stroke="#CBD8E3"/>
+<text x="416" y="629" class="mono" >static.js → dist/web</text>
+<text x="416" y="649" class="caption" >shared/ 提供契约、选项与限制</text>
+</g>
+<g data-node="session-services">
+<rect x="796" y="252" width="364" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="session-services"/>
+<text x="812" y="281" class="card-title" >会话、审批与发送队列</text>
+<text x="812" y="303" class="mono" >hub.js · followups.js · jsonrpc.js</text>
+<text x="812" y="328" class="body" >Hub 管理线程、回合、审批、连接与重订阅</text>
+</g>
+<g data-node="router-service">
+<rect x="796" y="384" width="364" height="136" rx="8" fill="#E8F6F0" stroke="#AACFC2" data-bound="router-service"/>
+<text x="812" y="415" class="focus" >RouterService · 可选</text>
+<text x="812" y="438" class="mono" >router/service.js · channels/wechat</text>
+<text x="812" y="464" class="body" >Web / 微信共用输入队列与 Router 会话</text>
+<text x="812" y="485" class="body" >模式与焦点、工作环境查询、PSM</text>
+<text x="812" y="506" class="body" >Dispatcher 经 CodexHub 派发</text>
+</g>
+<g data-node="host-services">
+<rect x="796" y="552" width="364" height="112" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="host-services"/>
+<text x="812" y="581" class="card-title" >文件、终端、Git 与运维</text>
+<text x="812" y="603" class="mono" >server/services/</text>
+<text x="812" y="628" class="body" >WorkspaceService · TerminalService</text>
+<text x="812" y="649" class="body" >Git · VersionService · SettingsService</text>
+</g>
+<g data-node="worker-app">
+<rect x="1252" y="252" width="364" height="100" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="worker-app"/>
+<text x="1268" y="281" class="card-title" >Codex App Server</text>
+<text x="1268" y="303" class="mono" >原生 Codex CLI · Worker 线程</text>
+<text x="1268" y="328" class="body" >daemon 优先 · Unix socket WS / 私有 stdio</text>
+</g>
+<g data-node="wechat">
+<rect x="1252" y="384" width="364" height="68" rx="8" fill="#FFFFFF" stroke="#C7DAD1" data-bound="wechat"/>
+<text x="1268" y="412" class="card-title" >个人微信 · iLink</text>
+<text x="1268" y="435" class="caption" >WeChatChannel 绑定后轮询，回复并推送待办</text>
+</g>
+<g data-node="router-app">
+<rect x="1252" y="464" width="364" height="72" rx="8" fill="#FFFFFF" stroke="#C7DAD1" data-bound="router-app"/>
+<text x="1268" y="492" class="card-title" >Router 专用 App Server</text>
+<text x="1268" y="515" class="caption" >独立工作目录和 CODEX_HOME · 动态工具白名单</text>
+</g>
+<g data-node="host-targets">
+<rect x="1252" y="552" width="364" height="112" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="host-targets"/>
+<text x="1268" y="581" class="card-title" >宿主资源</text>
+<text x="1268" y="603" class="mono" >由工作台服务直接访问</text>
+<text x="1268" y="628" class="body" >本机文件和仓库 · Git 远端 · Bash PTY</text>
+<text x="1268" y="649" class="body" >npm registry · Codex CLI · 可选 firewalld</text>
+</g>
+<line x1="48" y1="712" x2="1632" y2="712" stroke="#CBD8E3"/>
+<text x="48" y="746" class="section" >功能模块与状态归属</text>
+<text x="1632" y="744" class="caption" text-anchor="end">按实际调用入口追踪到状态或外部资源</text>
+<rect x="48" y="768" width="1584" height="416" rx="8" fill="#FFFFFF" stroke="#CBD8E3" />
+<rect x="48" y="768" width="1584" height="44" rx="8" fill="#EAF0F6" stroke="none" />
+<rect x="48" y="790" width="1584" height="22" rx="0" fill="#EAF0F6" stroke="none" />
+<text x="66" y="797" class="table-head" >面板功能</text>
+<text x="319" y="797" class="table-head" >请求入口与模块</text>
+<text x="773" y="797" class="table-head" >职责</text>
+<text x="1215" y="797" class="table-head" >状态或依赖</text>
+<line x1="49" y1="812" x2="1631" y2="812" stroke="#CBD8E3"/>
+<text x="66" y="844" class="table-key" >项目与会话</text>
+<text x="319" y="833" class="table-code">projects/* · threads/* · turns/* · approvals/*</text>
+<text x="319" y="852" class="table-code">models/list · skills/list · account/rateLimits</text>
+<text x="773" y="844" class="table-body" >会话分页、分叉、压缩、模型 / 技能、队列与审批</text>
+<text x="1215" y="844" class="table-body" >Codex 历史；排队和 pending 在 Node 内存</text>
+<rect x="49" y="864" width="1582" height="52" rx="0" fill="#F7FAFC" stroke="none" />
+<line x1="49" y1="864" x2="1631" y2="864" stroke="#CBD8E3"/>
+<text x="66" y="896" class="table-key" >Router 中枢</text>
+<text x="319" y="896" class="table-code" >router/* · wechat/* → service / dispatcher / wake</text>
+<text x="773" y="896" class="table-body" >目标确认、原生派发、PSM、Worker 原文与汇报</text>
+<text x="1215" y="896" class="table-body" >router.sqlite；psm-index.sqlite；专用 Codex Home</text>
+<line x1="49" y1="916" x2="1631" y2="916" stroke="#CBD8E3"/>
+<text x="66" y="948" class="table-key" >文件、文档与附件</text>
+<text x="319" y="948" class="table-code" >fs/* · workspace/* · images/read · upload/*</text>
+<text x="773" y="948" class="table-body" >目录、检索、预览、上传下载、工作区监听</text>
+<text x="1215" y="948" class="table-body" >本机文件；工作区标识、watcher 在内存</text>
+<rect x="49" y="968" width="1582" height="52" rx="0" fill="#F7FAFC" stroke="none" />
+<line x1="49" y1="968" x2="1631" y2="968" stroke="#CBD8E3"/>
+<text x="66" y="1000" class="table-key" >交互终端</text>
+<text x="319" y="1000" class="table-code" >terminal/* → TerminalService</text>
+<text x="773" y="1000" class="table-body" >xterm 显示，游标长轮询；输入、调整大小与关闭</text>
+<text x="1215" y="1000" class="table-body" >宿主 Bash PTY；会话与输出缓冲在内存</text>
+<line x1="49" y1="1020" x2="1631" y2="1020" stroke="#CBD8E3"/>
+<text x="66" y="1052" class="table-key" >Git 面板</text>
+<text x="319" y="1052" class="table-code" >git/* → createGitService</text>
+<text x="773" y="1052" class="table-body" >状态、差异、提交图、分支、贮藏、远端同步</text>
+<text x="1215" y="1052" class="table-body" >本机仓库 / 远端；写操作受 Git 写开关约束</text>
+<rect x="49" y="1072" width="1582" height="52" rx="0" fill="#F7FAFC" stroke="none" />
+<line x1="49" y1="1072" x2="1631" y2="1072" stroke="#CBD8E3"/>
+<text x="66" y="1104" class="table-key" >版本与守护进程</text>
+<text x="319" y="1104" class="table-code" >versions/* · daemon/action · doctor/run</text>
+<text x="773" y="1104" class="table-body" >检查版本、升级回滚、作业输出与诊断</text>
+<text x="1215" y="1104" class="table-body" >npm / Codex CLI；作业与输出在内存</text>
+<line x1="49" y1="1124" x2="1631" y2="1124" stroke="#CBD8E3"/>
+<text x="66" y="1156" class="table-key" >访问设置与 Worker 默认值</text>
+<text x="319" y="1156" class="table-code" >settings/* → SettingsService / settings-firewall</text>
+<text x="773" y="1156" class="table-body" >白名单修订与持久化、默认模型 / 权限 / 模式</text>
+<text x="1215" y="1156" class="table-body" >应用配置或 settings.json；worker-defaults.json</text>
+<text x="48" y="1212" class="caption" >Node 还在内存保留 Web 登录会话与 SSE 回放缓冲。Codex 账号凭据、配置与历史由对应运行时的 CODEX_HOME 持有。</text>
+<line x1="48" y1="1230" x2="1632" y2="1230" stroke="#CBD8E3"/>
+<text x="48" y="1266" class="section" >关键运行链路</text>
+<text x="1632" y="1264" class="caption" text-anchor="end">每行从左到右</text>
+<rect x="48" y="1284" width="144" height="68" rx="8" fill="#E9F3FC" stroke="none" />
+<text x="62" y="1311" class="table-head" >普通会话</text>
+<text x="62" y="1334" class="caption" >对话与审批</text>
+<line x1="564" y1="1318" x2="580" y2="1318" data-edge="普通会话 1" data-points="564,1318 580,1318" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<line x1="920" y1="1318" x2="936" y2="1318" data-edge="普通会话 2" data-points="920,1318 936,1318" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<line x1="1276" y1="1318" x2="1292" y2="1318" data-edge="普通会话 3" data-points="1276,1318 1292,1318" fill="none" stroke="#316991" stroke-width="2"   marker-end="url(#codex-web-architecture-arrow-blue)"/>
+<g data-node="flow-0-0">
+<rect x="224" y="1284" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-0-0"/>
+<text x="240" y="1311" class="node-title" >Composer 提交</text>
+<text x="240" y="1333" class="caption" >turns/submit → FollowupQueue</text>
+</g>
+<g data-node="flow-0-1">
+<rect x="580" y="1284" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-0-1"/>
+<text x="596" y="1311" class="node-title" >CodexHub 启动回合</text>
+<text x="596" y="1333" class="caption" >轮到该线程且空闲时调用 turn/start</text>
+</g>
+<g data-node="flow-0-2">
+<rect x="936" y="1284" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-0-2"/>
+<text x="952" y="1311" class="node-title" >原生执行与交互</text>
+<text x="952" y="1333" class="caption" >App Server 返回增量、审批和提问</text>
+</g>
+<g data-node="flow-0-3">
+<rect x="1292" y="1284" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-0-3"/>
+<text x="1308" y="1311" class="node-title" >面板渲染并回复</text>
+<text x="1308" y="1333" class="caption" >Hub 将审批决定回送发起请求的实例</text>
+</g>
+<rect x="48" y="1368" width="144" height="68" rx="8" fill="#F0EDF7" stroke="none" />
+<text x="62" y="1395" class="table-head" >Router 派发</text>
+<text x="62" y="1418" class="caption" >跨会话任务</text>
+<line x1="564" y1="1402" x2="580" y2="1402" data-edge="Router 派发 1" data-points="564,1402 580,1402" fill="none" stroke="#625A89" stroke-width="2" stroke-dasharray="3 4"  marker-end="url(#codex-web-architecture-arrow-violet)"/>
+<line x1="920" y1="1402" x2="936" y2="1402" data-edge="Router 派发 2" data-points="920,1402 936,1402" fill="none" stroke="#625A89" stroke-width="2" stroke-dasharray="3 4"  marker-end="url(#codex-web-architecture-arrow-violet)"/>
+<line x1="1276" y1="1402" x2="1292" y2="1402" data-edge="Router 派发 3" data-points="1276,1402 1292,1402" fill="none" stroke="#625A89" stroke-width="2" stroke-dasharray="3 4"  marker-end="url(#codex-web-architecture-arrow-violet)"/>
+<g data-node="flow-1-0">
+<rect x="224" y="1368" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-1-0"/>
+<text x="240" y="1395" class="node-title" >Web / 微信入队</text>
+<text x="240" y="1417" class="caption" >中枢按模式与焦点处理请求</text>
+</g>
+<g data-node="flow-1-1">
+<rect x="580" y="1368" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-1-1"/>
+<text x="596" y="1395" class="node-title" >解析与复核目标</text>
+<text x="596" y="1417" class="caption" >受限工具、项目范围和必要确认</text>
+</g>
+<g data-node="flow-1-2">
+<rect x="936" y="1368" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-1-2"/>
+<text x="952" y="1395" class="node-title" >Dispatcher 交付</text>
+<text x="952" y="1417" class="caption" >原生队列或符合条件的 turn/steer</text>
+</g>
+<g data-node="flow-1-3">
+<rect x="1292" y="1368" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-1-3"/>
+<text x="1308" y="1395" class="node-title" >结果回传</text>
+<text x="1308" y="1417" class="caption" >持久化 Worker 结果，空闲合批汇报</text>
+</g>
+<rect x="48" y="1452" width="144" height="68" rx="8" fill="#E8F6F0" stroke="none" />
+<text x="62" y="1479" class="table-head" >事件恢复</text>
+<text x="62" y="1502" class="caption" >断线与重连</text>
+<line x1="564" y1="1486" x2="580" y2="1486" data-edge="事件恢复 1" data-points="564,1486 580,1486" fill="none" stroke="#267568" stroke-width="2" stroke-dasharray="6 4"  marker-end="url(#codex-web-architecture-arrow-teal)"/>
+<line x1="920" y1="1486" x2="936" y2="1486" data-edge="事件恢复 2" data-points="920,1486 936,1486" fill="none" stroke="#267568" stroke-width="2" stroke-dasharray="6 4"  marker-end="url(#codex-web-architecture-arrow-teal)"/>
+<line x1="1276" y1="1486" x2="1292" y2="1486" data-edge="事件恢复 3" data-points="1276,1486 1292,1486" fill="none" stroke="#267568" stroke-width="2" stroke-dasharray="6 4"  marker-end="url(#codex-web-architecture-arrow-teal)"/>
+<g data-node="flow-2-0">
+<rect x="224" y="1452" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-2-0"/>
+<text x="240" y="1479" class="node-title" >服务发布事件</text>
+<text x="240" y="1501" class="caption" >Hub、队列、文件监听、版本及 Router</text>
+</g>
+<g data-node="flow-2-1">
+<rect x="580" y="1452" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-2-1"/>
+<text x="596" y="1479" class="node-title" >EventBus 编序缓冲</text>
+<text x="596" y="1501" class="caption" >增量合批，按 seq 保留事件</text>
+</g>
+<g data-node="flow-2-2">
+<rect x="936" y="1452" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-2-2"/>
+<text x="952" y="1479" class="node-title" >SSE 续订</text>
+<text x="952" y="1501" class="caption" >hello 标记实例，按 Last-Event-ID 回放</text>
+</g>
+<g data-node="flow-2-3">
+<rect x="1292" y="1452" width="340" height="68" rx="8" fill="#FFFFFF" stroke="#CBD8E3" data-bound="flow-2-3"/>
+<text x="1308" y="1479" class="node-title" >浏览器对齐状态</text>
+<text x="1308" y="1501" class="caption" >缺口 resync，重读快照并继续订阅</text>
+</g>
+<line x1="48" y1="1540" x2="1632" y2="1540" stroke="#CBD8E3"/>
+<text x="48" y="1564" class="mono" >源码入口  bin/codex-web-ui.mjs · server/bootstrap.js · server/api/routes.js · web/src/page/ConsolePage.tsx</text>
+<text x="1632" y="1564" class="caption" text-anchor="end">Router 执行细节见同目录专项图</text>
+</svg>
