@@ -532,12 +532,14 @@ export class WeChatChannel {
     }
     let card
     let choice
+    let queryOnly = false
+    const canQuery = row.routing?.mode === 'task' && !explicit && !addressedAnswer && !row.privatePending && !open.some(c => c.privateInput) && !(paused && this.store.wxRead('card',queue.after)?.privateInput)
     if (!task && !routerControl(text)) {
       const view = /^查看\s*(.+)$/u.exec(text)
       if (row.menu && row.menu !== queue?.after && !view && !explicit && text !== '待办') {
         return finish('刚才的待办列表已切换。发“待办”查看当前项目。')
       }
-      if (view && !open.length) return finish('当前没有待办。')
+      if (view && !open.length && !canQuery) return finish('当前没有待办。')
       if ((view || row.menu && text !== '待办' && !explicit) && open.length) {
         const name = (view?.[1] ?? text).trim()
         const matches = open.filter(row => {
@@ -546,7 +548,8 @@ export class WeChatChannel {
           return this.menuName(entry) === name || entry.label?.replace(/^Worker · /,'') === name
         })
         if (matches.length === 1) return finish(null,'done',() => this.focusCard(matches[0],live,row.id))
-        return finish(null,'done',() => this.sendMenu(open,live,row.id))
+        if (!canQuery) return finish(null,'done',() => this.sendMenu(open,live,row.id))
+        queryOnly = true
       }
       if (explicit && !explicit[2].trim()) {
         const selected = open.find(c => c.id === explicit[1].toUpperCase())
@@ -556,7 +559,8 @@ export class WeChatChannel {
       if (text === '待办' && open.length > 1) return finish(null,'done',() => this.sendMenu(open,live,row.id))
       if (row.menu && !open.length && text !== '待办') return finish('刚才列表里的待办已处理或失效。')
       if (queue?.menu && open.length && !row.menu && !['待办','继续'].includes(text)) {
-        return finish(null,'done',() => this.sendMenu(open,live,row.id))
+        if (!canQuery || entry && matchesShortAnswer(entry,text,head.index ?? 0)) return finish(null,'done',() => this.sendMenu(open,live,row.id))
+        queryOnly = true
       }
       if (text === '待办' || (text === '继续' && (paused || !head && open.length))) {
         return finish(open.length ? null : '当前没有待办。', 'done', () => {
@@ -571,7 +575,8 @@ export class WeChatChannel {
       if (paused && (open.length || row.shown.length || skip || addressedAnswer || explicit ||
           /^(?:允许|同意|拒绝|是|否|\d+)$/.test(text) ||
           this.store.wxRead('card',queue.after)?.privateInput)) {
-        return finish('上一项待办已处理或失效。发“继续”查看下一项，另发任务用“任务：…”。')
+        if (!canQuery || skip || /^(?:允许|同意|拒绝|是|否|\d+)$/.test(text)) return finish('上一项待办已处理或失效。发“继续”查看下一项，另发任务用“任务：…”。')
+        queryOnly = true
       }
       if ((row.shown.length && (!presented || !entry)) || (explicit && explicit[1].toUpperCase() !== head?.id)) {
         return finish('刚才的待办已处理或切换。发“待办”查看当前问题。')
@@ -580,7 +585,7 @@ export class WeChatChannel {
         if (!presented) return finish(open.length ? '发“待办”查看当前问题。' : '当前没有待办。')
         return finish('已暂缓，原请求保留。发“待办”可回看。', 'done', () => this.defer(head))
       }
-      if (presented && entry) {
+      if (!queryOnly && presented && entry) {
         const isQuestion = entry.type === 'input' || entry.type === 'question'
         const q = isQuestion && questions(entry)[head.index ?? 0]
         if (entry.type === 'approval' && !explicit && !/^[123]$/.test(text) && queue?.focus !== head.id &&
@@ -594,7 +599,8 @@ export class WeChatChannel {
             (addressedAnswer || /(?:那个|那项|那个会话|之前的|的那个|的那项)[。！]?$|^(?:我指的|我说的|选择|选一下)/.test(text))) {
           choice = { id: entry.item.id, revision: entry.item.revision }
         } else if (isQuestion || /^(?:确定|可以|继续|允许|同意|拒绝|取消|是|否|好|确认|\d+)$/.test(text)) {
-          return finish('请用“回答：…”答题，或用“任务：…”另发业务补充。发“待办”可重看题目。')
+          if (!canQuery || !isQuestion) return finish('请用“回答：…”答题，或用“任务：…”另发业务补充。发“待办”可重看题目。')
+          queryOnly = true
         }
       } else if (row.privatePending || open.some(c => c.privateInput) || explicit || addressedAnswer ||
           /^(?:允许|批准|同意|拒绝|不同意|确定|确认授权|确认设置|都不是|第[一二三四1-4][个项]?|取消|\d+)$/.test(text)) {
@@ -607,7 +613,7 @@ export class WeChatChannel {
         // An explicitly new input after an empty queue starts a fresh conversation.
         // Replies captured against the retired card were rejected above.
         if (paused && !open.length && !row.shown.length) this.store.wxSave('queue', { id:'active', state:'ready' })
-        this.router.admit({ requestId: 'wx-' + row.id, text: task?.[1] || text }, { generation, inbox: row.id, relatedTasks: row.relatedTasks, ...(task && { newTask: true }), ...(choice && { choice }) }, row.routing)
+        this.router.admit({ requestId: 'wx-' + row.id, text: task?.[1] || text }, { generation, inbox: row.id, relatedTasks: row.relatedTasks, ...(task && { newTask: true }), ...(choice && { choice }), ...(queryOnly && {queryOnly}) }, row.routing)
         this.store.wxSave('in', { ...row, state: 'done', body: null })
       })
       this.router.kickInputs()

@@ -69,6 +69,37 @@ export function renderExpression(fact, profile, channel = 'web') {
   return parts.join('\n')
 }
 
+
+export function renderWorkspacePage(intent, lines, {partial,psmEnabled,profile,channel}) {
+  const title = {projects:'项目列表',overview:'项目简介',tasks:'任务记录',history:'历史会话',activity:'最近活动（按会话或任务更新时间）'}[intent.view]
+  const limit = channel === 'wechat' ? 1050 : 5000
+  const pages = [[]]
+  let length = 0
+  for (const row of lines) {
+    if (length && (length + row.text.length + 1 > limit || pages.at(-1).length >= 50)) {
+      pages.push([])
+      length = 0
+    }
+    pages.at(-1).push(row)
+    length += row.text.length + 1
+  }
+  const page = intent.page ?? 1
+  const rows = pages[page-1]
+  const count = intent.view === 'projects' || intent.view === 'overview' ? ' 个' : ' 条'
+  const heading = title + '（' + (partial?'已核实 ':'') + lines.length + count + '）'
+  let text = lines.length ? [heading,...(rows ?? []).map(row=>row.text)].join('\n') :
+    intent.view === 'projects' && !partial ? '当前没有可列出的项目。' : '目前没有可核实的'+title+'。'
+  if (!rows) text += '\n该页没有结果。'
+  if (pages.length > 1) text += '\n第 '+page+' / '+pages.length+' 页。'+(page < pages.length?'可重发原问题并注明“第 '+(page+1)+' 页”。':'')
+  if (partial) text += '\n当前只显示已核实的部分结果。'
+  if (['overview','history'].includes(intent.view)) {
+    if (!psmEnabled) text += '\n历史索引未启用。'
+    else if (intent.view === 'history' || profile.presentation.verbosity !== 'concise')
+      text += '\n历史资料来自已有索引，可能尚未收全。'
+  }
+  return {text,guards:lines.flatMap(row=>row.guard?[row.guard]:[])}
+}
+
 // The source is already restricted to text eligible for this channel.
 // Approval cards use their separate complete, fingerprint-checked delivery path.
 export function wechatParts(text,mode,limit=1200) {

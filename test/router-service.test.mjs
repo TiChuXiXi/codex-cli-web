@@ -50,6 +50,8 @@ async function fixture(t, { taskMode = true, discover = false, resumeExistingPer
     routerQueueHead: async threadId => submitted.find(item => item.threadId === threadId && !consumed.has(item.clientUserMessageId) &&
       !threads.get(threadId)?.turns.some(turn => turn.items?.some(entry => entry.clientId === item.clientUserMessageId))) ?? null,
     status: () => ({ phase: 'ready', codexVersion: '0.169.1' }),
+    psmMetadata: async id => threads.get(id)?.thread,
+    workspaceProjects: async () => hub.projects(),
     psmThreads: async () => ({data: [], nextCursor: null}),
     projects: async () => discover ? [{ cwd, name: 'Alpha', threadCount: 2 }] : [],
     listThreads: async () => ({ data: [...threads.values()].map(value => value.thread) }),
@@ -104,6 +106,7 @@ async function fixture(t, { taskMode = true, discover = false, resumeExistingPer
       select: value => { selection = value ?? defaultSelection },
       resolveSelection: value => value?.model === 'alternate' && value.effort === 'medium' ||
         value?.model === 'offline-fixture' && value.effort === 'high' ? value : null,
+      classify: async () => ({operation:'work',view:'none',scope:'unspecified',projects:[],topic:'',status:'any',page:1,work:''}),
       close() {},
       start: async () => { starts++; return { thread: { id: 'router-only', cwd: routerCwd } } },
       resume: async id => { resumes++; return { thread: { id, cwd: routerCwd } } },
@@ -502,6 +505,7 @@ test('Router chats and restores the same session and transcript', async t => {
 
 test('Router persists the turn phase and tool activity exposed in chat', async t => {
   const fx = await fixture(t)
+  fx.router.app.classify = async () => proposal('none',{operation:'other'})
   await fx.router.send({ requestId: 'process-chat-0001', text: '查看会话过程' })
   const routerThreadId = fx.router.read().primaryThreadId
   const turnId = fx.router.read().activeTurnId
@@ -941,6 +945,7 @@ test('authenticated RPC reaches the private Router service through the workbench
         onClose: () => () => {},
         close() {},
         send(message) {
+          if (message.method === 'thread/list') queueMicrotask(() => onMessage({id:message.id,result:{data:[],nextCursor:null}}))
           if (message.method === 'initialize') queueMicrotask(() => onMessage({ id: message.id, result: { userAgent: 'fixture/0.169.1' } }))
         },
       }
@@ -951,6 +956,7 @@ test('authenticated RPC reaches the private Router service through the workbench
       const threadId = 'private-router'
       return {
         cwd, selected: { model: 'offline-fixture' }, close() {},
+        classify: async () => proposal('overview'),
         start: async () => ({ thread: { id: threadId, cwd } }),
         send: async (_threadId, _text, requestId) => {
           const turn = { id: 'hello-turn', status: 'completed' }
@@ -988,6 +994,14 @@ test('authenticated RPC reaches the private Router service through the workbench
   const read = await (await rpc('router/read', {}, cookie)).json()
   assert.deepEqual(read.result.value.messages.map(message => message.text), ['你好', '你好！'])
   assert.deepEqual(read.result.value.tasks, [])
+  await rpc('router/send',{requestId:'http-switch-task',text:'切换到任务模式'},cookie)
+  const query={requestId:'http-workspace-query',text:'这些项目都是干啥的'}
+  assert.equal((await rpc('router/send',query)).status,401)
+  assert.equal((await (await rpc('router/send',query,cookie)).json()).result.value.status,'completed')
+  const snapshot=(await (await rpc('router/read',{},cookie)).json()).result.value
+  assert.match(snapshot.messages.at(-1).text,/没有可核实的项目简介/)
+  assert.equal(snapshot.routing.mode,'task')
+  assert.deepEqual(snapshot.tasks,[])
 })
 
 async function dispatch(fx, requestId, threadId = 'worker-a') {
@@ -1381,12 +1395,249 @@ test('a phone clarification is delivered once and its original instruction reach
   await until(() => client.sent.length === 1)
   assert.match(client.sent[0].text,/同名测试甲.*同名测试乙/s)
   assert.doesNotMatch(client.sent[0].text,/选中后将继续|worker-a|帮我继续/)
+  await interleaveQuery(fx,client,'query-during-choice')
   channel.accept({msgs:[inbound('selected','第二个')]})
   await until(() => fx.submitted.length === 1)
   assert.equal(fx.submitted[0].threadId,'worker-b')
   assert.equal(fx.submitted[0].correction, undefined)
   assert.equal(fx.submitted[0].text,source.text)
   assert.equal(fx.sent.length,1)
+})
+
+
+
+async function interleaveQuery(fx, client, id) {
+  const {router:r} = fx
+  const origin={generation:r.wechat.account.generation}
+  const before=workspaceSnapshot(fx,origin)
+  const cards=r.store.wxRows('card','open').map(c=>[c.id,c.key,c.index,c.presentation])
+  const classify=r.app.classify
+  r.app.classify=async()=>proposal('overview')
+  const input=inbound(id,'这些项目都是干啥的')
+  r.wechat.accept({msgs:[input,input]})
+  await until(()=>client.sent.some(m=>m.context===input.context_token && m.text.includes('项目简介')))
+  assert.equal(client.sent.filter(m=>m.context===input.context_token && m.text.includes('项目简介')).length,1)
+  assert.deepEqual(workspaceSnapshot(fx,origin),before)
+  assert.deepEqual(r.store.wxRows('card','open').map(c=>[c.id,c.key,c.index,c.presentation]),cards)
+  r.app.classify=classify
+}
+
+function proposal(view, changes = {}) {
+  return {operation:'read',view,scope:'all',projects:[],status:'any',topic:'',page:1,work:'',...changes}
+}
+
+function workspaceSnapshot(fx, origin) {
+  const {router} = fx
+  return {
+    routing:router.routing(origin), web:router.routing(),
+    previous:router.store.get('routing-previous',router.routing(origin).channel),
+    tasks:router.store.list('task').map(row=>row.id),
+    commands:router.store.db.prepare('SELECT * FROM router_commands').all(),
+    keys:router.store.list('dispatch-key'), turns:[...fx.threads].map(([id,t])=>[id,t.turns.length]),
+    approvals:router.read().interactions.map(i=>[i.dispatchId,i.instanceId]),
+    clarifications:router.read().clarifications.map(c=>[c.id,c.revision]),
+    choices:router.store.list('psm-revision'), submitted:fx.submitted.length, created:fx.creations.length,
+  }
+}
+
+test('natural workspace proposals use verified records across projects and preserve the RCC state',async t=>{
+  const fx = await fixture(t,{projectName:'aaa'})
+  const r = fx.router
+  const worker = fx.threads.get('worker-a')
+  worker.thread.name = 'USB 现场排查'
+  fx.hub.psmThreads = async ({archived})=>({data:archived?[]:[worker.thread],nextCursor:null})
+  fx.hub.psmTurns = async ()=>({data:[{id:'old',items:[{id:'msg',type:'agentMessage',text:'USB 掉线已复测 token=hidden123'}]}],nextCursor:null})
+  await r.psm.control({action:'enable'})
+  await r.psm.sync.running
+  const root = join(fx.cwd,'..','certbase')
+  await mkdir(root)
+  const extra = await loadRouterProjects([{id:'certbase',name:'certbase',cwd:root}],r.directory)
+  const cert = extra.get('certbase')
+  r.projects.set(cert.id,cert)
+  const scope = {scope:'named',projects:['certbase']}
+  const uid = r.psm.identity(cert)
+  r.store.put('psm-entry','cert-info',{id:'cert-info',uid,projectId:cert.id,state:'active',revision:1,kind:'description',level:'user_confirmed',value:'测试登记资料'})
+  r.writeFocus(r.routing(),{threadId:'worker-a',projectId:'alpha-project'})
+  const pending = join(fx.cwd,'..','public-name')
+  await mkdir(pending)
+  fx.hub.projects = async ()=>[{cwd:pending,name:'public-name',lastUpdatedAt:55,threadCount:999}]
+  r.store.put('psm-project','hidden-index',{uid:'hidden',cwd:'/private/forbidden-project'})
+  r.store.put('psm-entry','hidden-info',{id:'hidden-info',uid:'hidden',state:'active',kind:'description',value:'hidden-topic'})
+  const cases = [
+    ['这些项目都是干啥的',proposal('overview'),/aaa：历史会话涉及：USB 现场排查/],
+    ['你了解我现在有哪些项目吗',proposal('projects'),/项目列表（3 个）/],
+    ['简短介绍一下 certbase',proposal('overview',scope),/certbase：已确认：测试登记资料/],
+    ['aaa 是做什么的',proposal('overview',{scope:'named',projects:['aaa']}),/历史会话涉及/],
+    ['最近都忙了些什么',proposal('activity'),/最近活动/],
+    ['最近有哪些任务',proposal('tasks'),/没有可核实的任务记录/],
+    ['现在有哪些任务正在执行',proposal('tasks',{status:'running'}),/没有可核实/],
+    ['之前 USB 那个问题后来怎么样',proposal('history',{topic:'USB'}),/USB 掉线已复测/],
+    ['USB 掉线任务在哪',proposal('history',{topic:'USB 掉线'}),/USB 现场排查/],
+  ]
+  const before = workspaceSnapshot(fx)
+  for (const [i,[text,plan,expected]] of cases.entries()) {
+    r.app.classify = async (_id,input)=>{assert.equal(input,text);return plan}
+    const requestId = 'workspace-read-'+i
+    assert.equal((await r.send({requestId,text})).status,'completed')
+    const reply = r.store.get('message','control:'+requestId).text
+    assert.match(reply,expected)
+    assert.doesNotMatch(reply,/hidden123|hidden-topic|forbidden-project|999|worker-a/)
+    assert.deepEqual(workspaceSnapshot(fx),before)
+  }
+  assert.equal(fx.sent.length,0)
+  r.store.put('psm-entry','cert-info',{state:'revoked',revision:2})
+  assert.match(r.read().messages.find(m=>m.id==='control:workspace-read-2').text,/范围已变化/)
+  r.app.classify = async ()=>proposal('overview',scope)
+  await r.send({requestId:'no-description-left',text:'介绍这个项目'})
+  assert.match(r.store.get('message','control:no-description-left').text,/暂无可靠项目简介/)
+})
+
+
+test('workspace statuses come from each command and execution owner, including multiple jobs on one thread',async t=>{
+  const fx=await fixture(t)
+  const r=fx.router, id='alpha-project'
+  const uid=r.psm.identity(r.projects.get(id))
+  for (const [key,status] of [['first','awaiting_approval'],['follow','submitted'],['done','completed']]) {
+    r.store.put('task',key,{id:key,projectId:id,threadId:'worker-a',psmProjectUid:uid,instruction:'可见工单 '+key,
+      status,updatedAt:Date.now()})
+    r.store.patchCommand(key,{state:'delivered',...(key==='follow' && {ownerId:'first'})})
+  }
+  r.app.classify=async()=>proposal('tasks',{status:'awaiting_approval'})
+  const before=workspaceSnapshot(fx)
+  await r.send({requestId:'workspace-pending-status',text:'手头还压着哪些要我批准的活？'})
+  const {text}=r.store.get('message','control:workspace-pending-status')
+  assert.match(text,/first — 等待审批/)
+  assert.match(text,/follow — 等待审批/)
+  assert.doesNotMatch(text,/done/)
+  assert.deepEqual(workspaceSnapshot(fx),before)
+})
+
+test('revocation before WeChat flush hides a completed query on both surfaces',async t=>{
+  const client=fakeClient()
+  const fx=await fixture(t,{createChannel:r=>new WeChatChannel(r,client)})
+  const r=fx.router, channel=r.wechat
+  channel.bind()
+  await until(()=>channel.account)
+  const project=r.projects.get('alpha-project')
+  const uid=r.psm.identity(project)
+  r.store.put('psm-read-grant',project.id,project)
+  r.projects.delete(project.id)
+  r.store.put('psm-entry','granted',{id:'granted',uid,projectId:project.id,kind:'description',value:'限时可见的主题',
+    state:'active',level:'user_confirmed',revision:1})
+  r.app.classify=async()=>proposal('overview')
+  const originalFlush=channel.delivery.flush.bind(channel.delivery)
+  channel.delivery.flush=async()=>{}
+  const input=inbound('grant-cutoff','这些项目都是干啥的')
+  channel.accept({msgs:[input]})
+  await until(()=>r.read().messages.some(m=>m.text.includes('限时可见的主题')))
+  await r.psm.control({action:'purge',projectId:project.id,confirmed:true})
+  assert.ok(!r.read().messages.some(m=>m.text.includes('限时可见的主题')))
+  channel.delivery.flush=originalFlush
+  await until(()=>client.sent.some(m=>m.text.includes('访问范围已变化')))
+  assert.ok(!client.sent.some(m=>m.text.includes('限时可见的主题')))
+  assert.equal(r.store.list('dispatch-key').length,0)
+})
+
+test('invalid semantic proposal and unavailable history never fall back to a Worker',async t=>{
+  const fx=await fixture(t)
+  fx.router.app.classify=async()=>proposal('overview',{operation:'mixed',work:'模型生成的修改指令'})
+  const before=workspaceSnapshot(fx)
+  await fx.router.send({requestId:'invalid-mixed-span',text:'介绍一下并检查代码'})
+  assert.match(fx.router.store.get('message','control:invalid-mixed-span').text,/查询已有工作记录/)
+  await fx.router.psm.control({action:'disable'})
+  fx.router.app.classify=async()=>proposal('history',{topic:'USB'})
+  await fx.router.send({requestId:'disabled-index-query',text:'之前 USB 那个问题后来怎么样'})
+  assert.match(fx.router.store.get('message','control:disabled-index-query').text,/历史索引未启用/)
+  assert.deepEqual(workspaceSnapshot(fx),before)
+})
+
+test('workspace pagination fits ordinary inventories and marks incomplete scans',async t=>{
+  const fx = await fixture(t)
+  const rows = []
+  for (let i=0;i<105;i++) {
+    const name='proj-'+String(i).padStart(3,'0')
+    const cwd=join(fx.cwd,name)
+    await mkdir(cwd)
+    rows.push({cwd,name})
+  }
+  fx.hub.projects = async ()=>({rows:rows.slice(0,13),complete:true})
+  fx.router.app.classify = async ()=>proposal('overview')
+  await fx.router.send({requestId:'ordinary-overview',text:'简短介绍每个项目'})
+  const ordinary=fx.router.store.get('message','control:ordinary-overview').text
+  assert.match(ordinary,/14 个/)
+  assert.doesNotMatch(ordinary,/第 1 页/)
+  fx.hub.projects = async ()=>({rows,complete:false})
+  fx.router.app.classify = async ()=>proposal('projects',{page:3})
+  await fx.router.send({requestId:'large-third-page',text:'我有哪些项目，第3页'})
+  assert.match(fx.router.store.get('message','control:large-third-page').text,/proj-104/)
+  assert.match(fx.router.store.get('message','control:large-third-page').text,/部分结果/)
+})
+
+test('new work, batch scope, and mixed questions preserve reliable dispatch and the original target',async t=>{
+  const fx = await fixture(t,{projectName:'certbase'})
+  const {router:r} = fx
+  r.writeFocus(r.routing(),{projectId:'alpha-project',threadId:'worker-a'})
+  r.app.classify = async ()=>proposal('none',{operation:'work'})
+  await r.send({requestId:'all-project-audit',text:'检查所有项目安全问题'})
+  assert.equal(r.dispatcher.list().length,0)
+  assert.match(r.store.get('message','control:all-project-audit').text,/指定先处理/)
+  for (const [id,text,plan,expected] of [
+    ['analyze-project-again','重新分析 certbase',proposal('none',{operation:'work',scope:'named',projects:['certbase']}),'重新分析 certbase'],
+    ['mixed-explicit-project','介绍一下 certbase 并检查代码架构',proposal('overview',{operation:'mixed',scope:'named',projects:['certbase'],work:'检查代码架构'}),'检查代码架构'],
+    ['mixed-focused-project','介绍一下并检查代码',proposal('overview',{operation:'mixed',scope:'focus',work:'检查代码'}),'检查代码'],
+  ]) {
+    r.app.classify = async ()=>plan
+    await r.send({requestId:id,text})
+    if (plan.operation==='mixed') assert.match(r.store.get('message','workspace:'+id).text,/certbase/)
+    assert.equal((await fx.tool('dispatch_task',args(id))).success,true)
+    fx.finish()
+    const task=r.dispatcher.list().find(t=>t.requestId===id)
+    assert.equal(task.instruction,expected)
+    assert.equal(task.threadId,'worker-a')
+    assert.ok(r.store.command(task.id))
+  }
+})
+
+test('project lists in WeChat bypass pending target resolution and preserve the original request', async t => {
+  const client = fakeClient()
+  const fx = await fixture(t, { createChannel: router => new WeChatChannel(router, client) })
+  const discovered = join(fx.cwd, 'discovered')
+  await mkdir(discovered)
+  fx.hub.projects = async () => [{ cwd: discovered, name: 'Discovered', threadCount: 1 }]
+  const channel = fx.router.wechat
+  channel.bind()
+  await until(() => channel.account)
+
+  const question = '请整理昨天的改动'
+  channel.accept({ msgs: [inbound('pending-project-target', question)] })
+  await until(() => fx.router.active?.turnId)
+  const originalId = fx.router.active.requestId
+  fx.finish('请提供项目名。')
+  await until(() => client.sent.some(message => message.text.includes('尚未派发')))
+
+  for (const [id, text] of [['polite', '请列出当前的所有项目'], ['plain', '列出当前的所有项目']]) {
+    const context = 'context-' + id
+    channel.accept({ msgs: [inbound(id, text)] })
+    const reply = await until(() => client.sent.find(message => message.context === context))
+    assert.equal(reply.text, '项目列表（2 个）\nAlpha\nDiscovered（待授权）')
+  }
+  assert.equal(fx.sent.length, 1)
+  assert.equal(fx.submitted.length, 0)
+
+  await interleaveQuery(fx,client,'query-during-target')
+  channel.accept({ msgs: [inbound('selected-project-after-list', 'Alpha项目')] })
+  await until(() => fx.router.active?.turnId)
+  assert.equal(fx.router.active.targetAnswer.originalId, originalId)
+  assert.equal(fx.sent.at(-1).text, question)
+})
+
+test('project lists on the Web report an empty directory in chat mode without calling the model', async t => {
+  const { router, sent } = await fixture(t, { taskMode: false, discover: true })
+  router.hub.projects = async () => []
+  const requestId = 'empty-project-list'
+  assert.equal((await router.send({requestId, text: '查看项目列表'})).status, 'completed')
+  assert.equal(router.store.get('message', 'control:' + requestId).text, '当前没有可列出的项目。')
+  assert.equal(sent.length, 0)
 })
 
 test('phone target reply after a missed dispatch survives restart and permission approval with the complete original question', async t => {
@@ -1502,6 +1753,35 @@ test('a phone approval answers the original child Worker while the shared Router
   assert.throws(() => fx.router.respond({dispatchId:task.id,instanceId:request.instanceId,response:{decision:'accept'}}),/失效/)
 })
 
+test('a workspace query preserves the live WeChat approval instance until the original answer',async t=>{
+  const client=fakeClient()
+  const fx=await fixture(t,{createChannel:r=>new WeChatChannel(r,client)})
+  const channel=fx.router.wechat
+  channel.bind()
+  await until(()=>channel.account)
+  const task=await dispatch(fx,'query-while-approval')
+  const scope={threadId:task.threadId,turnId:'turn-'+task.id}
+  fx.bus.publish('item/upsert',{item:{type:'userMessage',clientId:task.id}},scope)
+  const request={requestId:32,instanceId:'same-approval-instance',method:'item/commandExecution/requestApproval',
+    params:{...scope,command:'npm run build',cwd:fx.cwd}}
+  let answered=false
+  fx.hub.pendingApprovals=()=>answered?[]:[request]
+  fx.hub.respondApproval=(id,response,instanceId)=>{
+    assert.equal(id,32)
+    assert.equal(instanceId,request.instanceId)
+    assert.deepEqual(response,{decision:'accept'})
+    answered=true
+  }
+  fx.bus.publish('approval/requested',request,scope)
+  channel.accept({msgs:[inbound('connect-for-approval','请列出当前所有项目')]})
+  await until(()=>client.sent.some(m=>m.text.includes('npm run build')))
+  await interleaveQuery(fx,client,'query-during-approval')
+  assert.equal(answered,false)
+  channel.accept({msgs:[inbound('answer-original-approval','允许')]})
+  await until(()=>answered)
+})
+
+
 test('a structured question answered in WeChat resumes its completed Worker exactly once', async t => {
   const client = fakeClient()
   const fx = await fixture(t, {createChannel: router => new WeChatChannel(router,client)})
@@ -1513,8 +1793,9 @@ test('a structured question answered in WeChat resumes its completed Worker exac
   fx.threads.get(task.threadId).turns = [{id:'turn-' + task.id,status:'completed',
     items:[{type:'userMessage',clientId:task.id},item]}]
   await fx.router.dispatcher.reconcile(fx.router.dispatcher.get(task.id))
-  channel.accept({msgs:[inbound('first','你好')]})
+  channel.accept({msgs:[inbound('first','项目列表')]})
   await until(() => client.sent.some(m => m.text.includes('使用哪个数据库？')))
+  await interleaveQuery(fx,client,'query-during-question')
   channel.accept({msgs:[inbound('answer','SQLite'),inbound('answer','SQLite')]})
   await until(() => fx.router.dispatcher.list().some(t => t.instruction.includes('使用哪个数据库？\nSQLite')))
   const followups = fx.router.dispatcher.list().filter(task => task.instruction.includes('\nSQLite'))

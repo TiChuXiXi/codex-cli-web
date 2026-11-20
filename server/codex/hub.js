@@ -434,6 +434,31 @@ export class CodexHub {
     }
   }
 
+  // Workspace reads need complete discovery, but retain only directory metadata.
+  async workspaceProjects(routerThreadId) {
+    const projects = new Map()
+    const seen = new Set()
+    const deadline = Date.now() + 15000
+    let cursor
+    let complete = false
+    do {
+      let page
+      try {
+        page = await this.listThreads({cursor,limit:100,sortKey:'created_at',sortDirection:'asc'})
+      } catch { break }
+      for (const t of page.data) {
+        if (!t?.cwd || t.id === routerThreadId || t.ephemeral || t.parentThreadId) continue
+        const last = projects.get(t.cwd)?.lastUpdatedAt ?? 0
+        projects.set(t.cwd,{cwd:t.cwd,name:basename(t.cwd),lastUpdatedAt:Math.max(last,t.updatedAt ?? 0)})
+      }
+      cursor = page.nextCursor
+      if (!cursor) complete = true
+      if (seen.has(cursor)) break
+      seen.add(cursor)
+    } while (cursor && Date.now() < deadline)
+    return {rows:[...projects.values()],complete}
+  }
+
   /** 项目聚合：按 cwd 分组，带最近活动、模型、git 信息。 */
   async projects({ refresh = false } = {}) {
     const provider = 'openai'

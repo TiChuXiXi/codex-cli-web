@@ -29,6 +29,14 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (method === 'router/capabilities') result = { policyVersion: 2, tools: ${JSON.stringify(toolNames.map(name => routerNamespace + '/' + name))} }
   if (method === 'model/list') result = { data: [{ model: 'gpt-6.1-terra', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] },
     { model: 'other', supportedReasoningEfforts: [{ reasoningEffort: 'low' }] }] }
+  if (method === 'turn/start' && params.outputSchema) {
+    const turn = {id:'intent-test',status:'completed',items:[{type:'agentMessage',text:JSON.stringify({
+      operation:'read',view:'overview',scope:'all',projects:[],topic:'',status:'any',page:1,work:''})}]}
+    if (params.clientUserMessageId !== 'router-intent:test-query-123' || params.outputSchema.additionalProperties !== false ||
+        params.threadId !== 'previous-sol-thread' || !params.additionalContext['workspace-operation']) process.exit(2)
+    process.stdout.write(JSON.stringify({method:'turn/completed',params:{threadId:params.threadId,turn}})+'\\n')
+    result={turn:{id:turn.id,status:'inProgress'}}
+  }
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
 })
 `
@@ -44,6 +52,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   assert.equal(resumed.model, 'gpt-6.1-terra')
   assert.equal(resumed.threadId, 'previous-sol-thread')
   assert.equal(resumed.approvalPolicy, 'never')
+  const intent = await app.classify('previous-sol-thread','这些项目都是干啥的','test-query-123',{})
+  assert.equal(intent.view,'overview')
   const sent = (await app.send('previous-sol-thread', 'hello', 'request-id-1234')).params
   assert.equal(sent.model, 'gpt-6.1-terra')
   assert.equal(sent.effort, 'high')

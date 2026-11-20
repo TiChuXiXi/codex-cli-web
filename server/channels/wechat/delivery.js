@@ -1,6 +1,7 @@
 import { terminalFact, renderExpression, wechatParts } from '../../../shared/router-expression.js'
 import { randomUUID } from 'node:crypto'
 import { redact } from '../../router/psm-index.js'
+import { verifyWorkspaceAccess } from '../../router/workspace-query.js'
 import { approvalFingerprint, liveCards } from './interactions.js'
 
 const partDelayMs = 2000
@@ -142,6 +143,15 @@ export class WeChatDelivery {
         const entry = liveCards(channel.router).get(card.key)
         if (entry?.type !== 'approval' || approvalFingerprint(entry.request) !== card.fingerprint) {
           channel.cardsDirty = true
+          continue
+        }
+      }
+      if (row.workspaceGuards?.length) {
+        const visible = await verifyWorkspaceAccess(channel.router,row.workspaceGuards)
+        if (signal.aborted || account !== channel.account || this.store.wxRead('out',row.id)?.state !== 'pending') return
+        if (!visible) {
+          this.store.wxSave('out',{...row,state:'cancelled',body:null})
+          this.enqueue('access:'+row.id,'项目访问范围已变化，请重新查询。',{inbox:row.inbox})
           continue
         }
       }

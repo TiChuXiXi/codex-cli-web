@@ -318,6 +318,10 @@ export class SourceIndex {
     }
     return hits
   }
+  recentTopics(project) {
+    return this.db.prepare(`SELECT id,title FROM threads WHERE project=? AND state IN ('active','archived')
+      AND synced IS NOT NULL AND dirty=0 AND title<>'' ORDER BY synced DESC,id LIMIT 3`).all(project)
+  }
   source(id) {
     return this.db.prepare('SELECT id,project,state,title FROM threads WHERE id=?').get(id)
   }

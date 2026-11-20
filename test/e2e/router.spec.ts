@@ -1,5 +1,48 @@
 import { expect, test } from '@playwright/test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { FIXTURE_TOKEN, startFixture } from '../fixtures/start-app.mjs'
 import type { RouterSnapshot } from '../../shared/contracts'
+
+test('task-mode overview travels through the authenticated Web composer and preserves task state', async ({page}) => {
+  const root=await mkdtemp(join(tmpdir(),'browser-workspace-'))
+  let classified=''
+  const app=await startFixture({
+    router:{enabled:true,projectRoot:root,launcher:'/fixture/router',launcherSha256:'a'.repeat(64),
+      projects:[{id:'example',name:'示例项目',cwd:root}]},
+    openRouterApp:async ({directory})=>({
+      cwd:join(directory,'workspace'),selected:{model:'fixture'},
+      start:async()=>({thread:{id:'browser-router',cwd:join(directory,'workspace')}}),
+      classify:async (_thread,input)=>{
+        classified=input
+        return {operation:'read',view:'overview',scope:'named',projects:['示例项目'],status:'any',page:1,topic:'',work:''}
+      },close(){},
+    }),
+  })
+  try {
+    await app.router.opening
+    app.router.setMode({mode:'task',revision:0})
+    const routing=app.router.routing()
+    await page.goto(app.origin)
+    await page.getByLabel('访问凭证',{exact:true}).fill(FIXTURE_TOKEN)
+    await page.getByRole('button',{name:'登录工作台'}).click()
+    await page.getByRole('button',{name:'中枢 Router',exact:true}).click()
+    const input=page.getByRole('textbox',{name:'给中枢发送消息'})
+    const text='示例项目具体是干啥的？'
+    await input.fill(text)
+    await input.press('Enter')
+    await expect(page.getByRole('log').getByText(/示例项目：暂无可靠项目简介/)).toBeVisible()
+    expect(classified).toBe(text)
+    expect(app.router.routing()).toEqual(routing)
+    expect(app.router.store.list('dispatch-key')).toEqual([])
+    expect(app.router.store.db.prepare('SELECT count(*) AS n FROM router_commands').get().n).toBe(0)
+  } finally {
+    await page.close()
+    await app.close()
+    await rm(root,{recursive:true,force:true})
+  }
+})
 
 test('new project opens the Router permission confirmation when the Worker default needs authorization', async ({ page }) => {
   let pending = false

@@ -1,6 +1,7 @@
 import { identityContract, buildExpressionContext } from '../../shared/router-identity.js'
 import { profileSettings } from '../../shared/router-presentation.js'
 import { createHash } from 'node:crypto'
+import { intentSchema, intentInstructions } from './workspace-intent.js'
 import { createReadStream } from 'node:fs'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
@@ -97,15 +98,27 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
   })
   const rpc = new JsonRpcClient({ send: message => transport.send(message) })
   transport.onMessage(message => rpc.handleMessage(message))
-  transport.onClose(() => { rpc.close(); onClose() })
-  rpc.onNotification(onEvent)
+  let intentTurn
+  transport.onClose(() => { intentTurn?.reject(new Error('Router disconnected')); rpc.close(); onClose() })
+  rpc.onNotification((method, params) => {
+    if (!intentTurn || intentTurn.threadId !== params.threadId) return onEvent(method, params)
+    // A completion can arrive before the turn/start acknowledgement.
+    if (method === 'item/completed' && params.item?.type === 'agentMessage')
+      intentTurn.answers.set(params.turnId, params.item.text)
+    if (method === 'turn/completed') {
+      intentTurn.finished.set(params.turn.id, params.turn)
+      intentTurn.check()
+    }
+  })
   rpc.onServerRequest(request => {
     if (request.method !== 'item/tool/call') throw Object.assign(new Error('Router 请求被拒绝'), { code: -32601 })
+    if (intentTurn) throw Object.assign(new Error('意图解析回合没有操作权限'), { code: -32601 })
     return onTool(request.params)
   })
   const request = (method, params, timeoutMs = 20000) => rpc.request(method, params, { timeoutMs, signal })
   const close = () => {
     signal?.removeEventListener('abort', close)
+    intentTurn?.reject(new Error('Router closed'))
     rpc.close()
     transport.close()
   }
@@ -160,6 +173,39 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
         ...base, model: selected.model, threadId, excludeTurns: true, sandbox: 'read-only', developerInstructions: instructions,
         config: { ...threadConfig, model_reasoning_effort: selected.effort },
       }),
+      async classify(threadId, text, requestId, routing) {
+        const {promise, resolve, reject} = Promise.withResolvers()
+        const probe = {threadId, answers:new Map(), finished:new Map(), reject, check() {
+          const turn = this.finished.get(this.id)
+          if (!turn) return
+          const item = turn.items?.findLast(i => i.type === 'agentMessage')
+          if (turn.status === 'completed') resolve(item?.text ?? this.answers.get(this.id))
+          else reject(new Error('意图解析未完成'))
+        }}
+        intentTurn = probe
+        const timer = setTimeout(() => reject(new Error('意图解析超时')), 90000)
+        try {
+          const start = request('turn/start', {
+            ...base, model:selected.model, threadId, effort:selected.effort,
+            sandboxPolicy:{type:'readOnly',networkAccess:false}, clientUserMessageId:'router-intent:' + requestId,
+            outputSchema:intentSchema,
+            additionalContext:{'workspace-operation':{kind:'application',value:intentInstructions +
+              '\n当前渠道焦点项目：' + JSON.stringify(routing.focus?.projectId ?? null) +
+              (routing.awaitingTarget ? '。当前正在等待目标答复，单独的项目或会话名称用 other；独立查询仍用 read。' : '')}},
+            input:[{type:'text',text,text_elements:[]}],
+          },60000).then(({turn}) => {
+            if (!turn?.id) throw new Error('意图回合未确认')
+            probe.id = turn.id
+            if (turn.status !== 'inProgress' && turn.status !== undefined) probe.finished.set(turn.id,turn)
+            probe.check()
+          })
+          const [, result] = await Promise.all([start,promise])
+          return JSON.parse(result)
+        } finally {
+          clearTimeout(timer)
+          intentTurn = null
+        }
+      },
       send: (threadId, text, requestId, { workerReceipt = false, workerDefaults, relatedTasks, choice, continuedFrom, targetAnswer, presentation, expression, channel, routing } = {}) => request('turn/start', {
         ...base,
         model: selected.model,

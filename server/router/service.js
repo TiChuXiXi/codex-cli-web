@@ -4,6 +4,8 @@ import { mkdir, realpath, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { HubError } from '../codex/hub.js'
+import { currentAccess, queryWorkspace } from './workspace-query.js'
+import { normalizeIntent } from './workspace-intent.js'
 import { connectRouterApp } from './app-server.js'
 import { redact } from './psm-index.js'
 import { finalAnswer, RouterDispatcher } from './dispatcher.js'
@@ -199,6 +201,15 @@ export class RouterService {
     if (!pending.length) return
     let nativeStatus
     for (const message of pending) {
+      if (message.localProjectQuery || message.intentPending) {
+        if (message.intentPending && !message.localProjectQuery) {
+          nativeStatus ??= await this.readThreadStatus(app,this.session.id)
+          if (this.app !== app || this.closed) return
+          this.nativeBusy = nativeStatus !== 'idle'
+        }
+        this.recordMessage({ ...message, status: 'queued' })
+        continue
+      }
       const turn = await this.wake.findTurn(app, { ...message, routerThreadId: this.session.id, startedAt: message.startedAt ?? 0 })
       if (this.app !== app || this.closed) return
       if (turn?.status === 'inProgress') {
@@ -280,7 +291,7 @@ export class RouterService {
       messages: [
         ...(this.store?.list('message', 80).filter(m=>!previousThreads.length || m.routerThreadId===this.session?.id || (m.dispatchId && this.store.get('task',m.dispatchId)?.routerThreadId===this.session?.id)).reverse()
           .flatMap(message => message.turnId ? [message] : (this.store.get('legacy-output', message.id)?.messages ?? [message]))
-          .map(message => ({ id: message.id, role: message.role, label: message.label, text: message.text, status: message.status,
+          .map(message => ({ id: message.id, role: message.role, label: message.label, text: message.workspaceGuards && !currentAccess(this,message.workspaceGuards) ? '项目访问范围已变化。' : message.text, status: message.status,
             turnId: message.turnId, phase: message.phase, durationMs: message.durationMs, tool: message.tool,
             questions: message.questions, dispatchId: message.dispatchId, interactionMethod: message.interactionMethod })) ?? []),
         ...this.deltas.values(),
@@ -299,7 +310,7 @@ export class RouterService {
   async history({threadId,cursor}={}) {
     if(!this.store?.get('router-history',threadId) || !this.app || (cursor!=null && typeof cursor!=='string')) throw new HubError('codex-cli/router-history','旧中枢会话不可用')
     const page=await this.app.request('thread/turns/list',{threadId,cursor,limit:10,sortDirection:'desc',itemsView:'full'})
-    return {nextCursor:page.nextCursor ?? null,messages:page.data.flatMap(turn=>(turn.items ?? []).filter(i=>i.type==='userMessage'||i.type==='agentMessage').map(i=>({
+    return {nextCursor:page.nextCursor ?? null,messages:page.data.filter(turn=>!turn.items?.some(i=>i.type==='userMessage' && i.clientId?.startsWith('router-intent:'))).flatMap(turn=>(turn.items ?? []).filter(i=>i.type==='userMessage'||i.type==='agentMessage').map(i=>({
       id:i.id,role:i.type==='userMessage'?'user':'assistant',text:i.type==='userMessage'?(i.content ?? []).filter(p=>p.type==='text').map(p=>p.text).join(' '):i.text,
     })))}
   }
@@ -726,14 +737,20 @@ export class RouterService {
       this.localReply(message, '还不能唯一确定目标，请回复完整项目名或会话名。原问题已保留。')
       return 'pending'
     }
+    if (original.mixedRead && !original.workTarget) {
+      const intent = {...original.mixedRead,scope:'named',projects:[target.projectId]}
+      const result = await queryWorkspace(this,intent,message).catch(() => ({text:'暂时无法核实项目资料。',guards:[]}))
+      if (this.active !== message) return 'pending'
+      this.workspaceReply(message,result,true)
+    }
     this.store.put('message', message.id, message)
   }
 
   businessText(message) {
-    if (!message.targetAnswer) return message.text
+    if (!message.targetAnswer) return message.workText ?? message.text
     const original = this.store.get('message', 'user:' + message.targetAnswer.originalId)
     if (!original) throw new HubError('codex-cli/router-stale','找不到待派发的原问题，请重新发送。')
-    return original.text
+    return original.workText ?? original.text
   }
 
   async routeContinuation(message) {
@@ -777,7 +794,7 @@ export class RouterService {
       } else {
         this.assertDispatch(message)
         const result = await this.prepare(message,{kind:'dispatch',requestId:message.requestId,projectId:target.projectId,
-          threadId:target.threadId,mode:'resume',instruction:message.text})
+          threadId:target.threadId,mode:'resume',instruction:this.businessText(message)})
         this.localReply(message,result.status === 'needs_confirmation' ? '请先确认目标或授权。' : renderExpression(deliveryFact(result.project ?? target.projectId,'queued'),this.expressionSettings().profile))
       }
     } catch (error) {
@@ -807,13 +824,13 @@ export class RouterService {
     if (source.origin && !this.wechat?.owns(source.origin.generation)) throw new HubError('codex-cli/router-stale','微信绑定已变化')
   }
 
-  localReply(message, text, replyId = message.requestId) {
+  localReply(message, text, replyId = message.requestId, deliveryOptions) {
     this.store.transaction(() => {
       this.store.put('message', message.id, { ...message,status:'completed' })
       this.store.put('message', 'control:'+replyId, { id:'control:'+replyId,routerThreadId:message.routerThreadId,
         role:'assistant',status:'completed',text })
       if (message.origin && this.wechat?.owns(message.origin.generation))
-        this.wechat.delivery.enqueue('control:'+replyId,text,{inbox:message.origin.inbox})
+        this.wechat.delivery.enqueue('control:'+replyId,text,{...deliveryOptions,inbox:message.origin.inbox})
     })
     this.publish()
   }
@@ -835,22 +852,11 @@ export class RouterService {
     this.store.transaction(() => {
       message.routing = captured ?? this.captureRouting(text,origin,requestId)
       const control = routerControl(text)
-      if (control && !(control.type === 'focus' && control.target)) {
+      if (control && control.type !== 'projects' && !(message.routing.mode === 'task' && ['list','status'].includes(control.type)) && !(control.type === 'focus' && control.target)) {
         this.localReply(message,this.localControl(message,control))
         message.status = 'completed'
       } else {
-        // Resolve references against the preceding business message in this conversation,
-        // even when both arrived before the first target was resolved.
-        if (message.routing.mode === 'task' && !control && !origin?.choice && !/^(?:你好|谢谢|多谢|hello|hi)[！!.。 ]*$/i.test(text)) {
-          const routing = message.routing
-          const last = this.store.get('routing-previous', routing.channel)
-          if (!routing.afterFocus && last?.modeRevision === routing.modeRevision) {
-            const selected = this.store.get('focus-result', last.requestId)?.focus
-            if ((selected?.focusRevision ?? last.focusRevision) >= routing.focusRevision)
-              routing.afterMessage = last.requestId
-          }
-          this.store.put('routing-previous', routing.channel, { requestId, modeRevision: routing.modeRevision, focusRevision: routing.focusRevision })
-        }
+        // Business linkage is assigned in FIFO order after the intent is known.
         this.recordMessage(message)
       }
     })
@@ -869,6 +875,99 @@ export class RouterService {
     queueMicrotask(() => this.drainInput().catch(() => this.logger?.warn?.('Router 输入队列暂时不可用')))
   }
 
+
+  linkBusinessInput(message) {
+    const {routing,requestId,text,origin} = message
+    if (routing.mode !== 'task' || routerControl(text) || origin?.choice ||
+        /^(?:你好|谢谢|多谢|hello|hi)[！!.。 ]*$/i.test(text)) return
+    const last = this.store.get('routing-previous',routing.channel)
+    if (last?.requestId === requestId) return
+    if (!routing.afterFocus && last?.modeRevision === routing.modeRevision) {
+      const selected = this.store.get('focus-result',last.requestId)?.focus
+      if ((selected?.focusRevision ?? last.focusRevision) >= routing.focusRevision)
+        routing.afterMessage = last.requestId
+    }
+    this.store.put('routing-previous',routing.channel,{requestId,modeRevision:routing.modeRevision,focusRevision:routing.focusRevision})
+  }
+
+  workspaceReply(message, result, mixed) {
+    if (!currentAccess(this,result.guards)) result = {text:'项目访问范围已变化，请重新查询。',guards:[]}
+    const id = (mixed ? 'workspace:' : 'control:') + message.requestId
+    this.store.transaction(() => {
+      if (!mixed) this.store.put('message',message.id,{...message,status:'completed'})
+      if (this.store.get('message',id)) return
+      this.store.put('message',id,{id,routerThreadId:message.routerThreadId,role:'assistant',status:'completed',
+        text:result.text,workspaceGuards:result.guards})
+      if (message.origin && this.wechat?.owns(message.origin.generation))
+        this.wechat.delivery.enqueue(id,result.text,{inbox:message.origin.inbox,longContent:true,workspaceGuards:result.guards})
+    })
+    this.publish()
+  }
+
+  async routeWorkspace(message, app) {
+    const control = routerControl(message.text)
+    const local = message.localProjectQuery || ['list','projects'].includes(control?.type)
+    if (!local && control?.type !== 'status' && (message.routing.mode !== 'task' || control || message.origin?.choice || message.origin?.continuedFrom)) return false
+    message.intentPending = true
+    this.recordMessage(message)
+    let intent
+    if (local) intent = {operation:'read',view:control?.type === 'list' ? 'tasks' : 'projects',scope:'all',status:'any',page:1}
+    else {
+      try {
+        const previous = this.store.get('routing-previous',message.routing.channel)
+        const pending = previous?.modeRevision === message.routing.modeRevision &&
+          this.store.get('message','user:'+previous.requestId)?.awaitingTarget >= message.admittedAt
+        const proposal = await app.classify(this.session.id,message.text,message.requestId,{...message.routing,awaitingTarget:pending})
+        intent = normalizeIntent(proposal,message.text)
+      }
+      catch {
+        intent = {operation:'clarify'}
+        const status = await this.readThreadStatus(app,this.session.id).catch(() => null)
+        if (this.active === message && status !== 'idle') this.nativeBusy = true
+      }
+    }
+    if (this.active !== message || this.app !== app) return true
+    if (message.origin && !this.wechat?.owns(message.origin.generation)) {
+      this.recordMessage({...message,status:'cancelled'})
+      return true
+    }
+    if (message.origin?.queryOnly && intent.operation !== 'read') {
+      this.localReply(message,'请用“回答：…”处理原题，或用“任务：…”另发业务请求。')
+      return true
+    }
+    if (intent.operation === 'clarify' || control?.type === 'status' && !['read','mixed'].includes(intent.operation)) {
+      this.localReply(message,'你想查询已有工作记录，还是让执行助手开展新的工作？')
+      return true
+    }
+    if (['read','mixed'].includes(intent.operation)) {
+      if (intent.operation === 'mixed' && intent.scope === 'unspecified') intent.scope = 'focus'
+      const result = await queryWorkspace(this,intent,message).catch(() => ({text:'暂时无法核实工作环境资料，请稍后重试。',guards:[]}))
+      if (this.active !== message) return true
+      this.workspaceReply(message,result,intent.operation === 'mixed')
+      if (intent.operation === 'read') return true
+      message.workText = intent.work
+      message.mixedRead = {view:intent.view,topic:intent.topic,status:intent.status,page:intent.page}
+      const named = intent.scope === 'named' && intent.projects.length === 1 ? intent.projects[0] : null
+      const matches = [...this.projects.values()].filter(p => named && targetLabelMatches(named,[p.id,p.name,...p.aliases]))
+      message.workTarget = matches.length === 1 ? {projectId:matches[0].id} : intent.scope === 'focus' ? message.routing.focus : null
+    }
+    if (['work','mixed'].includes(intent.operation) && !separateProjectNames(message.text).length &&
+        (intent.scope === 'all' || intent.projects.length > 1 || /(?:所有|全部|每个)项目/.test(message.text))) {
+      this.localReply(message,'这项检查需要交给执行助手。请指定先处理的项目，当前不会自动向所有项目派发。')
+      return true
+    }
+    message.operation = intent.operation
+    delete message.intentPending
+    if (message.workText && !message.workTarget) {
+      this.linkBusinessInput(message)
+      message.awaitingTarget = Date.now()+lifetime
+      this.localReply(message,'检查工作尚未派发，请指定目标项目或会话。')
+      return true
+    }
+    this.recordMessage(message)
+    return false
+  }
+
   async drainInput() {
     if (this.upgrade?.running || this.closed || this.phase !== 'ready' || !this.app || this.active || this.nativeBusy) return
     const row = this.store.nextInput.get()
@@ -881,12 +980,19 @@ export class RouterService {
     }
     const { requestId } = message
     const app = this.app
+    if (routerControl(message.text)?.type === 'projects') message.localProjectQuery = true
     message.status = 'sending'
     this.active = message
     this.earlyEvents = []
     message.startedAt = Date.now()
     this.recordMessage(message)
     try {
+      if (await this.routeWorkspace(message,app)) {
+        if (this.active === message) { this.active = null; this.kickInputs(); this.wake.kick() }
+        return
+      }
+      if (this.active !== message) return
+      this.linkBusinessInput(message)
       const previousRequest = message.routing?.afterFocus ?? message.routing?.afterMessage
       if (previousRequest) {
         if (!message.routing.afterFocus && await this.bindTargetAnswer(message, this.store.get('message','user:' + previousRequest)) === 'pending') {
@@ -907,14 +1013,14 @@ export class RouterService {
           this.store.put('message', message.id, message)
         }
       }
-      if (!message.targetAnswer && await this.routeContinuation(message)) {
+      if (!message.targetAnswer && message.operation !== 'other' && !message.workText && await this.routeContinuation(message)) {
         this.active = null
         this.kickInputs()
         this.wake.kick()
         return
       }
       const worker = this.hub.config
-      const { turn } = await app.send(this.session.id, this.businessText(message), requestId, { targetAnswer: message.targetAnswer, relatedTasks: message.origin?.relatedTasks, routing:message.routing,
+      const { turn } = await app.send(this.session.id, this.businessText(message), requestId, { targetAnswer: message.targetAnswer ?? message.workTarget, relatedTasks: message.origin?.relatedTasks, routing:message.routing,
         expression:this.expressionSettings(), channel:message.origin ? 'wechat' : 'web',
         choice: message.origin?.choice && this.semanticCandidates(message),
         continuedFrom: message.origin?.continuedFrom, workerDefaults: {
@@ -961,8 +1067,9 @@ export class RouterService {
     }).join('\n')}
     if (this.store.list('clarification').some(c => c.requestId === message.requestId)) return {text:'请核对待办中的目标或操作。'}
     if (message.dispatchRefError) return {text:'本次转交因消息编号不匹配而失败，原问题尚未派发。'}
+    if (message.operation === 'other' && !message.targetAnswer) return null
     if (/^(?:你好|谢谢|hello|hi)[！!.。 ]*$/i.test(message.text) ||
-        /^(查看|查询|列出|当前模式|任务列表)|(?:任务|会话)(?:的)?(?:状态|进度|结果)(?:如何|怎样|是什么)?[？?。]?$/.test(message.text)) return null
+        !message.operation && /^(查看|查询|列出|当前模式|任务列表)|(?:任务|会话)(?:的)?(?:状态|进度|结果)(?:如何|怎样|是什么)?[？?。]?$/.test(message.text)) return null
     return {text:askTarget,awaitingTarget:true}
   }
 
@@ -1109,13 +1216,13 @@ export class RouterService {
       updatedAt: raw < 100000000000 ? raw * 1000 : raw }
   }
 
-  async projectRows() {
-    const discovered = await this.hub.projects().catch(() => [])
+  async projectRows(directory) {
+    const discovered = directory ?? await this.hub.projects().catch(() => [])
     const byCwd = new Map(discovered.map(item => [item.cwd, item]))
     const registeredByPath = new Map([...this.projects.values()].map(project => [project.cwd, project]))
     const candidates = new Map()
-    const inventory=new Map(discovered.slice(0,100).map(row=>[row.cwd,row]))
-    if(this.psm?.preference.enabled) for(const project of this.store.list('psm-project')) {
+    const inventory=new Map((directory ? discovered : discovered.slice(0,100)).map(row=>[row.cwd,row]))
+    if(!directory && this.psm?.preference.enabled) for(const project of this.store.list('psm-project')) {
       if(!inventory.has(project.cwd)) inventory.set(project.cwd,{cwd:project.cwd})
     }
     for (const item of inventory.values()) {
@@ -1253,11 +1360,12 @@ export class RouterService {
         answeredInteractions: this.store.answeredInteractions(task.id), ...result,
       }
     }
-    if (source.targetAnswer && ['create_session','interrupt_task'].includes(name))
+    if ((source.targetAnswer || source.workTarget) && ['create_session','interrupt_task'].includes(name))
       throw new HubError('codex-cli/router-target','请把原问题交给用户指定的目标。')
     if (['dispatch_task','create_session'].includes(name)) {
       this.assertDispatch(source)
-      if (/^(查询|查看|列出).*(状态|进度|任务列表|会话列表)[？?。]?$/.test(this.businessText(source)))
+      if (source.operation === 'other' && !source.targetAnswer) throw new HubError('codex-cli/router-mode','这条消息没有提出新的业务工作')
+      if (!['work','mixed'].includes(source.operation) && /^(查询|查看|列出).*(状态|进度|任务列表|会话列表)[？?。]?$/.test(this.businessText(source)))
         throw new HubError('codex-cli/router-mode','查询仅查看工作台状态')
     }
     if (source.routing?.mode === 'task' && ['psm_save','psm_update','psm_remove'].includes(name) &&
@@ -1344,7 +1452,7 @@ export class RouterService {
         // onTool already bound this call to the active native Router turn.
         if (source.origin && args.requestId === 'current') args = { ...args, requestId: source.requestId }
         if (args.requestId !== source.requestId) {
-          if (source.origin || source.targetAnswer) {
+          if (source.origin || source.targetAnswer || source.workTarget) {
             source.dispatchRefError = true
             throw new HubError('codex-cli/router-stale',source.origin ? '请求编号与当前消息不符。本轮普通派发请用 requestId=current 重试。' : '请使用当前回合的请求编号重试。')
           }
@@ -1370,7 +1478,7 @@ export class RouterService {
     this.assertDispatch(source)
     if (source.routing.channel && source.routing.focusRevision !== this.routing(source.origin).focusRevision && source.routing.focus?.threadId !== intent.threadId)
       throw new HubError('codex-cli/router-stale','这条消息发出后任务已切换，请确认要发给哪个项目或会话。')
-    const target = source.targetAnswer
+    const target = source.targetAnswer ?? source.workTarget
     if (target) {
       if ((intent.projectId !== target.projectId && !(intent.candidateThreadIds && !intent.projectId)) || (target.threadId && intent.threadId !== target.threadId) ||
           intent.candidateProjectIds || intent.workerAction)
@@ -1615,9 +1723,9 @@ export class RouterService {
           this.store.get('operation', requestId)) return
       const next = 'access-' + createHash('sha256').update(requestId).digest('hex')
       const accepted = this.admit({ requestId:next, text:this.businessText(original) }, { ...original.origin, continuedFrom:requestId })
-      if (original.targetAnswer) {
+      if (original.targetAnswer || original.workTarget) {
         const resumed = this.store.get('message', accepted.id)
-        this.store.put('message', accepted.id, { ...resumed, targetAnswer: original.targetAnswer })
+        this.store.put('message', accepted.id, { ...resumed, targetAnswer: original.targetAnswer, workTarget:original.workTarget, operation:original.operation })
       }
     })
     this.kickInputs()

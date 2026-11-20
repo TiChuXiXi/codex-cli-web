@@ -50,6 +50,9 @@ export function routerControl(text) {
   if (/^(?:(?:请)?(?:切换到?|进入|开启|改为)聊天模式|接下来我们聊聊[，, ]*不要执行|先别派发[，, ]*我想讨论一下)$/.test(line)) return { type:'mode', mode:'chat' }
   if (/^(?:(?:请)?(?:切换到?|进入|开启|改为)任务模式|开始处理任务)$/.test(line)) return { type:'mode', mode:'task' }
   if (/^(当前|查看|查询)(交互)?模式$/.test(line)) return { type:'mode' }
+  if (/^(?:请\s*)?(?:(?:查看|查询|列出)\s*)?(?:当前(?:的)?\s*)?项目列表$/.test(line) ||
+      /^(?:请\s*)?(?:查看|查询|列出)\s*(?:(?:当前(?:的)?\s*)?(?:所有|全部)(?:的)?\s*|当前(?:的)?\s*)项目$/.test(line))
+    return { type:'projects' }
   if (/^(?:查看|列出)?(?:当前)?任务列表$/.test(line)) return { type:'list' }
   if (/^(?:当前|查看|查询)(?:对话)?焦点$/.test(line)) return { type:'focus' }
   const redirect = /^(?:这个|刚才(?:那个|的)?任务|上一条)(?:应该|应当|应)?(?:交给|发给)\s*(.+)$/.exec(line)

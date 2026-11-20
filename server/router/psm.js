@@ -75,21 +75,22 @@ export class ProjectSessionMemory {
       this.store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     }
   }
-  async discover(path) {
+  async discover(path, create = true) {
     try {
       const cwd = await realpath(path)
       const project = (
         await loadRouterProjects([{ id: 'source', name: basename(cwd), cwd }], this.router.directory)
       ).get('source')
-      return this.identity(project)
+      return this.identity(project, create)
     } catch {
       return null
     }
   }
-  identity(project) {
+  identity(project, create = true) {
     const key = fingerprint(JSON.stringify([project.cwd, project.identity, project.birth]))
     if (this.store.get('psm-exclusion', key)) return null
     let record = this.store.get('psm-project', key)
+    if (!record && !create) return null
     if (!record)
       record = this.store.put('psm-project', key, {
         uid: randomUUID(),
@@ -100,14 +101,14 @@ export class ProjectSessionMemory {
       })
     return record.uid
   }
-  async allowed(projectId) {
+  async allowed(projectId, create = true) {
     const result = new Map()
     const projects = new Map(this.store.list('psm-read-grant').map((project) => [project.id, project]))
     for (const [id, project] of this.router.projects) projects.set(id, project)
     for (const project of projects.values()) {
       if (projectId && projectId !== project.id) continue
       if (await checkProject(project).catch(() => null)) {
-        const uid = this.identity(project)
+        const uid = this.identity(project, create)
         if (uid) result.set(uid, project)
       }
     }
@@ -220,7 +221,7 @@ export class ProjectSessionMemory {
     if (!src || !allowed.has(src.project)) throw bad('来源不可见或尚未索引')
     return src
   }
-  async search({ query, projectId, limit = 12 }) {
+  async search({ query, projectId, limit = 12 }, create = true) {
     this.requireEnabled()
     if (
       typeof query !== 'string' ||
@@ -231,7 +232,7 @@ export class ProjectSessionMemory {
       limit > 25
     )
       throw bad('无效的检索参数')
-    const allowed = await this.allowed(projectId)
+    const allowed = await this.allowed(projectId, create)
     const words = searchTerms(query).split(' ').filter(Boolean)
     if (!words.length) return []
     const refs = await this.sync.db.call('factHits', { query, projects: [...allowed.keys()], limit })
@@ -322,10 +323,10 @@ export class ProjectSessionMemory {
         ),
       }))
   }
-  async get(ref) {
+  async get(ref, create = true) {
     this.requireEnabled()
     if (typeof ref !== 'string' || ref.length > 2048) throw bad('无效的证据引用')
-    const allowed = await this.allowed()
+    const allowed = await this.allowed(undefined, create)
     if (ref.startsWith('project:')) {
       const id = ref.slice(8),
         project = [...allowed.values()].find((p) => p.id === id)
@@ -361,7 +362,7 @@ export class ProjectSessionMemory {
     if (
       thread.ephemeral ||
       thread.parentThreadId ||
-      (await this.discover(thread.cwd)) !== src.project ||
+      (await this.discover(thread.cwd, create)) !== src.project ||
       !['active', 'archived'].includes(src.state)
     )
       throw bad('原始来源已失效')
