@@ -1,3 +1,4 @@
+import { deliveryFact, renderExpression } from '../../shared/router-expression.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, realpath, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
@@ -17,7 +18,7 @@ import { routerNamespace, toolNames, toolResult, validateTool } from './tools.js
 import { RouterWakeScheduler, turnDuration } from './wake.js'
 import { permissionPayload } from '../../shared/worker-options.js'
 
-import { defaultPresentation, clarificationLabel } from '../../shared/router-presentation.js'
+import { profileSettings, legacyPresentation, updateProfileSettings, clarificationLabel } from '../../shared/router-presentation.js'
 
 const lifetime = 24 * 60 * 60 * 1000
 const textLimit = 12000
@@ -92,6 +93,7 @@ export class RouterService {
         hub: this.hub, bus: this.bus, followups: this.followups, store: this.store,
         project: id => this.projects.get(id),
         routerThreadId: () => this.session?.id ?? this.store.get('session', 'active')?.id,
+        expressionProfile: () => this.expressionSettings().profile,
         isReady: () => !this.closed && this.phase === 'ready',
         targetIssue:(project,id)=>this.psm.targetIssue(project,id),
         onControlAlert: (task, message) => {
@@ -372,15 +374,24 @@ export class RouterService {
     return this.app.selected
   }
 
+  expressionSettings(record = this.store?.get('settings','defaults') ?? {}) {
+    try { return profileSettings(record) }
+    catch (error) {
+      // Keep routing available while leaving a damaged or newer settings record intact.
+      return {...profileSettings(),expressionError:'原有表达设置无法读取，已保留原记录。'+error.message}
+    }
+  }
+
   presentation() {
-    return { ...defaultPresentation, ...this.store?.get('settings','defaults')?.presentation }
+    return legacyPresentation(this.expressionSettings())
   }
 
   settings() {
     const saved = this.store?.get('settings', 'defaults')
+    const expression = this.expressionSettings(saved ?? {})
     return { models: this.app?.models ?? [], model: this.app?.defaultSelection ?? saved?.model ?? this.config.models?.[0],
       projectRoot: saved?.projectRoot ?? this.config.projectRoot ?? '', revision: saved?.revision ?? 0,
-      presentation: this.presentation() }
+      ...expression, presentation: legacyPresentation(expression) }
   }
 
   async setupProjectRoot({ projectRoot, defer, clarification, revision, waitingIds } = {}) {
@@ -418,7 +429,8 @@ export class RouterService {
     }
   }
 
-  async saveSettings({ model, projectRoot, revision, presentation } = {}) {
+  async saveSettings(input = {}) {
+    const { model, projectRoot, revision } = input
     this.requireReady()
     const current = this.settings()
     const root = projectRoot === current.projectRoot || projectRoot === '' ? projectRoot : await projectParent(projectRoot, this.stateDir)
@@ -426,18 +438,15 @@ export class RouterService {
     const selected = this.app.resolveSelection(model)
     if (!selected) throw new HubError('codex-cli/bad-request', '请选择账号支持的 Router 模型与思考强度')
     if (revision !== this.settings().revision) throw new HubError('codex-cli/router-stale', '设置已更新，请重新加载')
-    const next = { ...this.presentation(), ...presentation }
-    for (const [field, limit] of Object.entries({displayName:32,selfName:32,personality:320,style:240,wechatStyle:320})) {
-      if (typeof next[field] !== 'string' || !next[field].trim() || next[field].length > limit) {
-        throw new HubError('codex-cli/bad-request', '名称或表达偏好为空或过长')
-      }
-      next[field] = next[field].trim()
-    }
-    if (Object.keys(next).some(k => !Object.hasOwn(defaultPresentation,k)) || !['简洁','适中','详细'].includes(next.brevity) ||
-        typeof next.typing !== 'boolean' || !Number.isInteger(next.processingSeconds) || next.processingSeconds < 1 ||
-        next.processingSeconds > 60 || !Number.isInteger(next.stageSeconds) || next.stageSeconds < next.processingSeconds ||
-        next.stageSeconds > 600) throw new HubError('codex-cli/bad-request', '请检查回复风格和微信反馈时间')
-    this.store.put('settings', 'defaults', { model: selected, projectRoot: root, revision: revision + 1, presentation: next })
+    this.store.transaction(() => {
+      const record = this.store.get('settings','defaults') ?? {}
+      if ((record.revision ?? 0) !== revision) throw new HubError('codex-cli/router-stale','设置已更新，请重新加载')
+      let expression
+      try { expression = updateProfileSettings(profileSettings(record),input) }
+      catch (error) { throw new HubError('codex-cli/bad-request',error.message) }
+      this.store.put('settings','defaults',{...record,...expression,model:selected,projectRoot:root,
+        presentation:legacyPresentation(expression),revision:revision+1})
+    })
     if (!isDeepStrictEqual(selected,current.model)) {
       this.app.setDefault(selected)
       if (!this.app.resolveSelection(this.session?.modelSelection)) this.app.select(null)
@@ -769,7 +778,7 @@ export class RouterService {
         this.assertDispatch(message)
         const result = await this.prepare(message,{kind:'dispatch',requestId:message.requestId,projectId:target.projectId,
           threadId:target.threadId,mode:'resume',instruction:message.text})
-        this.localReply(message,result.status === 'needs_confirmation' ? '请先确认目标或授权。' : '已排队，目标为 '+(result.project ?? target.projectId)+'。')
+        this.localReply(message,result.status === 'needs_confirmation' ? '请先确认目标或授权。' : renderExpression(deliveryFact(result.project ?? target.projectId,'queued'),this.expressionSettings().profile))
       }
     } catch (error) {
       if (switching) this.store.put('focus-result',message.requestId,{failed:true})
@@ -906,7 +915,7 @@ export class RouterService {
       }
       const worker = this.hub.config
       const { turn } = await app.send(this.session.id, this.businessText(message), requestId, { targetAnswer: message.targetAnswer, relatedTasks: message.origin?.relatedTasks, routing:message.routing,
-        presentation:this.presentation(), channel:message.origin ? 'wechat' : 'web',
+        expression:this.expressionSettings(), channel:message.origin ? 'wechat' : 'web',
         choice: message.origin?.choice && this.semanticCandidates(message),
         continuedFrom: message.origin?.continuedFrom, workerDefaults: {
         model: worker.defaultModel, effort: worker.defaultEffort,
@@ -946,23 +955,22 @@ export class RouterService {
   routingReply(message) {
     if (message?.routing?.mode !== 'task' || message.origin?.choice || message.source === 'worker_receipt') return null
     const tasks = this.dispatcher.list(-1).filter(t => (t.parentRequestId ?? t.requestId) === message.requestId)
-    if (tasks.length) return tasks.map(t => {
-      const cmd = this.store.command(t.id)
-      const status = {queued:'已排队',deferred:'已排队，等待交付',delivering:'正在提交',delivered:'App Server 已接收',
-        unknown:'交付结果待核对',failed:'交付失败',cancelled:'已取消'}
-      return this.dispatcher.workerLabel(t)+'：'+(status[cmd?.state] ?? '请查看任务记录')+'。'
-    }).join('\n')
-    if (this.store.list('clarification').some(c => c.requestId === message.requestId)) return '请核对待办中的目标或操作。'
-    if (message.dispatchRefError) return '本次转交因消息编号不匹配而失败，原问题尚未派发。'
+    if (tasks.length) return {text:tasks.map(t => {
+      const cmd = this.task(t).delivery
+      return renderExpression(deliveryFact(this.dispatcher.workerLabel(t),cmd?.state,cmd),this.expressionSettings().profile)
+    }).join('\n')}
+    if (this.store.list('clarification').some(c => c.requestId === message.requestId)) return {text:'请核对待办中的目标或操作。'}
+    if (message.dispatchRefError) return {text:'本次转交因消息编号不匹配而失败，原问题尚未派发。'}
     if (/^(?:你好|谢谢|hello|hi)[！!.。 ]*$/i.test(message.text) ||
         /^(查看|查询|列出|当前模式|任务列表)|(?:任务|会话)(?:的)?(?:状态|进度|结果)(?:如何|怎样|是什么)?[？?。]?$/.test(message.text)) return null
-    return askTarget
+    return {text:askTarget,awaitingTarget:true}
   }
 
   finishMessage(message, answer) {
     this.store.transaction(() => {
-      const reply = answer && (this.routingReply(message) ?? answer)
-      if (message.status === 'completed' && (reply === askTarget || message.dispatchRefError && !message.handedOff)) message.awaitingTarget = Date.now() + lifetime
+      const routing = answer ? this.routingReply(message) : null
+      const reply = routing?.text ?? answer
+      if (message.status === 'completed' && (routing?.awaitingTarget || message.dispatchRefError && !message.handedOff)) message.awaitingTarget = Date.now() + lifetime
       this.store.put('message', message.id, message)
       if (message.origin) this.wechat?.reply(message, reply)
     })
@@ -1008,7 +1016,7 @@ export class RouterService {
       this.clearDeltas()
       this.active = null
       const finalItem = active.status === 'completed' ? routerTurnAnswer(params.turn.items, active.answer) : undefined
-      const answer = finalItem && (this.routingReply(active) ?? finalItem.text)
+      const answer = finalItem && (this.routingReply(active)?.text ?? finalItem.text)
       if (finalItem?.id && answer !== finalItem.text) {
         const row = this.store.get('message', 'agent:' + finalItem.id)
         if (row) this.store.put('message', row.id, { ...row, text: answer })
@@ -1023,7 +1031,7 @@ export class RouterService {
   agentMessage(turnId, item, text, status) {
     if (item.phase === 'final_answer' && this.active?.turnId === turnId && this.active.routing?.mode === 'task') {
       const result = this.routingReply(this.active)
-      if (result) text = status === 'streaming' ? '' : result
+      if (result) text = status === 'streaming' ? '' : result.text
     }
     return {
       id: 'agent:' + item.id, turnId,

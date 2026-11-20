@@ -77,7 +77,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     assert.equal(params.approvalPolicy,receipt.approvalPolicy)
     const voice = params.additionalContext['router-voice'].value
     assert.match(voice,/南桥/)
-    assert.equal(voice.includes('微信表达'),channel!=='web')
+    assert.equal(voice.includes('微信表达'),channel==='wechat')
     assert.equal(Boolean(params.additionalContext['router-instructions']),channel!=='receipt')
   }
   assert.deepEqual(receipt.sandboxPolicy, { type: 'readOnly', networkAccess: false })

@@ -1,3 +1,5 @@
+import { terminalFact, renderExpression } from '../../shared/router-expression.js'
+import { defaultProfile } from '../../shared/router-presentation.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { HubError } from '../codex/hub.js'
@@ -57,8 +59,8 @@ const taskEvents = {
 }
 
 export class RouterDispatcher {
-  constructor({ hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, onControlAlert, onStop, onThreadCreated, targetIssue }) {
-    Object.assign(this, { hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, onControlAlert, onStop, onThreadCreated, targetIssue })
+  constructor({ expressionProfile = defaultProfile, hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, onControlAlert, onStop, onThreadCreated, targetIssue }) {
+    Object.assign(this, { expressionProfile, hub, followups, bus, store, project, routerThreadId, isReady, onReceipt, onTerminal, onControlAlert, onStop, onThreadCreated, targetIssue })
     this.off = bus.subscribe(event => this.onEvent(event))
     this.retained = new Set()
     this.lanes = new Map()
@@ -213,9 +215,9 @@ export class RouterDispatcher {
       if (receiptAdded || (!workerTerminal && !delivery?.closedAt && next.status === 'failed' && next.routerThreadId === this.routerThreadId())) {
         this.onTerminal?.(next, receiptAdded)
         const messageId = 'worker-result:' + id
-        const outcome = { completed: 'Worker 回合已结束，未返回最终文本。', interrupted: 'Worker 回合已中断。', failed: next.error || 'Worker 回合失败。' }
+        const fact = terminalFact(this.workerLabel(next),next)
         const text = next.status === 'completed' && next.finalReply ? next.finalReply :
-          [outcome[next.status], next.finalReply].filter(Boolean).join('\n\n')
+          renderExpression(fact,this.expressionProfile())
         this.store.put('message', messageId, { id: messageId, role: 'assistant', status: 'completed', routerThreadId:next.routerThreadId,
           label: (receiptAdded ? 'Worker · ' : 'Router · ') + this.workerLabel(next), text })
         if (receiptAdded && next.status === 'completed' && !next.finalReply && !patch.historyRead) next.needsFinalReply = true

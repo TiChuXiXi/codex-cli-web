@@ -1,3 +1,4 @@
+import { deliveryStates } from '../../../shared/router-expression.js'
 import * as React from 'react'
 import { createPortal } from 'react-dom'
 import type { Api } from '../rpc'
@@ -380,8 +381,7 @@ function TaskCard({ task, onWorker, onDismiss, onInteraction, onStop }: {
     <div className="dsh-codex-router-meta">{task.delivery?.closedAt ? '交付待核对记录已关闭' : task.workerAction === 'settings' && task.status === 'completed' ? '会话设置已更新' : labels[task.status] ?? task.status} · {localTime(task.updatedAt)}</div>
     {task.delivery && <div className="dsh-codex-router-meta">
       指令 #{task.delivery.seq} · {task.delivery.ackAt ? 'App Server 已接收' : task.delivery.historyAt ? '原生历史已确认' :
-        ({ queued: '已排队', deferred: '等待可交付时机', delivering: '正在提交', delivered: '已在原生端确认',
-          unknown: '交付结果待核对', failed: '交付失败', cancelled: '已取消' }[task.delivery.state])}
+        deliveryStates[task.delivery.state as keyof typeof deliveryStates] ?? '请查看任务记录'}
       {task.delivery.historyAt && task.delivery.ackAt ? ' · 原生历史已确认' : ''}
       {task.delivery.method === 'steer' && task.delivery.turnOutcome === 'interrupted' && ' · 所属回合已中断，指令执行情况未确认'}
       {task.delivery.blockedBy && ' · 等待前序指令 #' + task.delivery.blockedBy + ' 核对'}

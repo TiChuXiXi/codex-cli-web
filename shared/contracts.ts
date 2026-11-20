@@ -112,3 +112,20 @@ export interface AccessSettings {
   lockedReason: string | null
   firewallManaged: boolean
 }
+
+type ExpressionCatalog = typeof import('./router-presentation.js')
+type SelectedOptions<T> = { [K in keyof T]: T[K] extends {options: infer Options} ? keyof Options : never }
+export interface RouterProfile {
+  identity: { name: string; selfReference: string }
+  personality: SelectedOptions<ExpressionCatalog['dimensions']> & {
+    preset: keyof ExpressionCatalog['presets']
+    customExpression: string
+  }
+  presentation: SelectedOptions<ExpressionCatalog['policies']>
+}
+export interface RouterExpressionSettings {
+  profileVersion: 1
+  profile: RouterProfile
+  wechatProcessing: { typing: boolean; processingSeconds: number; stageSeconds: number }
+  legacyExpression: Partial<Record<'personality'|'style'|'wechatStyle',string>>
+}

@@ -1,3 +1,4 @@
+import { renderExpression } from '../../../shared/router-expression.js'
 import { clarificationLabel } from '../../../shared/router-presentation.js'
 import { approvalDetails } from '../../../shared/approval-details.js'
 import { describeWorkerSettings } from '../../router/projects.js'
@@ -115,7 +116,8 @@ export function renderCard(card, index = 0) {
       q.options?.length ? '可直接回复选项序号或名称。' : '直接发送你的答案。',
       q.isSecret && '私密输入：微信聊天会保留你发出的文字。'].filter(Boolean).join('\n')
   }
-  return prefix + '\n' + body + '\n发“下一个”可暂缓，发“待办”可回看。另发任务用“任务：…”'
+  const content = card.type === 'approval' ? renderExpression({kind:'approval',target:String(label).replace(/^Worker · /,''),detail:body}) : prefix + '\n' + body
+  return content + '\n发“下一个”可暂缓，发“待办”可回看。另发任务用“任务：…”'
 }
 
 export async function answerCard(router, card, text, values, origin) {

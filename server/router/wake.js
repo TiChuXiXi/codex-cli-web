@@ -1,3 +1,4 @@
+import { terminalFact, renderExpression } from '../../shared/router-expression.js'
 import { randomUUID } from 'node:crypto'
 import { routerTurnAnswer, stageRouterAnswer } from './transcript.js'
 import { shortText } from './projects.js'
@@ -5,7 +6,6 @@ import { shortText } from './projects.js'
 const terminal = new Set(['completed', 'failed', 'interrupted'])
 const windowMs = 24 * 60 * 60 * 1000
 const defaults = { mergeMs: 1000, gapMs: 10000, daily: 60, batchSize: 10, attempts: 3 }
-const executionLabels = { completed: '回合已结束', failed: '回合失败', interrupted: '回合已中断' }
 
 export function turnDuration(turn, startedAt) {
   if (Number.isFinite(turn.durationMs)) return turn.durationMs
@@ -119,7 +119,7 @@ export class RouterWakeScheduler {
     router.publish()
     try {
       const { turn } = await app.send(threadId, this.prompt(batch), batch.requestId, { workerReceipt: true,
-        presentation:router.presentation(),channel:'receipt' })
+        expression:router.expressionSettings(),channel:'receipt' })
       if (router.active !== source || router.app !== app) return
       if (!turn?.id || (source.turnId && source.turnId !== turn.id)) throw new Error('Router 回执回合未确认')
       this.bind(source, turn.id)
@@ -238,11 +238,11 @@ export class RouterWakeScheduler {
     const answer = routerTurnAnswer(turn.items, staged)?.text
     const fallback = source.batch.dispatchIds.map(id => {
       const task = this.router.dispatcher.get(id)
-      return '- ' + this.router.dispatcher.workerLabel(task) + '：' +
-        (task.error || task.summary || executionLabels[task.executionStatus] || '回合状态待核对')
+      return renderExpression(terminalFact(this.router.dispatcher.workerLabel(task),
+        {...task,status:task.executionStatus}),this.router.expressionSettings().profile)
     }).join('\n')
     this.commit(source, 'delivered', answer?.slice(0, 24000) ??
-      'Worker 执行回执\n\n' + fallback, 0, turnDuration(turn, source.batch.startedAt))
+      'Worker 执行回执\n\n' + fallback, 0, turnDuration(turn, source.batch.startedAt), !answer)
   }
 
   retry(source) {
@@ -251,12 +251,12 @@ export class RouterWakeScheduler {
     else this.commit(source, 'retry', null, Date.now() + 2000 * 2 ** (batch.attempt - 1))
   }
 
-  commit(source, status, text, availableAt = 0, durationMs) {
+  commit(source, status, text, availableAt = 0, durationMs, fallback = false) {
     const batch = source.batch
     this.store.transaction(() => {
       this.store.put('wake', batch.id, { ...batch, turnId: source.turnId ?? batch.turnId, status })
       this.store.updateReceipts.run(status === 'retry' ? 'pending' : status, availableAt, batch.id)
-      this.router.wechat?.receipt(batch, status, text)
+      this.router.wechat?.receipt(batch, status, text, fallback)
       if (text) this.store.put('message', 'receipt:' + batch.id, {
         id: 'receipt:' + batch.id, routerThreadId: batch.routerThreadId, turnId: source.turnId ?? batch.turnId,
         role: 'assistant', phase: 'final_answer', text, status: 'completed', durationMs,

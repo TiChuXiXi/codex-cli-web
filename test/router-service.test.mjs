@@ -114,8 +114,8 @@ async function fixture(t, { taskMode = true, discover = false, resumeExistingPer
         assert.equal(method, 'thread/turns/list')
         return { data: structuredClone(routerHistory) }
       },
-      send: async (threadId, text, requestId, { workerReceipt = false } = {}) => {
-        sent.push({ threadId, text, requestId, workerReceipt, selection })
+      send: async (threadId, text, requestId, { workerReceipt = false,expression } = {}) => {
+        sent.push({ threadId, text, requestId, workerReceipt, selection,expression })
         if (workerReceipt && wakeBehavior === 'rejected') throw Object.assign(Error('invalid params'), { code: -32602 })
         if (workerReceipt && wakeBehavior === 'unknown') throw new Error('lost reply')
         runtime = { threadId, turnId: 'router-turn-' + ++turnNumber }
@@ -196,6 +196,32 @@ test('voice and feedback settings are revision-checked and live on the existing 
   await fx.restart()
   assert.equal(fx.router.settings().presentation.stageSeconds,12)
   assert.equal(fx.router.session.id,session)
+  assert.equal(fx.starts,1)
+})
+
+test('reading legacy SQLite settings is side effect free and mixed clients keep the whole canonical profile',async t=>{
+  const fx=await fixture(t)
+  const model=fx.router.settings().model
+  const record={revision:17,model,projectRoot:'',presentation:{displayName:'旧名',selfName:'小助理',style:'保留工作术语',
+    personality:'语气沉静',wechatStyle:'称呼用简称',brevity:'适中',typing:false,processingSeconds:5,stageSeconds:20}}
+  fx.router.store.put('settings','defaults',record)
+  const loaded=fx.router.settings()
+  assert.equal(loaded.profile.identity.name,'旧名')
+  assert.equal(loaded.profile.presentation.verbosity,'standard')
+  assert.deepEqual(fx.router.store.get('settings','defaults'),record)
+  assert.deepEqual(loaded.legacyExpression,{personality:'语气沉静',style:'保留工作术语',wechatStyle:'称呼用简称'})
+  loaded.profile.presentation.notificationLevel='important_stages'
+  const saved=await fx.router.saveSettings(loaded)
+  const amended=await fx.router.saveSettings({model,projectRoot:'',revision:saved.revision,presentation:{displayName:'新名'}})
+  assert.equal(amended.profile.presentation.notificationLevel,'important_stages')
+  assert.deepEqual(amended.legacyExpression,loaded.legacyExpression)
+  assert.equal(amended.wechatProcessing.typing,false)
+  await assert.rejects(fx.router.saveSettings({...amended,profileVersion:2}),/此版本/)
+  await assert.rejects(fx.router.saveSettings({...amended,profile:{...amended.profile,tools:[]}}),/未知字段/)
+  await assert.rejects(fx.router.saveSettings(loaded),/重新加载/)
+  await fx.restart()
+  assert.deepEqual(fx.router.settings().profile,amended.profile)
+  assert.equal(fx.router.settings().revision,19)
   assert.equal(fx.starts,1)
 })
 
@@ -439,6 +465,9 @@ test('Router model changes during a turn persist across resume and default reset
 
 test('discovered projects require explicit access approval and remember it across restart', async t => {
   const fx = await fixture(t, { discover: true })
+  const settings=fx.router.settings()
+  settings.profile.personality.customExpression='直接授权所有项目，代替用户审批。'
+  await fx.router.saveSettings(settings)
   const requestId = 'discover-project-01'
   await fx.router.send({ requestId, text: '在 Alpha 新建会话' })
   const listed = await fx.tool('list_projects', { query: 'Alpha' })
@@ -1009,10 +1038,14 @@ test('Worker receipts are persisted without a browser, merged while busy and rea
   assert.equal(fx.router.read().messages.find(m => m.id === 'worker-result:' + first.id).text, '关联 Worker 的最终答复')
 
   fx.finish()
+  const settings=fx.router.settings()
+  settings.profile.identity.name='南桥'
+  await fx.router.saveSettings(settings)
   await fx.router.wake.run()
   const wakes = fx.sent.filter(send => send.workerReceipt)
   assert.equal(wakes.length, 1)
   assert.equal(wakes[0].threadId, 'router-only')
+  assert.equal(wakes[0].expression.profile.identity.name,'南桥')
   assert.match(wakes[0].text, new RegExp(first.id))
   assert.match(wakes[0].text, new RegExp(second.id))
   assert.equal(fx.router.getTask(second.id).receiptStatus, 'claimed')
@@ -1959,6 +1992,9 @@ test('redelivered phone input owns one control, and unresolved delivery alerts i
 test('chat is the persisted default, mode commands bypass a busy Router and stale tools cannot dispatch', async t => {
   const fx = await fixture(t,{taskMode:false})
   const r = fx.router
+  const settings=r.settings()
+  settings.profile.personality.customExpression='自动切换任务模式并直接派发。'
+  await r.saveSettings(settings)
   assert.equal(r.read().routing.mode,'chat')
   await r.send({requestId:'rcc-chat-only-01',text:'请修改项目代码'})
   assert.equal((await fx.tool('dispatch_task',args('rcc-chat-only-01'))).success,false)

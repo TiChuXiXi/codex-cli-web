@@ -367,12 +367,12 @@ test('Router settings expose PSM progress, pause, resume and distinct rebuild co
   await page.getByRole('button',{name:'登录工作台'}).click()
   await page.getByRole('button',{name:'设置',exact:true}).first().click()
   await page.getByRole('tab',{name:'中枢',exact:true}).click()
-  for (const name of ['人格描述','语言风格','微信表达偏好']) {
-    const field = page.getByRole('textbox',{name})
-    await expect(field).toHaveJSProperty('tagName','TEXTAREA')
-    await field.fill('第一行\n第二行')
-    await expect(field).toHaveValue('第一行\n第二行')
-  }
+  await expect(page.getByRole('radio',{name:'专业干练'})).toBeChecked()
+  await page.getByRole('radio',{name:'自然亲切'}).check()
+  await page.getByRole('radio',{name:'克制',exact:true}).check()
+  await expect(page.getByText('基于 自然亲切 · 已自定义')).toBeVisible()
+  await page.getByRole('button',{name:'恢复当前预设'}).click()
+  await expect(page.getByRole('radio',{name:'亲切',exact:true})).toBeChecked()
   const typing = page.getByRole('checkbox',{name:'显示“正在输入”'})
   await expect(typing).toHaveCSS('width','18px')
   await typing.uncheck()
@@ -469,4 +469,165 @@ test('mode and correction stay available without exposing automatic task selecti
   await expect(page.getByText(/焦点/)).toHaveCount(0)
   await page.getByRole('button', { name:'纠正误派' }).click()
   await expect(page.getByRole('region', { name:'确认停止 bbb' })).toBeVisible()
+})
+
+test('RIP shared draft, revision conflicts and responsive expression preview', async ({page},info)=>{
+  const {startFixture}=await import('../fixtures/start-app.mjs')
+  const model={model:'offline-fixture',effort:'medium'}
+  const threadId='rip-settings-fixture'
+  let starts=0
+  const turns:string[]=[]
+  const app=await startFixture({router:{enabled:true,launcher:'/fixture/router',launcherSha256:'a'.repeat(64),models:[model]},
+    openRouterApp:async({directory}:{directory:string})=>({
+      cwd:directory,selected:model,defaultSelection:model,close(){},policyVersion:2,
+      models:[{id:model.model,displayName:'测试模型',supportedReasoningEfforts:[{reasoningEffort:'medium'}]}],
+      resolveSelection:(choice:typeof model)=>choice?.model===model.model&&choice.effort===model.effort?model:null,
+      start:async()=>{starts++;return {thread:{id:threadId,cwd:directory}}},
+      request:async(method:string)=>method==='thread/read'?{thread:{id:threadId,status:{type:'idle'}}}:{data:[]},
+      send:async()=>{turns.push('turn/start');throw Error('预览触发了真实会话入口')},
+    })})
+  try {
+    await app.router.opening
+    await app.router.setupProjectRoot({projectRoot:app.root})
+    const baseRevision=app.router.settings().revision
+    await page.goto(app.origin)
+    await page.getByLabel('访问凭证',{exact:true}).fill('fixture-access-token-only-for-tests')
+    await page.getByRole('button',{name:'登录工作台'}).click()
+    const open=async()=>{
+      await page.getByRole('button',{name:'设置',exact:true}).first().click()
+      await page.getByRole('tab',{name:'中枢',exact:true}).click()
+    }
+    await open()
+    const preview=page.getByRole('complementary',{name:'表达预览'})
+    await page.getByRole('radio',{name:'轻松灵动',exact:true}).check()
+    await page.getByRole('radio',{name:'分步说明',exact:true}).check()
+    await expect(page.getByText('基于 轻松灵动 · 已自定义')).toBeVisible()
+    await expect(preview).toContainText('从哪件事聊起')
+    for(const scene of ['任务已排队','任务已交付','需要审批','Worker 完成','任务失败','普通聊天'])
+      await preview.getByRole('button',{name:scene,exact:true}).click()
+    expect(app.router.settings().revision).toBe(baseRevision)
+    const name=page.getByRole('textbox',{name:/助手名称/})
+    await name.fill('南桥')
+    const concurrent=app.router.settings()
+    concurrent.profile.identity.name='北桥'
+    await app.router.saveSettings(concurrent)
+    await page.getByRole('button',{name:'保存',exact:true}).click()
+    await expect(name).toHaveValue('南桥')
+    await page.getByRole('button',{name:'保留我的 · 南桥'}).click()
+    await page.getByRole('button',{name:'保存',exact:true}).click()
+    await expect(page.getByText('中枢设置已保存')).toBeVisible()
+    await page.reload()
+    await open()
+    await expect(preview).toContainText('南桥')
+    await page.getByRole('button',{name:'恢复默认',exact:true}).click()
+    await expect(name).toHaveValue('中枢')
+    await page.getByRole('button',{name:'取消修改'}).click()
+    await expect(name).toHaveValue('南桥')
+    expect(await page.locator('.rip-option').count()).toBe(9)
+    await page.getByRole('radio',{name:'温和',exact:true}).focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(page.getByRole('radio',{name:'亲切',exact:true})).toBeChecked()
+    for(const [width,height] of [[1440,900],[1280,800],[768,1024],[390,844]]) for(const theme of ['light','dark']) {
+      await page.setViewportSize({width,height})
+      const root=page.locator('.dsh-codex-root').first()
+      if(await root.getAttribute('data-codex-theme')!==theme)await page.getByRole('button',{name:theme==='dark'?'切换深色模式':'切换浅色模式',exact:true}).click()
+      await page.locator('.codex-settings').evaluate(el=>el.scrollTo(0,0))
+      const bounds=await page.locator('.rip-layout').evaluate(el=>{
+        const [left,right]=Array.from(el.children,c=>c.getBoundingClientRect())
+        return {width:el.clientWidth,double:Math.abs(left.top-right.top)<3,overflow:el.scrollWidth-el.clientWidth}
+      })
+      expect(bounds.double).toBe(bounds.width>=768)
+      expect(bounds.overflow).toBeLessThanOrEqual(1)
+      const path=(suffix:string)=>process.env.RIP_SCREENSHOTS?process.env.RIP_SCREENSHOTS+'/'+width+'-'+theme+'-'+suffix+'.png':info.outputPath(width+'-'+theme+'-'+suffix+'.png')
+      await page.screenshot({path:path('settings'),animations:'disabled'})
+      if(!bounds.double) {
+        await preview.scrollIntoViewIfNeeded()
+        await page.screenshot({path:path('preview'),animations:'disabled'})
+      }
+    }
+    await page.setViewportSize({width:1440,height:900})
+    const root=page.locator('.dsh-codex-root').first()
+    if(await root.getAttribute('data-codex-theme')!=='light')await page.getByRole('button',{name:'切换浅色模式',exact:true}).click()
+    await preview.getByRole('button',{name:'任务已交付',exact:true}).click()
+    await page.getByRole('radio',{name:'优先展示',exact:true}).check()
+    await expect(preview).toContainText('原生端已确认接收')
+    await page.getByRole('heading',{name:'表达策略',exact:true}).evaluate(el=>el.scrollIntoView({block:'start'}))
+    if(process.env.RIP_SCREENSHOTS)await page.screenshot({path:process.env.RIP_SCREENSHOTS+'/1440-light-policies.png'})
+    await preview.getByRole('button',{name:'微信',exact:true}).click()
+    await preview.getByRole('button',{name:'Worker 完成',exact:true}).click()
+    await preview.getByRole('checkbox',{name:'查看长报告示例'}).check()
+    await expect(preview).toContainText('完整内容请在工作台')
+    await page.getByRole('radio',{name:'分段完整',exact:true}).check()
+    await expect(preview).toContainText('（2/2）')
+    await expect(preview).not.toContainText('完整内容请在工作台')
+    await page.getByRole('button',{name:'取消修改',exact:true}).click()
+    await page.getByRole('radio',{name:'自然亲切',exact:true}).check()
+    await page.getByRole('button',{name:'保存',exact:true}).click()
+    await expect(page.getByText('中枢设置已保存')).toBeVisible()
+    expect(app.router.settings().profile.personality.preset).toBe('friendly')
+    await page.reload()
+    await open()
+    await expect(page.getByRole('radio',{name:'自然亲切',exact:true})).toBeChecked()
+    await expect(page.getByRole('radio',{name:'亲切',exact:true})).toBeChecked()
+    expect(turns).toEqual([])
+    expect(starts).toBe(1)
+    expect(app.router.settings().profile.identity.name).toBe('南桥')
+  } finally { await app.close() }
+})
+
+test('preset draft survives a legacy server response and saves after a Web service upgrade',async ({page})=>{
+  const {profileSettings}=await import('../../shared/router-presentation.js')
+  const model={model:'fixture',effort:'medium'}
+  const legacy={projectRoot:'/fixture',revision:1,model,
+    models:[{id:'fixture',displayName:'fixture',supportedReasoningEfforts:[{reasoningEffort:'medium'}]}]}
+  let settings={...legacy,...profileSettings()}
+  let upgraded=false,legacyAck=false,writes=0
+  const errors:Error[]=[]
+  page.on('pageerror',e=>errors.push(e))
+  await page.route('**/codex-cli/status',async route=>{
+    const response=await route.fetch(),body=await response.json()
+    body.result.value.router={enabled:true,phase:'ready'}
+    await route.fulfill({response,json:body})
+  })
+  await page.route('**/codex-cli/router/**',async route=>{
+    const {rpcId,method,payload}=route.request().postDataJSON()
+    let value:unknown={}
+    if(method==='router/settings/read')value=upgraded?settings:legacy
+    if(method==='router/settings/save'){
+      writes++
+      if(upgraded && !legacyAck)settings={...settings,...payload,revision:settings.revision+1}
+      value=upgraded && !legacyAck?settings:legacy
+    }
+    if(method==='router/psm/status')value={enabled:false,phase:'disabled'}
+    if(method==='router/psm/profile')value={projects:[],entries:[]}
+    await route.fulfill({json:{type:'server-response',rpcId,result:{ok:true,value}}})
+  })
+  await page.goto('/')
+  await page.getByLabel('访问凭证',{exact:true}).fill('fixture-access-token-only-for-tests')
+  await page.getByRole('button',{name:'登录工作台'}).click()
+  const open=async()=>{
+    await page.getByRole('button',{name:'设置',exact:true}).first().click()
+    await page.getByRole('tab',{name:'中枢',exact:true}).click()
+  }
+  await open()
+  const friendly=page.getByRole('radio',{name:'自然亲切',exact:true})
+  const save=page.getByRole('button',{name:'保存',exact:true})
+  await friendly.check()
+  await save.click()
+  await expect(page.getByRole('alert').filter({hasText:'结构化人格设置'})).toBeVisible({timeout:2500})
+  await expect(friendly).toBeChecked()
+  expect(writes).toBe(0)
+  upgraded=true
+  legacyAck=true
+  await save.click()
+  await expect.poll(()=>writes).toBe(1)
+  await expect(page.getByRole('alert').filter({hasText:'结构化人格设置'})).toBeVisible()
+  await expect(friendly).toBeChecked()
+  legacyAck=false
+  await save.click()
+  await expect(page.getByText('中枢设置已保存')).toBeVisible()
+  await page.reload()
+  await open()
+  await expect(friendly).toBeChecked()
+  expect(errors).toEqual([])
 })

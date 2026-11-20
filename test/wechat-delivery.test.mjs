@@ -1,3 +1,4 @@
+import { profileSettings } from '../shared/router-presentation.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { inbound, localChannel } from './fixtures/wechat.mjs'
@@ -187,6 +188,9 @@ test('a successful cancellation preserves an unconfirmed start and a single text
 
 test('delayed typing tickets never start typing after an answer, and worker progress is derived and deduplicated', async t => {
   const {router,channel,client,store,signal} = await localChannel(t)
+  const expression=profileSettings()
+  expression.profile.presentation.notificationLevel='important_stages'
+  router.expressionSettings=()=>expression
   const message = {id:'user:work',requestId:'work',routerThreadId:'main',status:'accepted',startedAt:Date.now()-20000,
     origin:{generation:channel.account.generation,inbox:'in'}}
   store.wxSave('in',{id:'in',state:'done',context:channel.seal('context-in')})
@@ -210,7 +214,7 @@ test('delayed typing tickets never start typing after an answer, and worker prog
   await channel.delivery.flush(signal)
   channel.progress.worker({id:task.id,type:'task.started'})
   await channel.delivery.flush(signal)
-  assert.deepEqual(client.sent.map(m=>m.text),['「测试项目」的任务已排队。','「测试项目」的任务已开始执行。'])
+  assert.deepEqual(client.sent.map(m=>m.text),['「测试项目」的任务已排队。\n等待交付给执行助手。','「测试项目」的任务已开始执行。'])
   store.put('task','fast',{...task,id:'fast',status:'queued'})
   channel.progress.worker({id:'fast',type:'task.queued'})
   store.put('task','fast',{...task,id:'fast',status:'completed'})
@@ -220,6 +224,9 @@ test('delayed typing tickets never start typing after an answer, and worker prog
 
 test('a twenty-minute Worker run has one start notice, no typing heartbeat and one terminal delivery', async t => {
   const {router,channel,client,store,signal} = await localChannel(t)
+  const expression=profileSettings()
+  expression.profile.presentation.notificationLevel='important_stages'
+  router.expressionSettings=()=>expression
   t.mock.timers.enable({apis:['Date'],now:Date.now()})
   const m = {id:'user:long',requestId:'long',routerThreadId:'main',status:'completed',
     origin:{generation:channel.account.generation,inbox:'in'}}
@@ -308,4 +315,29 @@ test('late old poll and send callbacks cannot repopulate a removed binding', asy
   assert.equal(store.wxRows('in').length,0)
   assert.equal(store.wxRows('out').length,0)
   assert.equal(store.wxRows('binding').length,0)
+})
+
+test('one bounded phone result survives partial delivery, a changed profile and a late batch',async t=>{
+  const {channel,router,store,signal,client}=await localChannel(t)
+  t.mock.timers.enable({apis:['Date'],now:Date.now()})
+  const settings=profileSettings()
+  settings.profile.identity.name='南桥'
+  settings.profile.presentation.wechatLongContent='full_segmented'
+  router.expressionSettings=()=>settings
+  const task={id:'long',routerThreadId:'main',status:'completed',finalReply:'检查通过。'.repeat(1200)}
+  channel.terminal(task,false)
+  await channel.delivery.flush(signal)
+  assert.equal(client.sent.length,1)
+  assert.match(client.sent[0].text,/1\/3[\s\S]*南桥/)
+  const first=store.wxRead('out','worker:long')
+  assert.equal(first.part,1)
+  settings.profile.presentation.wechatLongContent='summary_first'
+  channel.receipt({id:'late',dispatchIds:['long']},'delivered','批次结果')
+  assert.equal(store.wxRead('out','batch:late'),null)
+  await channel.delivery.flush(signal)
+  assert.equal(client.sent.length,1)
+  for(let i=0;i<3;i++){t.mock.timers.tick(2000);await channel.delivery.flush(signal)}
+  assert.equal(client.sent.length,3)
+  assert.match(client.sent[2].text,/完整内容请在工作台/)
+  assert.ok(client.sent.every(part=>Array.from(part.text).length<=1220))
 })

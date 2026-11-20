@@ -1,3 +1,4 @@
+import { defaultProfile } from '../../../shared/router-presentation.js'
 import { routerControl } from '../../router/matching.js'
 import { approvalDetails } from '../../../shared/approval-details.js'
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
@@ -389,6 +390,8 @@ export class WeChatChannel {
     this.showAgain(card,live.get(card.key),inbox)
   }
 
+  expressionProfile() { return this.router.expressionSettings?.().profile ?? defaultProfile() }
+
   cardText(card, entry) {
     const value = card.values && this.unseal(card.values)
     const savedHint = value && card.stepHint && this.unseal(card.stepHint)
@@ -476,7 +479,7 @@ export class WeChatChannel {
           if (out?.state === 'pending' && !out.part) {
             this.store.wxSave('card', { ...current, category: null })
             this.store.wxSave('out', { ...out, inbox, category: null,
-              body: this.seal([intro, this.cardText(current, entry)].filter(Boolean).join('\n\n')) })
+              body: this.delivery.sealMessage([intro, this.cardText(current, entry)].filter(Boolean).join('\n\n')) })
           }
         }
       }
@@ -496,12 +499,12 @@ export class WeChatChannel {
         return
       }
       const content = answer || (message.status === 'completed' ? null : '这轮处理没有完成。')
-      if (content) this.delivery.enqueue('reply:' + (message.origin.continuedFrom ? message.requestId : inbox), content.length > 3500 ? content.slice(0,3450) + '\n（完整答复可在工作台对话中查看）' : content, { inbox })
+      if (content) this.delivery.enqueue('reply:' + (message.origin.continuedFrom ? message.requestId : inbox), content, { inbox, longContent:true })
     }
   }
 
   terminal(task, receipt) { this.delivery.terminal(task, receipt) }
-  receipt(batch, status, text) { this.delivery.receipt(batch, status, text) }
+  receipt(batch, status, text, fallback) { this.delivery.receipt(batch, status, text, fallback) }
 
   async handle(row, signal) {
     const generation = this.account.generation

@@ -1,3 +1,4 @@
+import { deliveryFact, renderExpression } from '../../../shared/router-expression.js'
 import { defaultPresentation } from '../../../shared/router-presentation.js'
 
 // Tencent's client refreshes the transient indicator while composing a reply.
@@ -8,7 +9,11 @@ const queued = new Set(['queued','creating','submitting','submitted'])
 export class WeChatProgress {
   constructor(channel) { this.channel = channel }
 
-  settings() { return this.channel.router.presentation?.() ?? defaultPresentation }
+  settings() {
+    const config=this.channel.router.expressionSettings?.()
+    if(config)return {...config.wechatProcessing,selfName:config.profile.identity.selfReference}
+    return this.channel.router.presentation?.() ?? defaultPresentation
+  }
 
   active() {
     const { router } = this.channel
@@ -30,6 +35,7 @@ export class WeChatProgress {
   }
 
   tool(message, activity) {
+    if (this.channel.expressionProfile().presentation.notificationLevel!=='important_stages') return
     if (!message.origin || !['psm_search','psm_get','list_sessions','get_session'].includes(activity.tool.name)) return
     const { selfName = defaultPresentation.selfName, stageSeconds } = this.settings()
     this.notify(message,'lookup',selfName + '正在查找相关的项目和会话。',message.startedAt+1000*stageSeconds,undefined,activity.id)
@@ -38,14 +44,18 @@ export class WeChatProgress {
   worker(event, immediate = false) {
     if (!['task.queued','task.started'].includes(event?.type)) return
     const {router,store,account} = this.channel
-    if (!account?.results && !immediate) return
+    const profile=this.channel.expressionProfile()
+    if (!immediate && (!account?.results || profile.presentation.notificationLevel!=='important_stages')) return
     const task = store.get('task',event.id)
     if (!task || task.routerThreadId !== router.session?.id) return
     const m = store.get('message','user:'+(task.parentRequestId ?? task.requestId))
     if (!m?.origin || !this.channel.owns(m.origin.generation)) return
     const name = router.projects.get(task.projectId)?.name || '所选项目'
     const running = event.type === 'task.started'
-    this.notify(m,running ? 'running' : 'queued','「' + name + '」的任务' + (running ? '已开始执行。' : '已排队。'),
+    const command=router.task?.(task).delivery ?? store.command(task.id)
+    const fact=deliveryFact(name,running?'running':command?.state ?? 'queued',command)
+    if(running) fact.status='已开始执行'
+    this.notify(m,running ? 'running' : 'queued',renderExpression(fact,profile,'wechat'),
       immediate ? 0 : task.createdAt + 1000*this.settings().stageSeconds,task.id)
     if (immediate) {
       const row = store.wxRead('out','progress:' + task.id + ':' + (running ? 'running' : 'queued'))

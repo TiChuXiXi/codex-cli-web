@@ -1,8 +1,9 @@
+import { terminalFact, renderExpression, wechatParts } from '../../../shared/router-expression.js'
 import { randomUUID } from 'node:crypto'
 import { redact } from '../../router/psm-index.js'
 import { approvalFingerprint, liveCards } from './interactions.js'
 
-const labels = { completed: '回合已结束', failed: '执行失败', interrupted: '执行中断' }
+const partDelayMs = 2000
 
 export class WeChatDelivery {
   constructor(channel) {
@@ -10,11 +11,16 @@ export class WeChatDelivery {
     this.store = channel.store
   }
 
+  sealMessage(text,profile=this.channel.expressionProfile()) {
+    return this.channel.seal(profile.identity.name==='中枢'?text:profile.identity.name+'\n'+text)
+  }
+
   enqueue(id, text, options = {}) {
     const account = this.channel.account
     if (!account || this.store.wxRead('out', id)) return
+    const profile=this.channel.expressionProfile()
     this.store.wxSave('out', { id, state: 'pending', generation: account.generation, clientId: randomUUID(),
-      createdAt: Date.now(), ...options, body: this.channel.seal(text) })
+      createdAt: Date.now(), ...options, ...(options.longContent && {longMode:profile.presentation.wechatLongContent}), body: this.sealMessage(text,profile) })
   }
 
   hasSubmittedAnswer(dispatchId) {
@@ -26,21 +32,21 @@ export class WeChatDelivery {
     const { channel } = this
     if (!channel.account?.results || task.routerThreadId !== channel.router.session?.id) return
     const label = channel.router.dispatcher.workerLabel(task)
-    const result = task.finalReply || task.error || task.summary
-    const content = result ? result.replace(/```[\s\S]*?(?:```|$)/g, '（代码已省略）').slice(0, 1200) : '暂时没有可核实的结果说明。'
+    const fact=terminalFact(label,task)
+    fact.result=redact(fact.result.replace(/```[\s\S]*?(?:```|$)/g,'（代码已省略）'))
     const shortFinal = Boolean(task.status === 'completed' && task.finalReply?.trim() && task.finalReply.length <= 500 &&
       !task.finalReply.includes('```'))
     const direct = shortFinal && this.hasSubmittedAnswer(task.id)
-    const message = direct ? '【任务结果】\n' + redact(task.finalReply.trim()) : label + '：' + labels[task.status] + '。\n' + content
+    const message = direct ? '【任务结果】\n' + redact(task.finalReply.trim()) : renderExpression(fact,channel.expressionProfile(),'wechat')
     this.enqueue('worker:' + task.id, message, {
-      category: 'results', tasks: [task.id], readyAt: Date.now() + (receipt ? 60000 : 0), directFinal: direct, shortFinal,
+      longContent:true, category: 'results', tasks: [task.id], readyAt: Date.now() + (receipt ? 60000 : 0), directFinal: direct, shortFinal,
     })
   }
 
-  receipt(batch, status, text) {
+  receipt(batch, status, text, fallback=false) {
     if (!['delivered', 'unknown', 'failed'].includes(status) || !this.channel.account?.results) return
     const rows = batch.dispatchIds.map(id => this.store.wxRead('out', 'worker:' + id))
-    const eligible = rows.filter(row => row?.state === 'pending')
+    const eligible = rows.filter(row => row?.state === 'pending' && !row.part && !row.attempts)
     if (!eligible.length) return
     if (rows.length === 1) {
       const [row] = eligible
@@ -54,15 +60,15 @@ export class WeChatDelivery {
         const reply = this.store.get('message', 'worker-result:' + dispatchId)?.text
         if (reply) {
           this.store.wxSave('out', { ...row, readyAt: 0, directFinal: true,
-            body: this.channel.seal('【任务结果】\n' + redact(reply.trim())) })
+            body: this.sealMessage('【任务结果】\n' + redact(reply.trim())) })
           return
         }
       }
     }
     // Only a complete, still-eligible batch can use its Router-written summary.
-    if (eligible.length === rows.length && text && !text.startsWith('Worker 执行回执\n')) {
-      const summary = text.replace(/```[\s\S]*?(?:```|$)/g, '（详见工作台）').slice(0, 900)
-      this.enqueue('batch:' + batch.id, '【任务结果】\n' + summary, { category: 'results', tasks: batch.dispatchIds })
+    if (eligible.length === rows.length && text && !fallback) {
+      const summary = redact(text.replace(/```[\s\S]*?(?:```|$)/g, '（详见工作台）'))
+      this.enqueue('batch:' + batch.id, '【任务结果】\n' + summary, { longContent:true, category: 'results', tasks: batch.dispatchIds })
       for (const row of eligible) this.store.wxSave('out', { ...row, state: 'merged', body: null })
     } else {
       for (const row of eligible) this.store.wxSave('out', { ...row, readyAt: 0 })
@@ -76,7 +82,9 @@ export class WeChatDelivery {
     const pending = this.store.wxRows('out', 'pending')
     // Confirm the preceding answer before displaying the next question.
     pending.sort((a,b) => Number(Boolean(a.card)) - Number(Boolean(b.card)))
-    for (const row of pending) {
+    for (const entry of pending) {
+      const row=this.store.wxRead('out',entry.id)
+      if(row?.state!=='pending')continue
       if (signal.aborted || account !== channel.account) return
       if (row.progress && !channel.progress.valid(row.progress)) {
         this.store.wxSave('out',{...row,state:'cancelled',body:null})
@@ -138,10 +146,11 @@ export class WeChatDelivery {
         }
       }
       const body = channel.unseal(row.body)
-      const parts = card?.fingerprint && body.length > 3000 ? body.match(/[\s\S]{1,1400}/gu) : [body]
+      const parts = card?.fingerprint && body.length > 3000 ? body.match(/[\s\S]{1,1400}/gu) :
+        row.longMode ? wechatParts(body,row.longMode) : [body]
       const index = row.part ?? 0
       const last = index === parts.length - 1
-      const content = parts.length === 1 ? body : '待办 #' + card.id + '（' + (index + 1) + '/' + parts.length + '）\n' + parts[index]
+      const content = parts.length === 1 ? parts[0] : (card ? '待办 #' + card.id : '消息') + '（' + (index + 1) + '/' + parts.length + '）\n' + parts[index]
       this.store.wxSave('out', { ...row, state: 'sending' })
       try {
         const response = await channel.client.send(account, { clientId: row.clientId,
@@ -149,7 +158,7 @@ export class WeChatDelivery {
         if (account !== channel.account || signal.aborted) return
         this.store.transaction(() => {
           if (!last) {
-            this.store.wxSave('out', { ...row, state: 'pending', part: index + 1, clientId: randomUUID() })
+            this.store.wxSave('out', { ...row, state: 'pending', part: index + 1, readyAt:card ? 0 : Date.now()+partDelayMs, clientId: randomUUID() })
             return
           }
           this.store.wxSave('out', { ...row, state: 'sent', body: null, serverId: response.message_id, sentAt: Date.now() })
