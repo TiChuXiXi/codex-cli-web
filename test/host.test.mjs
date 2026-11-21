@@ -4,11 +4,12 @@ import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { request as httpRequest } from 'node:http'
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile, readFile, realpath, stat, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, writeFile, readFile, realpath, stat, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadConfig, parseArgs } from '../server/config.js'
 import { readAccessToken } from '../server/auth.js'
+import { checkWindowsPrivateFile, prepareWindowsRouterDirectory } from '../server/router/windows-access.js'
 import { startFixture, FIXTURE_TOKEN } from './fixtures/start-app.mjs'
 async function login(app,token=FIXTURE_TOKEN) {
   return fetch(app.origin+'/auth/login',{method:'POST',headers:{'content-type':'application/json','x-codex-request':'1'},body:JSON.stringify({token})})
@@ -43,12 +44,18 @@ test('portable LAN mode permits local whitelist setup without changing the two-o
   assert.equal(proxy.status,403)
 })
 test('registering a trusted launcher generates portable Router installation metadata',async t=>{
-  const stateDir=await mkdtemp(join(tmpdir(),'router-install-'))
-  t.after(()=>rm(stateDir,{recursive:true,force:true}))
+  const parent=await mkdtemp(join(tmpdir(),'router-install-'))
+  t.after(()=>rm(parent,{recursive:true,force:true}))
+  const stateDir=process.platform==='win32'?join(await realpath(parent),'state'):parent
+  if(process.platform==='win32') await prepareWindowsRouterDirectory(stateDir)
   const configFile=join(stateDir,'preferences.json')
-  const launcher=join(stateDir,'launcher')
+  const windows=process.platform==='win32'
+  const launcher=join(stateDir,windows?'private/launcher.exe':'launcher')
   await writeFile(configFile,JSON.stringify({accessScope:'local',lanPasswordless:false}))
-  await writeFile(launcher,'#!/bin/sh\nexit 99\n',{mode:0o700})
+  if(windows) {
+    await prepareWindowsRouterDirectory(join(stateDir,'private'))
+    await copyFile(join(process.env.SystemRoot,'System32','whoami.exe'),launcher)
+  } else await writeFile(launcher,'#!/bin/sh\nexit 99\n',{mode:0o700})
   const cli=fileURLToPath(new URL('../bin/codex-web-ui.mjs',import.meta.url))
   await promisify(execFile)(process.execPath,[cli,'--config',configFile,'--state-dir',stateDir,'--register-router-launcher',launcher])
   const config=await loadConfig({configFile,stateDir},{})
@@ -56,13 +63,16 @@ test('registering a trusted launcher generates portable Router installation meta
   assert.equal(config.router.launcher,await realpath(launcher))
   assert.match(config.router.launcherSha256,/^[a-f0-9]{64}$/)
   assert.deepEqual(config.router.projects,[])
-  assert.equal((await stat(join(stateDir,'router-installation.json'))).mode & 0o777,0o600)
+  if(windows) await checkWindowsPrivateFile(join(stateDir,'router-installation.json'))
+  else assert.equal((await stat(join(stateDir,'router-installation.json'))).mode & 0o777,0o600)
 })
 test('generated access credential persists with owner-only permissions',async t=>{
-  const stateDir=await mkdtemp(join(tmpdir(),'credential-'));t.after(()=>rm(stateDir,{recursive:true,force:true}))
+  const parent=await mkdtemp(join(tmpdir(),'credential-'));t.after(()=>rm(parent,{recursive:true,force:true}))
+  const stateDir=join(await realpath(parent),'state')
   const a=await readAccessToken({stateDir}),b=await readAccessToken({stateDir})
   assert.equal(a,b);assert.ok(a.length>=32)
-  assert.equal((await stat(join(stateDir,'access-token'))).mode&0o777,0o600)
+  if(process.platform==='win32') await checkWindowsPrivateFile(join(stateDir,'access-token'))
+  else assert.equal((await stat(join(stateDir,'access-token'))).mode&0o777,0o600)
 })
 test('all business channels reject anonymous and cross-origin access',async t=>{
   const app=await fixture(t)

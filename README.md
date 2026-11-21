@@ -2,7 +2,32 @@
 
 独立运行的 Codex CLI 工作台。功能与界面迁移自 TiChuXiXi/dsh-codex-cli 的固定提交，保留项目、会话、队列、审批、文件、Git、终端、技能和版本管理，不需要 DSH 或 Cordis。
 
-## 启动
+## 安装本地 npm 候选包
+
+Windows x64 和 WSL/Linux x64 均可从同一份 tarball 安装。准备 Node.js 24.19.0 或更高版本、npm、Git 和已登录的 Codex CLI。在候选包所在目录，用 PowerShell 或 Bash 执行：
+
+```sh
+npm install --global ./zcodex-0.1.0-rc.1.tgz
+zcodex init --non-interactive
+zcodex start
+zcodex status --json
+zcodex open
+```
+
+`start` 打印实际 Web 地址。访问凭证位于 `init` 输出的状态目录内的 `access-token`。要使用已有配置，首次执行 `zcodex init --config <配置文件>`。Windows 和 WSL 分别管理各自的 npm 前缀与实例。Windows 数据目录须使用当前用户私有的 NTFS 目录，WSL 建议使用 Linux 用户主目录。
+
+```sh
+zcodex restart --yes
+zcodex stop --yes
+zcodex logs --lines 50
+zcodex uninstall --yes
+```
+
+`uninstall` 会停止服务并移除全局包及命令，默认保留配置、凭证、历史和数据库。在相同前缀重新安装后可继续使用原实例。Web 设置页的版本管理操作面向 Codex CLI。工作台自身使用 `zcodex update --check` 和 `zcodex update --yes`，从当前 npm registry 读取 `zcodex@latest`。候选期仅对已配置的本地测试 registry 执行更新。运行中更新成功后自动启动新版本，停机更新后继续保持停止。
+
+需要专用 Router 时，在停机状态执行 `zcodex init --prepare-router <本地启动器绝对路径> --sha256 <受信任的 SHA-256>`。候选包需要另行准备对应平台的启动器和 Router 账号。微信沿用原有接入。
+
+## 从源码启动
 
 当前为本地开发版本，尚未公开发布 npm 包。已验证 Linux arm64、Node 24.19.0；需要 Git 和可用的 Codex CLI。
 
@@ -109,7 +134,7 @@ npm run test:e2e
 npm run test:visual
 REFERENCE_REPO=/path/to/locked/dsh-codex-cli npm run test:parity
 npm pack
-npm run test:package -- ./codex-cli-web-0.1.0.tgz
+npm run test:package -- ./zcodex-0.1.0-rc.1.tgz
 ```
 
 默认自动测试使用临时文件/Git 仓库及模拟 Codex，无需模型账号。PTY 测试需要平台的 @lydell/node-pty 原生包；安装时不要省略 optional dependencies。E2E 测试端口为 18787。

@@ -33,6 +33,7 @@ export class StdioTransport {
     return new Promise((resolve, reject) => {
       let settled = false
       const child = spawn(this.command, this.args, {
+        windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: this.env,
         cwd: this.cwd,
@@ -132,7 +133,8 @@ export class StdioTransport {
       // 忽略
     }
     try {
-      child.kill('SIGTERM')
+      // Windows terminates immediately on SIGTERM. Let the private server read EOF first.
+      if (process.platform !== 'win32') child.kill('SIGTERM')
     } catch {
       // 忽略
     }

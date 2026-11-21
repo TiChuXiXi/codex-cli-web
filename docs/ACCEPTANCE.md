@@ -1,5 +1,7 @@
 # 当前实现与验收记录
 
+2026-11-21 的 npm 候选独立记录 Windows x64 与 WSL/Linux x64 的生命周期和 Web 验收。[候选包实测](acceptance/ndc-lifecycle.md)
+
 日期：2026-11-17。项目版本 0.1.0，前端 buildId：8f6a62ed944b8dac。尚未创建目标 Git 提交，未发布 npm 包。
 
 完整 38 项实现已按源到目标映射迁入；当前结论是“可独立运行并通过以下技术验证”，不是“全部功能子场景已经最终验收”。逐项范围见 FEATURE_MATRIX.md 和原规格。

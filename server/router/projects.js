@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path'
+import { isAbsolute, parse, relative, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { realpath, stat } from 'node:fs/promises'
 import { HubError } from '../codex/hub.js'
@@ -7,6 +7,11 @@ import { permissionPayload } from '../../shared/worker-options.js'
 const safeSandbox = new Set(['read-only', 'workspace-write'])
 const identity = ({ dev, ino }) => String(dev) + ':' + String(ino)
 export const shortText = (value, max = 320) => typeof value === 'string' ? value.replace(/\s+/g, ' ').slice(0, max) : ''
+
+function containsPath(parent, child) {
+  const path = relative(parent, child)
+  return path !== '..' && !path.startsWith('..' + sep) && !isAbsolute(path)
+}
 
 export async function loadRouterProjects(config, directory) {
   const projects = new Map()
@@ -23,8 +28,8 @@ export async function loadRouterProjects(config, directory) {
     const cwd = await realpath(entry.cwd)
     const info = await stat(cwd, { bigint: true })
     const sandboxLimit = entry.sandbox ?? 'read-only'
-    if (!info.isDirectory() || roots.has(cwd) || cwd === directory || cwd === '/' ||
-        cwd.startsWith(directory + '/') || directory.startsWith(cwd + '/') ||
+    if (!info.isDirectory() || roots.has(cwd) || cwd === parse(cwd).root ||
+        containsPath(directory, cwd) || containsPath(cwd, directory) ||
         !safeSandbox.has(sandboxLimit)) {
       throw new Error('Router 项目路径重复、与 Router 状态目录相交或沙箱无效')
     }

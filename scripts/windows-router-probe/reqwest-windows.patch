@@ -1,0 +1,38 @@
+--- a/src/connect.rs
++++ b/src/connect.rs
+@@ -721,9 +721,33 @@
+                 .as_ref()
+                 .expect("connect local must have pipe path")
+                 .clone();
+-            tower::service_fn(move |_| {
++            tower::service_fn(move |dst: Uri| {
+                 let pipe = pipe.clone();
+-                async move { ClientOptions::new().open(pipe).map(TokioIo::new) }
++                async move {
++                    if pipe.as_ref() != std::ffi::OsStr::new("zcodex-inherited-tls") {
++                        return ClientOptions::new().open(pipe).map(TokioIo::new);
++                    }
++                    use std::io::{Error, ErrorKind, Read, Write};
++                    use std::os::windows::io::FromRawHandle;
++                    use std::sync::{Mutex, OnceLock};
++                    use tokio::net::windows::named_pipe::NamedPipeClient;
++                    if dst.scheme_str() != Some("https") || dst.host() != Some("chatgpt.com") || dst.port_u16().unwrap_or(443) != 443 {
++                        return Err(Error::new(ErrorKind::PermissionDenied, "Router model destination unavailable"));
++                    }
++                    static CONTROL: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
++                    let raw = tokio::task::spawn_blocking(|| -> std::io::Result<usize> {
++                        let control = CONTROL.get_or_init(|| Mutex::new(std::env::var("ZCODEX_CONTROL").ok()
++                            .and_then(|v|v.parse::<usize>().ok()).filter(|v|*v!=0).map(|v|unsafe {
++                              std::fs::File::from_raw_handle(v as *mut _)
++                            })));
++                        let mut guard=control.lock().map_err(|_|Error::other("broker lock"))?;
++                        let file=guard.as_mut().ok_or_else(||Error::other("missing broker"))?;
++                        file.write_all(&[1])?;
++                        let mut n=[0;8];file.read_exact(&mut n)?;
++                        Ok(u64::from_le_bytes(n) as usize)
++                    }).await.map_err(Error::other)??;
++                    unsafe { NamedPipeClient::from_raw_handle(raw as *mut _) }.map(TokioIo::new)
++                }
+             })
+         };
+         let is_proxy = false;

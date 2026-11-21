@@ -4,7 +4,11 @@
 
 首发目标为 Linux x64、Linux arm64 和纯原生 Windows x64。**Windows 的专用 Router 及其依赖功能必须通过原生验收，WSL 方案不计入。** macOS 暂不列入首发范围。部署不要求 Electron、Tauri、Docker、PM2 或开机自启。
 
-## 1. 发行准备度与包名
+## 2026-11-21 本地候选进度
+
+Windows x64 已纳入首发。当前私有候选为 `zcodex@0.1.0-rc.1`，使用 npm 全局 shim 和独立前缀验证 Windows 原生及 WSL/Linux x64 的安装、后台启停、更新、恢复和卸载。Linux arm64 仍在首发范围，需另跑同版候选。公开发布前还需从干净机器验证签名 Router 制品和安装链。实测范围见[生命周期验收记录](acceptance/ndc-lifecycle.md)。
+
+## 1. 发行准备度与包名（规划时基线）
 
 - 2026-11-20 查询公共 npm registry，`zcodex` 和备用候选 `@tichuxixi/zcodex` 都返回 HTTP 404。首选 `zcodex`，进入发布审批前复查。若无法取得无 scope 名称，发行账号须先确认备用 scope 的公开发布权限。两种包名均映射到 `zcodex`。404 只说明查询时无可见公开包，名称保留与发布权限须由维护者核实。[公共 registry 查询](https://registry.npmjs.org/zcodex) · [npm 命名规则](https://docs.npmjs.com/package-name-guidelines/)
 - 当前包为 `codex-cli-web@0.1.0`，`private: true`，Node 要求 `>=24.19.0`。现有 `prepack` 构建前端，允许清单包含主要运行目录。`test:package` 从 tarball 安装到临时本地前缀，验证前台启动、Web 登录、PTY 与 `SIGTERM`。正式发行还需验证全局 shim、原生 Windows、专用 Router 和自更新。

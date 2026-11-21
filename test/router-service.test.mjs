@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
@@ -19,7 +19,7 @@ import { normalizeRouterConfig } from '../server/router/app-server.js'
 import { routerNamespace } from '../server/router/tools.js'
 
 async function fixture(t, { taskMode = true, discover = false, resumeExistingPermissions = false, projectSandbox = 'read-only', projectName = 'Alpha', createChannel, wakePolicy = { mergeMs: 60000, gapMs: 0 } } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'router-service-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'router-service-')))
   const cwd = join(root, 'worker')
   await mkdir(cwd)
   const bus = new EventBus()
@@ -784,16 +784,18 @@ test('new Worker dispatch survives a lost queue acknowledgement without a duplic
   const fx = await fixture(t)
   const requestId = 'create-worker-0001'
   const text = '请在 Alpha 项目新建会话，然后派发这项检查。'
+  fx.loseReply = true
   await fx.router.send({ requestId, text })
   const task = (await fx.tool('dispatch_task', { projectId: 'alpha-project', mode: 'new', instruction: 'wrong', requestId })).value
   assert.equal(task.status, 'queued')
   fx.finish()
-  fx.loseReply = true
   await fx.router.dispatcher.sweep()
   assert.equal(fx.router.getTask(task.id).status, 'unknown')
   assert.equal(fx.submitted.length, 1)
   assert.equal(fx.submitted[0].threadId, 'created-worker')
   await fx.restart()
+  // Make the next history check eligible even if startup already scheduled a sweep.
+  fx.router.store.patchCommand(task.id, { lastCheckAt: 0 })
   await fx.router.dispatcher.sweep()
   assert.equal(fx.router.getTask(task.id).status, 'submitted')
   assert.equal(fx.submitted.length, 1)
@@ -928,7 +930,10 @@ test('restart rejects a stale confirmation without interrupting a replacement Wo
 
 test('authenticated RPC reaches the private Router service through the workbench envelope', async t => {
   const stateDir = await mkdtemp(join(tmpdir(), 'router-http-'))
-  t.after(() => rm(stateDir, { recursive: true, force: true }))
+  let app
+  t.after(async () => {
+    try { await app?.close() } finally { await rm(stateDir, { recursive: true, force: true }) }
+  })
   const accessToken = 'offline-router-workbench-fixture'
   const config = await loadConfig({
     port: 0, stateDir, accessToken, logLevel: 'silent',
@@ -937,7 +942,7 @@ test('authenticated RPC reaches the private Router service through the workbench
       models: [{ model: 'offline-fixture', effort: 'low' }],
     },
   }, {})
-  const app = await bootstrap(config, {
+  app = await bootstrap(config, {
     openTransport: async () => {
       let onMessage
       const transport = {
@@ -969,7 +974,6 @@ test('authenticated RPC reaches the private Router service through the workbench
       }
     },
   })
-  t.after(() => app.close())
   await app.router.opening
   function rpc(method, payload, cookie = '') {
     return fetch(app.origin + '/codex-cli/' + method, {

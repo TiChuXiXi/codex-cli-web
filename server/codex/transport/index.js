@@ -10,8 +10,9 @@
  */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, delimiter, dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { DaemonTransport, daemonSocketPath } from './daemon.js'
 import { StdioTransport } from './stdio.js'
@@ -26,8 +27,23 @@ export function resolveCodexHome(config) {
 
 /** codex 可执行文件：配置 > PATH 里的 codex。 */
 export function resolveCodexCommand(config) {
-  if (typeof config.codexPath === 'string' && config.codexPath.trim() !== '') return config.codexPath.trim()
-  return 'codex'
+  const command=config.codexPath?.trim() || 'codex'
+  if(process.platform!=='win32' || !/^codex(?:\.cmd|\.ps1)?$/i.test(basename(command))) return command
+  const paths=dirname(command)==='.' ? (process.env.PATH || '').split(delimiter).filter(Boolean) : [dirname(command)]
+  for(const directory of paths) {
+    const exe=join(directory,'codex.exe')
+    if(existsSync(exe)) return exe
+    if(!existsSync(join(directory,'codex.cmd'))) continue
+    const modules=join(directory,'node_modules','@openai')
+    const platform='codex-win32-x64'
+    for(const pkg of [join(modules,'codex','node_modules','@openai',platform),join(modules,platform),join(modules,'codex')]) {
+      for(const folder of ['bin','codex']) {
+        const binary=join(pkg,'vendor','x86_64-pc-windows-msvc',folder,'codex.exe')
+        if(existsSync(binary)) return binary
+      }
+    }
+  }
+  return command
 }
 
 /**
@@ -37,7 +53,8 @@ export function resolveCodexCommand(config) {
 export async function startDaemon({ command, codexHome, timeoutMs, logger }) {
   const child = spawn(command, ['app-server', 'daemon', 'start'], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: process.env,
+    env: { ...process.env, CODEX_HOME: codexHome },
+    windowsHide:true,
   })
   let output = ''
   child.stdout?.setEncoding('utf8')

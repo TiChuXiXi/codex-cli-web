@@ -27,6 +27,7 @@ test('settings contains the migrated update, daemon confirmation and rollback fl
   const actions=await mockVersions(page)
   await open(page)
   await expect(page.getByRole('heading',{name:'版本与更新',exact:true})).toBeVisible()
+  await expect(page.getByText('zcodex update --check',{exact:true})).toBeVisible()
   await expect(page.locator('.dsh-codex-versions[role=dialog]')).toHaveCount(0)
   await expect(page.locator('.versions-update')).toContainText('0.169.0')
   await page.locator('.versions-update-actions button.primary').click()

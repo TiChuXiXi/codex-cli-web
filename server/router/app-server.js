@@ -1,9 +1,10 @@
+import { checkRouterLauncher, launcherEnvironment } from './launcher.js'
 import { identityContract, buildExpressionContext } from '../../shared/router-identity.js'
 import { profileSettings } from '../../shared/router-presentation.js'
 import { createHash } from 'node:crypto'
 import { intentSchema, intentInstructions } from './workspace-intent.js'
 import { createReadStream } from 'node:fs'
-import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import { JsonRpcClient } from '../codex/jsonrpc.js'
 import { StdioTransport } from '../codex/transport/stdio.js'
@@ -76,8 +77,7 @@ function validateCapabilities(info) {
 
 export async function connectRouterApp({ config, directory, onEvent, onTool, onClose, signal }) {
   signal?.throwIfAborted()
-  const launcher = await stat(config.launcher)
-  if (!launcher.isFile() || (launcher.mode & 0o111) === 0) throw new Error('Router 启动器必须是可执行文件')
+  await checkRouterLauncher(config.launcher)
   if (await digest(config.launcher) !== config.launcherSha256) {
     throw new Error('Router 启动器的 SHA-256 与部署配置不符')
   }
@@ -94,7 +94,7 @@ export async function connectRouterApp({ config, directory, onEvent, onTool, onC
     command: config.launcher,
     args: [directory],
     cwd: directory,
-    env: { PATH: '/usr/bin:/bin', HOME: home, CODEX_ROUTER_CONFIG_DIR: directory },
+    env: launcherEnvironment(home, directory),
   })
   const rpc = new JsonRpcClient({ send: message => transport.send(message) })
   transport.onMessage(message => rpc.handleMessage(message))

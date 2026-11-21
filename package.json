@@ -1,11 +1,12 @@
 {
-  "name": "codex-cli-web",
-  "version": "0.1.0",
+  "name": "zcodex",
+  "version": "0.1.0-rc.1",
   "description": "Standalone Codex CLI web workbench",
   "type": "module",
   "private": true,
   "license": "MIT",
   "bin": {
+    "zcodex": "bin/zcodex.mjs",
     "codex-web-ui": "bin/codex-web-ui.mjs"
   },
   "engines": {
@@ -40,21 +41,13 @@
     "test:e2e": "playwright test",
     "test:visual": "VISUAL=1 playwright test",
     "test:live": "node scripts/test-live.mjs",
+    "test:web:live": "node scripts/test-web-router-live.mjs",
     "test:wechat:live": "node scripts/test-wechat-live.mjs",
     "prepack": "npm run build",
     "test:parity": "node scripts/test-parity.mjs",
     "test:package": "node scripts/test-package.mjs"
   },
   "dependencies": {
-    "@xterm/addon-fit": "0.11.0",
-    "@xterm/xterm": "6.0.0",
-    "clsx": "2.1.1",
-    "highlight.js": "11.12.0",
-    "lucide-react": "1.70.0",
-    "mermaid": "11.17.2",
-    "qrcode-generator": "2.0.4",
-    "react": "19.3.1",
-    "react-dom": "19.3.1",
     "ws": "8.22.1"
   },
   "optionalDependencies": {
@@ -65,9 +58,18 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "clsx": "2.1.1",
     "esbuild": "0.28.2",
+    "highlight.js": "11.12.0",
+    "lucide-react": "1.70.0",
+    "mermaid": "11.17.2",
     "pixelmatch": "7.1.0",
     "pngjs": "7.0.0",
+    "qrcode-generator": "2.0.4",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "typescript": "~5.9.3"
   },
   "allowScripts": {

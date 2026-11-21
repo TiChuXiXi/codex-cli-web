@@ -170,3 +170,11 @@ RouterStore 保存共享模式版本、按渠道区分的焦点版本、每次�
 ## RCC 工作环境只读查询
 
 任务模式通过现有 Router 提出结构化意图，两个渠道共享服务端事实查询。项目简介采用已确认描述或有来源的历史资料，泛指所有项目的新工作先确认具体目标。消息分页、现有未授权目录展示、混合请求及真机待验项见[本轮验收记录](acceptance/rcc-workspace-query.md)。
+
+## Windows 原生 Router 接入
+
+Windows 主机使用 NTFS 所有者和 ACL 校验专用 `.exe` 启动器及其安装目录，并为 Router 状态目录创建或验证私有 ACL。启动仍校验登记的 SHA-256、协议版本及完整工具清单。私有 stdio 进程先通过 EOF 收束；项目目录边界使用当前平台的路径规则。两端 Web 用例、环境要求及待验项见[首发 Web 验证记录](acceptance/ndc-web.md)。
+
+## 2026-11-21 npm 本地候选
+
+新增全局命令 `zcodex`，保留原前台入口。Windows 数据目录和凭证检查使用 NTFS ACL。后台服务按实例验证管理请求，关闭 Router 后释放 Hub。Windows PTY 使用系统 PowerShell。Web 设置页增加工作台版本及其更新命令，原 Codex CLI 版本操作仍单独执行。专用 Router 在本轮通过受信任的本地文件和 SHA-256 登记，签名下载链另行验收。

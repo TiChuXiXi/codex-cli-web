@@ -81,7 +81,7 @@ export async function loadConfig(cli={}, env=process.env) {
       if (typeof saved[key]==='string') config.codex[key]=saved[key]
     }
   } catch(error) { if(error.code!=='ENOENT') throw new Error('无法读取 Worker 默认设置') }
-  if(config.router===undefined && config.accessScope!==undefined && !cli.registerRouterLauncher) {
+  if(config.router===undefined && !cli.registerRouterLauncher) {
     try {
       config.router=JSON.parse(await readFile(join(config.stateDir,'router-installation.json'),'utf8'))
     } catch(error) {

@@ -31,6 +31,11 @@ export async function startFixture(overrides={}) {
   }})
   for(let i=0;i<200&&app.hub.status().phase!=='ready';i++)await new Promise(r=>setTimeout(r,10))
   if(app.hub.status().phase!=='ready'){await app.close();await rm(root,{recursive:true,force:true});throw new Error('Mock did not connect')}
-  const close=async()=>{await app.close();await rm(root,{recursive:true,force:true})}
+  let cleanup
+  const close=async()=>{
+    await app.close()
+    cleanup ??= rm(root,{recursive:true,force:true,maxRetries:5})
+    await cleanup
+  }
   return {...app,root,close}
 }

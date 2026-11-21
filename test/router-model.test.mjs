@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHash } from 'node:crypto'
-import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, readFile, writeFile, chmod, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { connectRouterApp, normalizeRouterConfig } from '../server/router/app-server.js'
 import { routerNamespace, toolNames } from '../server/router/tools.js'
+import { prepareWindowsRouterDirectory } from '../server/router/windows-access.js'
 
 test('only Router defaults to Terra; explicit candidates remain authoritative', () => {
   const base = { enabled: true, launcher: '/fixture/router', launcherSha256: 'a'.repeat(64) }
@@ -18,8 +19,13 @@ test('only Router defaults to Terra; explicit candidates remain authoritative', 
 
 test('Router validates Terra and applies it to new, resumed and subsequent turns', async t => {
   const root = await mkdtemp(join(tmpdir(), 'router-model-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const launcher = join(root, 'launcher.cjs')
+  let app
+  t.after(async () => {
+    app?.close()
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
+  const windows = process.platform === 'win32'
+  const launcher = windows ? join(root, 'bin', 'launcher.exe') : join(root, 'launcher.cjs')
   const source = '#!' + process.execPath + '\n' + `
 const readline = require('node:readline')
 readline.createInterface({ input: process.stdin }).on('line', line => {
@@ -40,12 +46,18 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
 })
 `
-  await writeFile(launcher, source)
-  await chmod(launcher, 0o700)
+  if (windows) {
+    await prepareWindowsRouterDirectory(join(root, 'bin'))
+    await copyFile(process.execPath, launcher)
+    // Node invoked with the fixture directory executes its index.js entry point.
+    await writeFile(join(root, 'index.js'), source)
+  } else {
+    await writeFile(launcher, source)
+    await chmod(launcher, 0o700)
+  }
   const config = normalizeRouterConfig({ enabled: true, launcher,
-    launcherSha256: createHash('sha256').update(source).digest('hex') })
-  const app = await connectRouterApp({ config, directory: root, onEvent() {}, onTool() {}, onClose() {} })
-  t.after(() => app.close())
+    launcherSha256: createHash('sha256').update(await readFile(launcher)).digest('hex') })
+  app = await connectRouterApp({ config, directory: root, onEvent() {}, onTool() {}, onClose() {} })
   assert.equal(app.selected.model, 'gpt-6.1-terra')
   assert.equal((await app.start()).params.model, 'gpt-6.1-terra')
   const resumed = (await app.resume('previous-sol-thread')).params

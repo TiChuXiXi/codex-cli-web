@@ -2,16 +2,19 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises'
 import { createClientFilter, isLanAddress, isLocalSetupRequest } from './client-access.js'
 import { join } from 'node:path'
+import { checkWindowsPrivateFile, prepareWindowsRouterDirectory } from './router/windows-access.js'
 const COOKIE='codex_web_session'
 const digest=value=>createHash('sha256').update(String(value)).digest()
 export async function readAccessToken(config) {
   if(config.accessToken) return config.accessToken
-  await mkdir(config.stateDir,{recursive:true,mode:0o700})
+  if(process.platform==='win32') await prepareWindowsRouterDirectory(config.stateDir)
+  else await mkdir(config.stateDir,{recursive:true,mode:0o700})
   const path=join(config.stateDir,'access-token')
   try {
     await writeFile(path,randomBytes(32).toString('base64url')+'\n',{flag:'wx',mode:0o600})
   } catch(error) {if(error.code!=='EEXIST') throw error}
-  await chmod(path,0o600)
+  if(process.platform==='win32') await checkWindowsPrivateFile(path)
+  else await chmod(path,0o600)
   const token=(await readFile(path,'utf8')).trim()
   if(token.length<16) throw new Error('访问凭证文件无效，请重新设置')
   return token

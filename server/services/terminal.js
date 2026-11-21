@@ -35,7 +35,8 @@ export class TerminalService {
     const { default: pty } = await import('@lydell/node-pty')
     if (this.#disposed) throw fail('closed', '终端服务已关闭')
     if (this.#sessions.size >= 16) throw fail('limit', '最多同时打开 16 个终端')
-    const child = pty.spawn('/bin/bash', ['-l'], {
+    const windows = process.platform === 'win32'
+    const child = pty.spawn(windows ? 'powershell.exe' : '/bin/bash', windows ? ['-NoLogo', '-NoProfile'] : ['-l'], {
       name: 'xterm-256color', cols, rows, cwd: root,
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
     })

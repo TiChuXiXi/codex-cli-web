@@ -154,7 +154,8 @@ export function VersionsPanel({ api }: VersionsPanelProps) {
     <section className="dsh-codex-versions settings-versions" aria-labelledby={titleId}>
       <style>{VERSIONS_CSS}</style>
         <header className="versions-header">
-          <div><h2 id={titleId}>版本与更新</h2><p>{t('versions.subtitle')}</p></div>
+          <div><h2 id={titleId}>版本与更新</h2><p>{t('versions.subtitle')}</p>
+            <p>工作台 {__CODEX_PACKAGE_VERSION__} · 使用 <code>zcodex update --check</code> 检查工作台更新。</p></div>
         </header>
 
         <div className="versions-body">

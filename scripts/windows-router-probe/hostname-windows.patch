@@ -1,0 +1,10 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -60,6 +60,7 @@
+ 
+ #[cfg(windows)]
+ fn get_computer_physical_dns_hostname() -> OsString {
++    if std::env::var_os("ZCODEX_HOME_NT").is_some() { return OsString::from("zcodex-router"); }
+     use std::os::windows::ffi::OsStringExt;
+ 
+     // The DNS host name of the local computer. If the local computer is a node

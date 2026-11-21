@@ -49,6 +49,8 @@ export async function bootstrap(config, options={}) {
       const rejected=auth.originRejection(request)
       if(rejected)return json(response,rejected,{error:'请求来源不允许'})
       if(pathname==='/healthz' && request.method==='GET')return json(response,200,{ok:true})
+      if(options.maintenance && (pathname.startsWith('/auth') || pathname.startsWith('/codex-cli')))
+        return json(response,503,{error:'维护检查中'})
       if(pathname==='/auth'||pathname.startsWith('/auth/'))return await auth.handle(request,response,pathname)
       if(pathname==='/codex-cli'||pathname.startsWith('/codex-cli/')) {
         auth.attach(request,response)
@@ -76,14 +78,17 @@ export async function bootstrap(config, options={}) {
         routes.dispose()
         await settings.dispose()
         auth.dispose()
-        const stoppingRouter=router?.close()
-        followups.dispose()
-        workspace.dispose()
-        terminal.dispose()
-        git.dispose()
-        versions.dispose()
-        await Promise.all([stoppingRouter,hub.stop()])
-        bus.dispose()
+        try {
+          await router?.close()
+        } finally {
+          followups.dispose()
+          workspace.dispose()
+          terminal.dispose()
+          git.dispose()
+          versions.dispose()
+          await hub.stop()
+          bus.dispose()
+        }
         server.closeIdleConnections()
         await stopped
       }finally {clearTimeout(deadline);for(const socket of sockets)socket.destroy()}
@@ -95,8 +100,10 @@ export async function bootstrap(config, options={}) {
     const address=server.address(),host=['0.0.0.0','::'].includes(config.host)?'127.0.0.1':config.host
     const origin='http://'+(host.includes(':')?'['+host+']':host)+':'+address.port
     auth.setOrigin(config.publicOrigin ?? origin)
-    hub.start()
-    router?.start()
+    if(!options.maintenance) {
+      hub.start()
+      router?.start()
+    }
     logger.info('Listening on '+(config.publicOrigin ?? origin))
     if(config.accessScope==='lan' && !config.publicOrigin) {
       for(const entry of Object.values(networkInterfaces()).flat()) {

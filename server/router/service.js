@@ -1,3 +1,4 @@
+import { prepareWindowsRouterDirectory } from './windows-access.js'
 import { deliveryFact, renderExpression } from '../../shared/router-expression.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, realpath, stat } from 'node:fs/promises'
@@ -71,7 +72,16 @@ export class RouterService {
       if (!this.closed) {
         this.phase = 'unavailable'
         this.error = 'Router 尚未通过启动校验'
-        this.logger?.warn?.('Router startup validation failed: ' + (error.code ?? error.name))
+        const reason = [
+          ['access', /denied|permission|拒绝访问|权限/i],
+          ['missing-thread', /no rollout found|thread not found/i],
+          ['thread-identity', /会话身份不匹配/],
+          ['storage', /sqlite|database/i],
+          ['disconnected', /disconnected|closed|已关闭/i],
+          ['timeout', /timeout|超时/i],
+        ].find(([,pattern])=>pattern.test(error.message))?.[0] || 'validation'
+        const source=error.stack?.match(/server[/\\](?:codex|router)[/\\]([\w.-]+\.js:\d+)/)?.[1]
+        this.logger?.warn?.('Router startup validation failed: ' + [reason,error.code ?? error.name,source].filter(Boolean).join(' '))
         this.publish()
       }
     }).finally(() => { this.opening = null })
@@ -80,10 +90,12 @@ export class RouterService {
   async open() {
     if (!this.store) {
       const root = join(this.stateDir, 'router')
-      await mkdir(root, { recursive: true, mode: 0o700 })
+      const windows = process.platform === 'win32'
+      if (windows) await prepareWindowsRouterDirectory(root)
+      else await mkdir(root, { recursive: true, mode: 0o700 })
       const directory = await realpath(root)
       const info = await stat(directory)
-      if (directory !== root || (info.mode & 0o077) !== 0) throw new Error('Router 状态目录必须是私有真实目录')
+      if (!info.isDirectory() || (!windows && (directory !== root || (info.mode & 0o077) !== 0))) throw new Error('Router 状态目录必须是私有真实目录')
       this.directory = directory
       this.projects = await loadRouterProjects(this.config.projects, directory)
       this.store = new RouterStore(join(directory, 'router.sqlite'))
