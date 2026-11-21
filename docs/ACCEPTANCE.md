@@ -1,6 +1,6 @@
 # 当前实现与验收记录
 
-2026-11-21 的 npm 候选独立记录 Windows x64 与 WSL/Linux x64 的生命周期和 Web 验收。[候选包实测](acceptance/ndc-lifecycle.md)
+2026-11-21 的 npm 候选记录覆盖 Windows 原生 x64、WSL/Linux x64 和 Linux arm64。Linux arm64 的包生命周期、浏览器和真实 Worker 通过，专用 Router 的真实回合受模型出口阻塞。[候选包实测](acceptance/ndc-lifecycle.md)
 
 日期：2026-11-17。项目版本 0.1.0，前端 buildId：8f6a62ed944b8dac。尚未创建目标 Git 提交，未发布 npm 包。
 

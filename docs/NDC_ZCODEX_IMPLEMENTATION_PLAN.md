@@ -6,7 +6,7 @@
 
 ## 2026-11-21 本地候选进度
 
-Windows x64 已纳入首发。当前私有候选为 `zcodex@0.1.0-rc.1`，使用 npm 全局 shim 和独立前缀验证 Windows 原生及 WSL/Linux x64 的安装、后台启停、更新、恢复和卸载。Linux arm64 仍在首发范围，需另跑同版候选。公开发布前还需从干净机器验证签名 Router 制品和安装链。实测范围见[生命周期验收记录](acceptance/ndc-lifecycle.md)。
+Windows x64 已纳入首发。当前私有候选为 `zcodex@0.1.0-rc.1`，使用 npm 全局 shim 和独立前缀验证 Windows 原生、WSL/Linux x64 及 Linux arm64 的安装、后台启停、更新、恢复和卸载。Linux arm64 同版复验通过浏览器和真实 Worker，专用 Router 通过策略 v2 检查，真实回合及升级后的主线程恢复仍待模型出口可用后复验。公开发布前还需从干净机器验证签名 Router 制品和安装链。实测范围见[生命周期验收记录](acceptance/ndc-lifecycle.md)。
 
 ## 1. 发行准备度与包名（规划时基线）
 
