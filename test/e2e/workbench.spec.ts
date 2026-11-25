@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { readFile } from 'node:fs/promises'
 async function login(page:any) {
   await page.goto('/')
   await page.getByLabel('访问凭证',{exact:true}).fill('fixture-access-token-only-for-tests')
@@ -279,6 +280,40 @@ test('login connection failure has a working retry and clears only the connectio
   await page.screenshot({path:testInfo.outputPath('login-desktop.png')})
   await page.setViewportSize({width:390,height:844})
   await page.screenshot({path:testInfo.outputPath('login-mobile.png')})
+})
+
+test('file preview and workspace context menu download the original file',async({page})=>{
+  await login(page);await selectThread(page)
+  await page.getByRole('button',{name:'右侧面板',exact:true}).click()
+  const sidebar=page.locator('.codex-sidebar')
+  const file=sidebar.getByRole('treeitem',{name:/示例\.md/})
+  await file.click({button:'right'})
+  const contextDownload=page.waitForEvent('download')
+  await sidebar.getByRole('menuitem',{name:'下载文件',exact:true}).click()
+  const fromMenu=await contextDownload
+  expect(fromMenu.suggestedFilename()).toBe('示例.md')
+  const original=await readFile(await fromMenu.path())
+  expect(original.toString('utf8')).toBe('# 验收文档\n\n文件预览正常。\n')
+
+  await file.click()
+  await expect(sidebar.getByRole('heading',{name:'验收文档',exact:true})).toBeVisible()
+  const button=sidebar.getByRole('button',{name:'下载文件',exact:true})
+  const previewDownload=page.waitForEvent('download')
+  await button.click()
+  const fromPreview=await previewDownload
+  expect(fromPreview.suggestedFilename()).toBe(fromMenu.suggestedFilename())
+  expect(await readFile(await fromPreview.path())).toEqual(original)
+  await expect(button).toBeEnabled()
+  await expect(sidebar.getByRole('heading',{name:'验收文档',exact:true})).toBeVisible()
+
+  await sidebar.getByRole('tab',{name:/工作区文件/}).click()
+  await sidebar.getByRole('treeitem',{name:/preview\.html/}).click()
+  await expect(sidebar.frameLocator('iframe').getByRole('heading',{name:'HTML fixture'})).toBeVisible()
+  const htmlDownload=page.waitForEvent('download')
+  await button.click()
+  const html=await htmlDownload
+  expect(html.suggestedFilename()).toBe('preview.html')
+  expect(await readFile(await html.path(),'utf8')).toBe('<h1>HTML fixture</h1>')
 })
 
 test('file preview, HTML sandbox, terminal retention and Git workbench',async({page},testInfo)=>{

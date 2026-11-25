@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process'
 import { realpath, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { createInterface } from 'node:readline/promises'
@@ -17,6 +17,7 @@ const help = [
   'zcodex '+version,
   'init [--config FILE] [--state-dir DIR] [--non-interactive]',
   'start | stop [--yes] | restart [--yes] | status | doctor | open',
+  'verify-worker --codex PATH --transport stdio|daemon [--queue-only]  (Linux)',
   'logs [--lines N] [-f]',
   'update [--check | --yes | --recover --yes]',
   'uninstall --yes [--purge --confirm-purge INSTANCE_ID]',
@@ -31,18 +32,33 @@ async function main() {
     yes:{type:'boolean',short:'y'},check:{type:'boolean'},recover:{type:'boolean'},purge:{type:'boolean'},
     'confirm-purge':{type:'string'},lines:{type:'string'},follow:{type:'boolean',short:'f'},
     force:{type:'boolean'},'prepare-router':{type:'string'},sha256:{type:'string'},
+    codex:{type:'string'},transport:{type:'string'},'queue-only':{type:'boolean'},
   }}) } catch(e) {throw fault(2,e.message)}
   const opts=parsed.values
   if(opts.version) {console.log(version); return}
   if(opts.help || !parsed.positionals.length) {console.log(help); return}
   const [command,...extra]=parsed.positionals
   const allowed={init:['non-interactive','prepare-router','sha256'],start:[],stop:['yes','force'],restart:['yes'],
-    status:[],logs:['lines','follow'],doctor:[],open:[],update:['check','yes','recover'],uninstall:['yes','purge','confirm-purge']}
+    status:[],logs:['lines','follow'],doctor:[],open:[],update:['check','yes','recover'],uninstall:['yes','purge','confirm-purge'],
+    'verify-worker':['codex','transport','queue-only']}
   if(!Object.hasOwn(allowed,command) || extra.length || Object.keys(opts).some(k=>!['json','config','state-dir',...allowed[command]].includes(k)))
     throw fault(2,'命令或选项有误，请查看 zcodex --help')
   const args={command,yes:!!opts.yes,configFile:opts.config,stateDir:opts['state-dir'],check:!!opts.check,
     purge:!!opts.purge,confirmPurge:opts['confirm-purge'],recover:!!opts.recover}
   if((args.check && args.recover) || (args.confirmPurge && !args.purge)) throw fault(2,'选项组合无效')
+  if (command === 'verify-worker') {
+    if (process.platform !== 'linux') throw fault(3, '隔离协议探针需要 Linux 命名空间')
+    if (!isAbsolute(opts.codex ?? '') || !['stdio', 'daemon'].includes(opts.transport))
+      throw fault(2, '请指定 --codex 绝对路径和 --transport stdio 或 daemon')
+    const flags = [opts['queue-only'] ? '--queue-only' : '--rcc-p0']
+    if (opts.transport === 'daemon') flags.push('--daemon-fixture')
+    const probe = spawnSync(process.execPath, [join(root, 'scripts/test-router-protocol.mjs'), ...flags], {
+      stdio: 'inherit', env: { PATH: process.env.PATH, CODEX_WEB_ROUTER_A1: '1', CODEX_WEB_CODEX_PATH: opts.codex },
+    })
+    if (probe.error) throw probe.error
+    process.exitCode = probe.status ?? 1
+    return
+  }
   const loc=locations(await realpath(root))
   const emit = value => console.log(JSON.stringify({code:0,...value},null,opts.json?0:2))
   if(command==='init') {

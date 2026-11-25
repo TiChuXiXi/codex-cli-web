@@ -3,6 +3,7 @@ import { defaultProfile } from '../../shared/router-presentation.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { HubError } from '../codex/hub.js'
+import { baselineProtocol } from '../codex/worker-protocol.js'
 import { checkProject, checkThread, shortText, workerDispatchIssue, workerIdentityIssue, workerPermissionMatches, workerSettingsStamp } from './projects.js'
 
 const continuationPrompt = '请继续本会话刚才中断的原任务。先查看已有对话和当前工作区，核对已完成的步骤与未提交的改动，从未完成处继续。保留已有改动，避免重复执行。需要用户确认、审批或补充信息时，使用本会话的原生交互，完成后汇报结果。'
@@ -51,6 +52,11 @@ function waitStatus(requests, flags = []) {
 }
 const steerWaitMethods = new Map([['waitingOnApproval', 'item/commandExecution/requestApproval'],
   ['waitingOnUserInput', 'item/tool/requestUserInput']])
+function methodMissing(error, method) {
+  return error.code === -32601 || (error.code === -32600 &&
+    error.message.startsWith('Invalid request: unknown variant `' + method + '`,'))
+}
+
 const workerVisibilityGraceMs = 30000
 const taskEvents = {
   queued: 'task.queued', running: 'task.started', completed: 'task.completed',
@@ -69,13 +75,12 @@ export class RouterDispatcher {
     this.timer.unref()
   }
 
-  supportsSteer(worker) {
-    return worker.codexVersion === '0.170.0' || (worker.codexVersion === '0.171.0' &&
-      (worker.kind === 'stdio' || worker.kind === 'daemon'))
+  protocol(worker) {
+    return worker.workerProtocol ?? baselineProtocol(worker.codexVersion, worker.kind)
   }
 
-  supportsQueue(worker) {
-    return worker.codexVersion === '0.169.1' || this.supportsSteer(worker)
+  unavailable(worker) {
+    return 'Worker ' + (worker.codexVersion ?? '未知版本') + ' 的原生队列未经验证。请运行隔离 Worker 协议检查并配置 workerProtocolReport，重连后重新提交。'
   }
 
   get(id) {
@@ -362,7 +367,9 @@ export class RouterDispatcher {
   }
 
   async requestRestart(task, tasks) {
-    if (!this.isReady() || this.hub.status().phase !== 'ready' || !this.supportsQueue(this.hub.status())) return
+    const worker = this.hub.status()
+    if (!this.isReady() || worker.phase !== 'ready') return
+    if (!this.protocol(worker).queue) return this.update(task.id, { status: 'failed', error: this.unavailable(worker) })
     const { project, detail } = await this.inspect(task)
     const turn = detail.turns.at(-1)
     const fail = error => this.update(task.id, { status: 'failed', error })
@@ -380,7 +387,7 @@ export class RouterDispatcher {
     if (this.closed || !this.isReady() || Date.now() - (task.restartRequestedAt ?? 0) < 20000) return
     if ((task.restartAttempts ?? 0) >= 2) return fail('无法确认原 Worker 回合已停止，未发送续执行消息')
     await this.retain(task.threadId)
-    if (this.closed || !this.isReady()) return
+    if (this.closed || !this.isReady() || worker.connectedAt !== this.hub.status().connectedAt) return
     this.update(task.id, { restartRequestedAt: Date.now(), restartAttempts: (task.restartAttempts ?? 0) + 1, error: null })
     try {
       await this.hub.interruptTurn({ threadId: task.threadId, turnId: task.expectedTurnId })
@@ -394,13 +401,14 @@ export class RouterDispatcher {
     if (this.get(task.id).status !== 'queued' || this.store.get('stop',task.id)) return
     const worker = this.hub.status()
     if (worker.phase !== 'ready') return
-    if (!this.supportsQueue(worker)) {
-      this.update(task.id, { error: 'Worker App Server 版本尚未通过 Router 队列验收' })
+    if (!this.protocol(worker).queue && !this.protocol(worker).steer) {
+      this.update(task.id, { status: 'failed', error: this.unavailable(worker) })
       return
     }
     try {
       let threadId = task.threadId
       if (!threadId) {
+        if (!this.protocol(worker).queue) return this.update(task.id, { status: 'failed', error: this.unavailable(worker) })
         this.update(task.id, { status: 'creating' }, false, { state: 'delivering', method: 'create', attemptedAt: Date.now() })
         const thread = await this.createWorker(this.project(task.projectId), undefined, task.worker?.permission)
         threadId = thread.id
@@ -426,6 +434,7 @@ export class RouterDispatcher {
         }
         return
       }
+      if (!this.protocol(worker).queue) return this.update(task.id, { status: 'failed', error: this.unavailable(worker) })
       if (this.list(-1).some(other => other.id !== task.id && other.threadId === threadId &&
           other.turnId && !terminal.has(other.status))) return
       if (task.workerAction === 'restart' && !restartedTurnMatches(task, detail)) {
@@ -456,7 +465,8 @@ export class RouterDispatcher {
           return
         }
       }
-      if (this.get(task.id).status !== 'queued' || this.store.get('stop',task.id)) return
+      if (this.get(task.id).status !== 'queued' || this.store.get('stop',task.id) ||
+          this.hub.status().phase !== 'ready' || worker.connectedAt !== this.hub.status().connectedAt) return
       task = this.update(task.id, { status: 'submitting', error: null, threadName: shortText(detail.thread.name, 120) }, false,
         { state: 'delivering', method: 'queue', ownerId: undefined, expectedTurnId: undefined, attemptedAt: Date.now() })
       const text = task.workerAction === 'restart' ? continuationPrompt : task.instruction
@@ -473,8 +483,14 @@ export class RouterDispatcher {
       const current = this.get(task.id)
       if (error.code === 'codex-cli/router-worker-settings') {
         this.update(task.id, { status: 'failed', error: error.message })
+      } else if (current.status === 'submitting' && methodMissing(error, 'thread/queue/add')) {
+        this.update(task.id, { status: 'failed', error: 'Worker 明确拒绝原生队列方法。请重新核验 Worker 协议后提交。' })
       } else if (current.status === 'creating' || current.status === 'submitting') {
         this.update(task.id, { status: 'unknown', error: '提交结果待核对，已暂停自动重试' })
+      } else if (current.status === 'queued' && (error.code === -32601 || error.code === -32602 ||
+          (error.code === -32600 && error.message.startsWith('Invalid request: unknown variant')))) {
+        this.update(task.id, { status: 'failed', error: 'Worker ' + worker.codexVersion +
+          ' 的派发前协议核验失败。请运行 zcodex verify-worker。' + shortText(error.message, 160) })
       } else if (error.code === 'codex-cli/router-thread' || error.code === 'codex-cli/router-project') {
         this.update(task.id, { status: 'failed', error: error.message })
       }
@@ -483,7 +499,8 @@ export class RouterDispatcher {
 
   async trySteer(task, project, detail, turn) {
     const facts = this.store.command(task.id)
-    if (!facts?.allowSteer || facts.waitForIdle || !this.supportsSteer(this.hub.status())) return
+    const worker = this.hub.status()
+    if (!facts?.allowSteer || facts.waitForIdle || !this.protocol(worker).steer) return
     const pending = this.pendingFor(task.threadId, turn.id)
     const flags = detail.thread.status?.activeFlags ?? []
     if (pending.some(request => request.params.threadId !== task.threadId ||
@@ -499,6 +516,7 @@ export class RouterDispatcher {
     await this.retain(task.threadId)
     await checkProject(project)
     if (!this.isReady() || this.closed || this.get(task.id).status !== 'queued' || this.store.get('stop',task.id)) return
+    if (this.hub.status().phase !== 'ready' || worker.connectedAt !== this.hub.status().connectedAt) return
     task = this.update(task.id, { status: 'submitting', error: null, threadName: shortText(detail.thread.name, 120) }, false, {
       method: 'steer', state: 'delivering', expectedTurnId: turn.id, ownerId: owner?.id, attemptedAt: Date.now(),
     })
@@ -507,7 +525,8 @@ export class RouterDispatcher {
       result = await this.hub.steerTurn({ threadId: task.threadId, turnId: turn.id,
         clientUserMessageId: task.id, text: task.instruction, ...(task.corrections?.length && { selectionContext:this.correctionText(task) }) })
     } catch (error) {
-      if (error.code !== -32600 || !/no active turn to steer/i.test(error.message)) throw error
+      const inactive = error.code === -32600 && /no active turn to steer/i.test(error.message)
+      if (!inactive && !methodMissing(error, 'turn/steer')) throw error
       this.update(task.id, { status: 'queued' }, false, { state: 'deferred', waitForIdle: true })
       this.schedule()
       return
@@ -528,7 +547,8 @@ export class RouterDispatcher {
       if (task.status === 'creating') this.update(task.id, { status: 'unknown', error: '会话创建结果待核对' })
       return
     }
-    if (this.hub.status().phase !== 'ready') return
+    const worker = this.hub.status()
+    if (worker.phase !== 'ready') return
     const { project, detail } = await this.inspect(task, true)
     const facts = this.store.command(task.id)
     if (this.get(task.id).status !== task.status || this.closed) return
@@ -585,6 +605,10 @@ export class RouterDispatcher {
       }
       const start = async () => {
         if (!this.isReady() || this.closed || this.store.get('stop',task.id) || this.get(task.id).status !== 'submitted') return
+        if (!this.protocol(worker).queue || worker.connectedAt !== this.hub.status().connectedAt) {
+          this.update(task.id, { error: '原生队列已有此指令，请核对原 Worker 队列及协议能力。' })
+          return
+        }
         const turn = await this.hub.routerStartWorkerMessage(task.threadId, queued.id)
         if (turn?.id) this.applyTurn(this.get(task.id), turn)
       }

@@ -1,0 +1,59 @@
+{
+  "date": "2026-11-25",
+  "platform": "linux/arm64",
+  "node": "v24.19.0",
+  "base": "d904d30 + existing uncommitted R1/R2 and user changes",
+  "package": "@openai/codex@0.172.0-linux-arm64",
+  "nativeSha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+  "commands": [
+    {
+      "entry": "scripts/test-uas-r3.mjs <official-native>",
+      "scenarios": 7,
+      "exit": 0,
+      "evidence": "native.json"
+    },
+    {
+      "entry": "scripts/test-uas-r3.mjs <official-native> gpt-6.1-sol",
+      "scenarios": 7,
+      "exit": 0,
+      "evidence": "account-model.json"
+    },
+    {
+      "entry": "python3 scripts/test-uas-r3-identity.py",
+      "exit": 0,
+      "evidence": "identity.json"
+    },
+    {
+      "entry": "scripts/test-uas-r2.mjs <official-native> B-uid",
+      "exit": 0,
+      "evidence": "b-uid.json"
+    },
+    {
+      "entry": "zcodex verify-worker --codex <official-native> --transport stdio",
+      "exit": 0,
+      "evidence": "worker.json"
+    },
+    {
+      "entry": "TMPDIR=/var/tmp npm test",
+      "tests": 307,
+      "passed": 307,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 29260.027266,
+      "exit": 0
+    },
+    {
+      "entry": "scripts/test-uas-r3-account.mjs (explicit current-account opt-in)",
+      "evidence": "chatgpt-live.json",
+      "operationsSubmitted": 6
+    }
+  ],
+  "platformsNotRun": [
+    "linux/x64",
+    "Windows",
+    "WSL"
+  ],
+  "productionMigration": false,
+  "productionWeChat": false,
+  "npmPublication": false
+}

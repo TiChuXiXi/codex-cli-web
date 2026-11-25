@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { DaemonTransport } from '../server/codex/transport/daemon.js'
+import { runningBinaryDigest } from '../server/codex/worker-protocol.js'
 import { mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,7 +15,9 @@ import {
 const textInput = text => [{ type: 'text', text, text_elements: [] }]
 const startParams = cwd => ({ cwd, approvalPolicy: 'never', sandbox: 'read-only', environments: [] })
 
-const rccOnly = process.argv.includes('--rcc-p0')
+const queueOnly = process.argv.includes('--queue-only')
+const daemon = process.argv.includes('--daemon-fixture')
+const rccOnly = process.argv.includes('--rcc-p0') || queueOnly
 const command = process.env.CODEX_WEB_CODEX_PATH
 if (process.env.CODEX_WEB_ROUTER_A1 !== '1' || !command || !isAbsolute(command)) {
   throw new Error('Set CODEX_WEB_ROUTER_A1=1 and CODEX_WEB_CODEX_PATH to an absolute Codex executable path')
@@ -23,7 +27,7 @@ const currentNetns = await readlink('/proc/self/ns/net')
 if (!process.env.ROUTER_A1_PARENT_NETNS) {
   const child = spawnSync('/usr/bin/unshare', [
     '--user', '--map-root-user', '--net', '--pid', '--fork', '--mount-proc', '--kill-child=SIGKILL',
-    '--', process.execPath, fileURLToPath(import.meta.url), ...(rccOnly ? ['--rcc-p0'] : []),
+    '--', process.execPath, fileURLToPath(import.meta.url), ...process.argv.slice(2),
   ], {
     env: {
       CODEX_WEB_ROUTER_A1: '1',
@@ -69,17 +73,15 @@ async function run() {
     const version = execFileSync(command, ['--version'], { env, cwd, encoding: 'utf8' }).trim()
     const schema = join(root, 'schema')
     execFileSync(command, ['app-server', 'generate-json-schema', '--experimental', '--out', schema], { env, cwd })
-    const startSchema = JSON.parse(await readFile(join(schema, 'v2', 'ThreadStartParams.json'), 'utf8'))
-    const callSchema = JSON.parse(await readFile(join(schema, 'DynamicToolCallParams.json'), 'utf8'))
-    const responseSchema = JSON.parse(await readFile(join(schema, 'DynamicToolCallResponse.json'), 'utf8'))
-    const queueSchema = JSON.parse(await readFile(join(schema, 'v2', 'ThreadQueueStartParams.json'), 'utf8'))
-    for (const [shape, keys] of [
-      [startSchema, ['dynamicTools', 'environments']],
-      [callSchema, ['threadId', 'turnId', 'callId', 'namespace', 'tool', 'arguments']],
-      [responseSchema, ['success', 'contentItems']],
-      [queueSchema, ['threadId', 'queuedSubmissionId']],
-    ]) {
-      for (const key of keys) assert.ok(Object.hasOwn(shape.properties, key), 'Generated schema is missing ' + key)
+    const schemas = [['v2/ThreadQueueStartParams.json', ['threadId', 'queuedSubmissionId']]]
+    if (!rccOnly) schemas.push(
+      ['v2/ThreadStartParams.json', ['dynamicTools', 'environments']],
+      ['DynamicToolCallParams.json', ['threadId', 'turnId', 'callId', 'namespace', 'tool', 'arguments']],
+      ['DynamicToolCallResponse.json', ['success', 'contentItems']],
+    )
+    for (const [filename, keys] of schemas) {
+      const shape = JSON.parse(await readFile(join(schema, filename), 'utf8'))
+      for (const key of keys) assert.ok(Object.hasOwn(shape.properties, key), filename + ' is missing ' + key)
     }
     model = await startResponsesFixture()
     await writeFile(join(codexHome, 'config.toml'), [
@@ -110,8 +112,39 @@ async function run() {
       'multi_agent_v2 = false',
       '',
     ].join('\n'), { mode: 0o600 })
+    let connectionNumber = 0
+    let previousExit
     const connect = async (options = {}) => {
-      const app = await connectAppServer({ command, env, cwd, args: ['--strict-config'], ...options })
+      let child
+      let app
+      try {
+        if (rccOnly && daemon) {
+          await previousExit
+          const socketPath = join(root, 'probe-' + ++connectionNumber + '.sock')
+          child = spawn(command, ['app-server', '--listen', 'unix://' + socketPath, '--strict-config'],
+            { cwd, env, stdio: 'ignore', detached: true })
+          const exited = new Promise(resolve => child.once('close', resolve))
+          for (let attempt = 0; attempt < 250; attempt++) {
+            if (await stat(socketPath).catch(() => null)) break
+            if (child.exitCode !== null) throw new Error('私有协议服务器提前退出')
+            await new Promise(resolve => setTimeout(resolve, 20))
+          }
+          app = await connectAppServer({ transport: new DaemonTransport({ socketPath }), ...options })
+          const disconnect = app.close
+          app.close = () => {
+            disconnect()
+            // The recovery fixture simulates loss of its own server during a held turn.
+            // Include the npm launcher and its native child in this private process group.
+            if (child.exitCode === null && !child.signalCode) process.kill(-child.pid, 'SIGKILL')
+            previousExit = exited
+          }
+        } else {
+          app = await connectAppServer({ command, env, cwd, args: ['--strict-config'], ...options })
+        }
+      } catch (error) {
+        child?.kill()
+        throw error
+      }
       open.add(app)
       return app
     }
@@ -120,114 +153,137 @@ async function run() {
       open.delete(app)
     }
 
-    const noExperimental = await connect({ experimentalApi: false })
-    await assert.rejects(noExperimental.request('thread/start', { cwd, dynamicTools }), /experimental/i)
-    close(noExperimental)
+    const report = { cli: version, network: 'private loopback only', generatedExperimentalSchema: true }
+    const app = rccOnly ? await connect() : await checkRouter()
+    async function checkRouter() {
+      const noExperimental = await connect({ experimentalApi: false })
+      await assert.rejects(noExperimental.request('thread/start', { cwd, dynamicTools }), /experimental/i)
+      close(noExperimental)
 
-    let app = await connect()
-    const report = { cli: version, userAgent: app.info.userAgent, network: 'private loopback only', generatedExperimentalSchema: true }
-    await assert.rejects(app.request('thread/start', {
-      ...startParams(cwd),
-      dynamicTools: [{ ...dynamicTools[0], tools: [...dynamicTools[0].tools, ...dynamicTools[0].tools] }],
-    }), /duplicate/i)
+      let app = await connect()
+      report.userAgent = app.info.userAgent
+      await assert.rejects(app.request('thread/start', {
+        ...startParams(cwd),
+        dynamicTools: [{ ...dynamicTools[0], tools: [...dynamicTools[0].tools, ...dynamicTools[0].tools] }],
+      }), /duplicate/i)
 
-    const { thread } = await app.request('thread/start', { ...startParams(cwd), dynamicTools })
-    assert.equal(thread.cwd, cwd)
-    const initialHistory = await app.request('thread/turns/list', { threadId: thread.id }).then(
-      value => ({ turnCount: value.data.length }),
-      error => ({ error: error.message.replaceAll(thread.id, '<threadId>') }),
-    )
-    report.freshThread = { pathIssued: Boolean(thread.path), fileExists: await rolloutExists(thread.path), initialHistory }
+      const { thread } = await app.request('thread/start', { ...startParams(cwd), dynamicTools })
+      assert.equal(thread.cwd, cwd)
+      const initialHistory = await app.request('thread/turns/list', { threadId: thread.id }).then(
+        value => ({ turnCount: value.data.length }),
+        error => ({ error: error.message.replaceAll(thread.id, '<threadId>') }),
+      )
+      report.freshThread = { pathIssued: Boolean(thread.path), fileExists: await rolloutExists(thread.path), initialHistory }
 
-    const toolReads = []
-    registerTool(app, thread.id, toolReads)
-    const offset = model.requests.length
-    model.enqueue(dynamicCall('a1-first'), assistantMessage('First fixture done.'))
-    const first = await turn(app, thread.id, 'first fixture')
-    checkToolEvents(app, thread.id, first.id, 'a1-first', true)
-    assert.match(JSON.stringify(model.requests[offset + 1].input), /ROUTER_A1_FIXTURE_RESULT/)
-    assert.deepEqual(toolReads, ['fixture'])
-    report.initialToolInventory = toolInventory(model.requests[offset])
-    assert.ok(report.initialToolInventory.includes(namespace + '/' + toolName))
+      const toolReads = []
+      registerTool(app, thread.id, toolReads)
+      const offset = model.requests.length
+      model.enqueue(dynamicCall('a1-first'), assistantMessage('First fixture done.'))
+      const first = await turn(app, thread.id, 'first fixture')
+      checkToolEvents(app, thread.id, first.id, 'a1-first', true)
+      assert.match(JSON.stringify(model.requests[offset + 1].input), /ROUTER_A1_FIXTURE_RESULT/)
+      assert.deepEqual(toolReads, ['fixture'])
+      report.initialToolInventory = toolInventory(model.requests[offset])
+      assert.ok(report.initialToolInventory.includes(namespace + '/' + toolName))
 
-    model.enqueue(dynamicCall('a1-invalid', { key: 'other' }), assistantMessage('Rejected arguments.'))
-    const invalid = await turn(app, thread.id, 'invalid arguments fixture')
-    checkToolEvents(app, thread.id, invalid.id, 'a1-invalid', false)
-    assert.match(JSON.stringify(model.requests.at(-1).input), /Invalid fixture arguments/)
-    assert.deepEqual(toolReads, ['fixture'])
-    report.dynamicRoundTrip = 'success and model-visible argument rejection'
+      model.enqueue(dynamicCall('a1-invalid', { key: 'other' }), assistantMessage('Rejected arguments.'))
+      const invalid = await turn(app, thread.id, 'invalid arguments fixture')
+      checkToolEvents(app, thread.id, invalid.id, 'a1-invalid', false)
+      assert.match(JSON.stringify(model.requests.at(-1).input), /Invalid fixture arguments/)
+      assert.deepEqual(toolReads, ['fixture'])
+      report.dynamicRoundTrip = 'success and model-visible argument rejection'
 
-    const stored = await app.request('thread/read', { threadId: thread.id, includeTurns: false })
-    assert.ok(await rolloutExists(stored.thread.path), 'first user turn should materialize a rollout')
-    const empty = await app.request('thread/start', { ...startParams(cwd), dynamicTools })
-    close(app)
-    app = await connect()
-    report.freshThread.coldEmptyResume = await app.request('thread/resume', {
-      threadId: empty.thread.id, excludeTurns: true,
-    }).then(
-      value => ({ sameThread: value.thread.id === empty.thread.id }),
-      error => ({ error: error.message.replaceAll(empty.thread.id, '<threadId>') }),
-    )
-    const resumed = await app.request('thread/resume', { threadId: thread.id, excludeTurns: true })
-    assert.equal(resumed.thread.id, thread.id)
-    assert.equal(resumed.thread.cwd, cwd)
-    const beforeResume = model.requests.length
-    registerTool(app, thread.id, toolReads)
-    model.enqueue(dynamicCall('a1-resumed'), assistantMessage('Resume fixture done.'))
-    const continued = await turn(app, thread.id, 'after app server restart')
-    checkToolEvents(app, thread.id, continued.id, 'a1-resumed', true)
-    assert.deepEqual(toolReads, ['fixture', 'fixture'])
-    report.resume = { sameThread: true, toolRoundTrip: true, inventory: toolInventory(model.requests[beforeResume]) }
-    report.rejectedToolCalls = await checkDisabledCalls(app, thread.id, model)
-    const mcp = await app.request('mcpServerStatus/list', { threadId: thread.id })
-    assert.deepEqual(mcp.data, [])
-    report.mcpServerCount = mcp.data.length
+      const stored = await app.request('thread/read', { threadId: thread.id, includeTurns: false })
+      assert.ok(await rolloutExists(stored.thread.path), 'first user turn should materialize a rollout')
+      const empty = await app.request('thread/start', { ...startParams(cwd), dynamicTools })
+      close(app)
+      if (process.argv.includes('--uas')) {
+        const peer = await connect({ clientName: 'uas-peer' })
+        try {
+          const snapshot = await peer.request('thread/resume', { threadId: thread.id, excludeTurns: true })
+          assert.equal(snapshot.thread.id, thread.id)
+          assert.equal(snapshot.sandbox.type, 'readOnly')
+          report.coldPeer = { distinctClient: true, sameThread: true, sandbox: snapshot.sandbox.type }
+        } finally { close(peer) }
+      }
+      app = await connect()
+      report.freshThread.coldEmptyResume = await app.request('thread/resume', {
+        threadId: empty.thread.id, excludeTurns: true,
+      }).then(
+        value => ({ sameThread: value.thread.id === empty.thread.id }),
+        error => ({ error: error.message.replaceAll(empty.thread.id, '<threadId>') }),
+      )
+      const resumed = await app.request('thread/resume', { threadId: thread.id, excludeTurns: true })
+      assert.equal(resumed.thread.id, thread.id)
+      assert.equal(resumed.thread.cwd, cwd)
+      const beforeResume = model.requests.length
+      registerTool(app, thread.id, toolReads)
+      model.enqueue(dynamicCall('a1-resumed'), assistantMessage('Resume fixture done.'))
+      const continued = await turn(app, thread.id, 'after app server restart')
+      checkToolEvents(app, thread.id, continued.id, 'a1-resumed', true)
+      assert.deepEqual(toolReads, ['fixture', 'fixture'])
+      report.resume = { sameThread: true, toolRoundTrip: true, inventory: toolInventory(model.requests[beforeResume]) }
+      report.rejectedToolCalls = await checkDisabledCalls(app, thread.id, model)
+      const mcp = await app.request('mcpServerStatus/list', { threadId: thread.id })
+      assert.deepEqual(mcp.data, [])
+      report.mcpServerCount = mcp.data.length
 
-    const pendingReply = Promise.withResolvers()
-    app.rpc.onServerRequest(({ method, params }) => {
-      assert.equal(method, 'item/tool/call')
-      assert.equal(params.callId, 'a1-pending')
-      return pendingReply.promise
-    })
-    model.enqueue(dynamicCall('a1-pending'))
-    const interrupted = await app.request('turn/start', { threadId: thread.id, input: textInput('hold a tool response') })
-    assert.ok(interrupted.turn.id)
-    await waitFor(app.events, entry => entry.method === 'item/tool/call' && entry.params.callId === 'a1-pending', 'pending dynamic request')
-    close(app)
-    pendingReply.resolve({ success: true, contentItems: [{ type: 'inputText', text: 'Late fixture reply.' }] })
-    app = await connect()
-    await app.request('thread/resume', { threadId: thread.id, excludeTurns: true })
-    registerTool(app, thread.id, toolReads)
-    model.enqueue(dynamicCall('a1-after-pending'), assistantMessage('Tool after restart done.'))
-    const afterPending = await turn(app, thread.id, 'after restart with unfinished dynamic tool')
-    checkToolEvents(app, thread.id, afterPending.id, 'a1-after-pending', true)
-    assert.notEqual(afterPending.id, interrupted.turn.id)
-    assert.equal(app.events.some(entry => entry.method === 'item/tool/call' && entry.params.callId === 'a1-pending'), false)
-    assert.deepEqual(toolReads, ['fixture', 'fixture', 'fixture'])
-    report.pendingToolRestart = { oldCallReplayed: false, newTurnUsable: true }
+      const pendingReply = Promise.withResolvers()
+      app.rpc.onServerRequest(({ method, params }) => {
+        assert.equal(method, 'item/tool/call')
+        assert.equal(params.callId, 'a1-pending')
+        return pendingReply.promise
+      })
+      model.enqueue(dynamicCall('a1-pending'))
+      const interrupted = await app.request('turn/start', { threadId: thread.id, input: textInput('hold a tool response') })
+      assert.ok(interrupted.turn.id)
+      await waitFor(app.events, entry => entry.method === 'item/tool/call' && entry.params.callId === 'a1-pending', 'pending dynamic request')
+      close(app)
+      pendingReply.resolve({ success: true, contentItems: [{ type: 'inputText', text: 'Late fixture reply.' }] })
+      app = await connect()
+      await app.request('thread/resume', { threadId: thread.id, excludeTurns: true })
+      registerTool(app, thread.id, toolReads)
+      model.enqueue(dynamicCall('a1-after-pending'), assistantMessage('Tool after restart done.'))
+      const afterPending = await turn(app, thread.id, 'after restart with unfinished dynamic tool')
+      checkToolEvents(app, thread.id, afterPending.id, 'a1-after-pending', true)
+      assert.notEqual(afterPending.id, interrupted.turn.id)
+      assert.equal(app.events.some(entry => entry.method === 'item/tool/call' && entry.params.callId === 'a1-pending'), false)
+      assert.deepEqual(toolReads, ['fixture', 'fixture', 'fixture'])
+      report.pendingToolRestart = { oldCallReplayed: false, newTurnUsable: true }
 
-    report.restrictedInventory = [...new Set(model.requests.flatMap(toolInventory))].sort()
+      report.restrictedInventory = [...new Set(model.requests.flatMap(toolInventory))].sort()
 
-    const naive = await app.request('thread/start', {
-      ...startParams(cwd), ephemeral: true, dynamicTools,
-      config: {
-        'features.shell_tool': true, 'features.view_image': true, 'features.goals': true,
-        'agents.enabled': true, 'tools.experimental_request_user_input.enabled': true,
-      },
-    })
-    model.enqueue(assistantMessage('Inventory control.'))
-    await turn(app, naive.thread.id, 'read-only control')
-    report.readOnlyControlInventory = toolInventory(model.requests.at(-1))
-    assert.ok(report.readOnlyControlInventory.includes('exec_command'))
-    assert.ok(report.readOnlyControlInventory.includes('write_stdin'))
+      const naive = await app.request('thread/start', {
+        ...startParams(cwd), ephemeral: true, dynamicTools,
+        config: {
+          'features.shell_tool': true, 'features.view_image': true, 'features.goals': true,
+          'agents.enabled': true, 'tools.experimental_request_user_input.enabled': true,
+        },
+      })
+      model.enqueue(assistantMessage('Inventory control.'))
+      await turn(app, naive.thread.id, 'read-only control')
+      report.readOnlyControlInventory = toolInventory(model.requests.at(-1))
+      assert.ok(report.readOnlyControlInventory.includes('exec_command'))
+      assert.ok(report.readOnlyControlInventory.includes('write_stdin'))
 
+      if (process.argv.includes('--uas')) {
+        report.sharedThreads = await checkSharedThreads({ app, connect, close, cwd, root, model, thread })
+      }
+      return app
+    }
+    const record = rccOnly ? { format: 1, version: version.replace(/^codex-cli /, ''), platform: process.platform,
+      arch: process.arch, transport: daemon ? 'daemon' : 'stdio', sha256: await runningBinaryDigest(app.rpc),
+      queue: true, steer: !queueOnly } : null
     report.queue = await checkQueue({ app, close, connect, cwd, model })
-    report.workerHub = await checkWorkerHub({ command, root, env })
+    // Candidate is private to this fixture. Export it only after the Worker assertions pass.
+    const reportPath = join(root, 'candidate.json')
+    if (record) await writeFile(reportPath, JSON.stringify({ workerProtocol: record }))
+    report.workerHub = await checkWorkerHub({ command, root, env, reportPath: rccOnly ? reportPath : '' })
     if (rccOnly) {
-      assert.ok(report.workerHub.controls.parallel, 'P0 requires the complete Steer and parallel delivery probes')
+      if (!queueOnly) assert.ok(report.workerHub.controls.parallel, 'P0 requires the complete Steer and parallel delivery probes')
       assert.deepEqual(model.unexpected, [])
       console.log(JSON.stringify({ cli: version, network: report.network, queue: report.queue,
-        controls: report.workerHub.controls, rccP0Passed: true }, null, 2))
+        controls: report.workerHub.controls, workerProtocol: record, rccP0Passed: !queueOnly }, null, 2))
       return
     }
     const nativePath = process.env.CODEX_WEB_ROUTER_NATIVE_PATH
@@ -259,7 +315,7 @@ async function run() {
   }
 }
 
-async function checkWorkerHub({ command, root, env }) {
+async function checkWorkerHub({ command, root, env, reportPath }) {
   const { CodexHub } = await import('../server/codex/hub.js')
   const { normalizeConfig } = await import('../server/codex/config.js')
   const { StdioTransport } = await import('../server/codex/transport/stdio.js')
@@ -279,16 +335,20 @@ async function checkWorkerHub({ command, root, env }) {
   const bus = new EventBus()
   const events = []
   bus.subscribe(event => events.push(event))
+  const kind = daemon ? 'daemon' : 'stdio'
+  const socketPath = join(root, 'worker.sock')
+  const workerEnv = { ...env, CODEX_HOME: codexHome, OPENAI_API_KEY: 'offline-fixture' }
+  const child = daemon ? spawn(command, ['app-server', '--listen', 'unix://' + socketPath, '--strict-config'],
+    { env: workerEnv, cwd, stdio: 'ignore' }) : null
   const hub = new CodexHub({
-    config: normalizeConfig({ codexHome, codexPath: command, transport: 'stdio' }),
+    config: normalizeConfig({ codexHome, codexPath: command, transport: kind, workerProtocolReport: reportPath }),
     bus,
     openTransport: async () => {
-      const transport = new StdioTransport({
-        command, args: ['app-server', '--stdio', '--strict-config'], cwd,
-        env: { ...env, CODEX_HOME: codexHome, OPENAI_API_KEY: 'offline-fixture' },
+      const transport = daemon ? new DaemonTransport({ socketPath }) : new StdioTransport({
+        command, args: ['app-server', '--stdio', '--strict-config'], cwd, env: workerEnv,
       })
       await transport.open()
-      return { transport, kind: 'stdio', socketPath: null }
+      return { transport, kind, socketPath: daemon ? socketPath : null }
     },
   })
   try {
@@ -318,7 +378,8 @@ async function checkWorkerHub({ command, root, env }) {
     assert.equal(writableSettings.sandbox?.type, 'workspaceWrite')
     assert.equal(workerDispatchIssue({ cwd, sandbox: 'workspace-write' }, writableSettings), null)
     assert.ok(workerDispatchIssue({ cwd, sandbox: 'read-only' }, writableSettings))
-    const controls = ['0.170.0', '0.171.0'].includes(hub.status().codexVersion)
+    if (reportPath) assert.equal(hub.status().workerProtocol.source, 'fixture')
+    const controls = hub.status().workerProtocol.steer
       ? await checkControls({ hub, bus, fixture, root, cwd, threadId: thread.id, events })
       : { skipped: 'Unverified Steer version' }
     return { controls, newWorker: true, verifiedSettings: true, queued: true, completed: true, historyCorrelated: true, workspaceWriteBounded: true }
@@ -328,6 +389,7 @@ async function checkWorkerHub({ command, root, env }) {
     throw error
   } finally {
     await hub.stop()
+    child?.kill()
     bus.dispose()
     await fixture.close()
   }
@@ -344,6 +406,8 @@ async function checkControls({ hub, bus, fixture, root, cwd, threadId, events })
     wakePolicy: { mergeMs: 60000 }, connect: async ({ directory }) => {
       const workspace = join(directory, 'workspace')
       return { cwd: workspace, selected: { model: 'fixture' },
+        classify: async () => ({ operation: 'work', scope: 'unspecified', projects: [], view: 'none',
+          topic: '', status: 'any', page: 1, work: '' }),
         start: async () => ({ thread: { id: 'rcc-router', cwd: workspace } }),
         send: async (_id, _text, requestId) => ({ turn: { id: 'source-' + requestId } }),
         close() {} }
@@ -502,6 +566,54 @@ async function checkControls({ hub, bus, fixture, root, cwd, threadId, events })
   }
 }
 
+async function checkSharedThreads({ app, connect, close, cwd, root, model, thread }) {
+  const workers = []
+  for (const [index, sandbox] of ['workspace-write', 'read-only'].entries()) {
+    const path = join(root, 'parallel-' + index)
+    await mkdir(path)
+    const result = await app.request('thread/start', { cwd: path, sandbox, approvalPolicy: 'never',
+      model: 'fixture-worker-' + index, config: { model_reasoning_effort: index ? 'low' : 'high' } })
+    assert.equal(result.cwd, path)
+    assert.equal(result.model, 'fixture-worker-' + index)
+    assert.equal(result.reasoningEffort, index ? 'low' : 'high')
+    assert.equal(result.sandbox.type, index ? 'readOnly' : 'workspaceWrite')
+    workers.push(result.thread)
+  }
+  const participants = [thread, ...workers]
+  const gate = Promise.withResolvers()
+  const markers = participants.map((_, i) => 'uas-parallel-input-' + i)
+  try {
+    model.enqueue(...participants.map(() => async () => {
+      await gate.promise
+      return assistantMessage('parallel OK')
+    }))
+    const turns = await Promise.all(participants.map(({ id }, i) => app.request('turn/start',
+      { threadId: id, input: textInput(markers[i]) })))
+    for (const [i, marker] of markers.entries()) {
+      const body = await waitFor(model.requests,
+        request => JSON.stringify(request.input).includes(marker), marker)
+      const input = JSON.stringify(body.input)
+      assert.deepEqual(markers.filter(other => input.includes(other)), [marker])
+      if (i === 0) assert.deepEqual(toolInventory(body), [namespace + '/' + toolName])
+    }
+    gate.resolve()
+    await Promise.all(turns.map(({ turn }, i) => completedTurn(app, participants[i].id, turn.id)))
+  } finally { gate.resolve() }
+  const peer = await connect()
+  try {
+    const peerResume = await peer.request('thread/resume', { threadId: thread.id, excludeTurns: true })
+      .then(result => {
+        assert.equal(result.thread.id, thread.id)
+        return 'accepted'
+      }, error => {
+        assert.match(error.message, /already has an active writer/)
+        return 'active writer rejected'
+      })
+    return { concurrent: participants.length, distinctInputs: true, routerInventoryStable: true,
+      workerSandboxes: ['workspaceWrite', 'readOnly'], peerResume }
+  } finally { close(peer) }
+}
+
 async function checkHostIsolation({ nativePath, connect, close, env, root, cwd, model }) {
   const config = join(env.CODEX_HOME, 'config.toml')
   const workspaceFixture = join(cwd, 'router-fixture.txt')
@@ -553,14 +665,16 @@ async function checkHostIsolation({ nativePath, connect, close, env, root, cwd, 
     await app.request('fs/writeFile', { path: stateFile, dataBase64: contents })
     assert.equal(await readFile(stateFile, 'utf8'), 'write check')
     const toolReads = []
-    const started = await app.request('thread/start', { ...startParams(cwd), dynamicTools })
+    const { dynamicTools: productionTools } = await import('../server/router/tools.js')
+    const started = await app.request('thread/start', { ...startParams(cwd), dynamicTools: [...productionTools, ...dynamicTools] })
     registerTool(app, started.thread.id, toolReads)
     model.enqueue(dynamicCall('a1-mounted'), assistantMessage('Mounted Router tool call done.'))
     const completed = await turn(app, started.thread.id, 'mounted Router fixture')
     checkToolEvents(app, started.thread.id, completed.id, 'a1-mounted', true)
     assert.deepEqual(toolReads, ['fixture'])
     return { hidden: ['worker workspace', 'application database', 'worker socket path'],
-      workspaceReadOnly: true, configReadOnly: true, privateStateWritable: true, dynamicRoundTrip: true }
+      workspaceReadOnly: true, configReadOnly: true, privateStateWritable: true, dynamicRoundTrip: true,
+      additionalFixtureToolAccepted: true, inventory: toolInventory(model.requests.at(-1)) }
   } finally {
     if (app) close(app)
     await new Promise(resolve => socket.close(resolve))
@@ -777,6 +891,12 @@ async function checkQueue({ app, close, connect, cwd, model }) {
     const cancelled = await add(app,'rcc-withdraw-before-start')
     assert.equal((await app.request('thread/queue/delete',{threadId:thread.id,queuedSubmissionId:cancelled.queuedSubmission.id})).deleted,true)
     assert.ok(!(await readQueue(app)).data.some(q=>q.id===cancelled.queuedSubmission.id))
+    const duplicateA = await add(app, 'duplicate-fixture-id')
+    const duplicateB = await add(app, 'duplicate-fixture-id')
+    const duplicateIds = new Set([duplicateA.queuedSubmission.id, duplicateB.queuedSubmission.id])
+    for (const queuedSubmissionId of duplicateIds) {
+      assert.equal((await app.request('thread/queue/delete', { threadId: thread.id, queuedSubmissionId })).deleted, true)
+    }
     const second = await add(app, 'a1-queue-busy')
     await assert.rejects(app.request('thread/queue/start', {
       threadId: thread.id, queuedSubmissionId: second.queuedSubmission.id,
@@ -792,6 +912,8 @@ async function checkQueue({ app, close, connect, cwd, model }) {
     assert.deepEqual((await readQueue(app)).data, [])
 
     const stopped = Promise.withResolvers()
+    let pendingAfterResume
+    let explicitStart = false
     model.enqueue(async () => {
       await stopped.promise
       return assistantMessage('Interrupted queue test.')
@@ -808,12 +930,21 @@ async function checkQueue({ app, close, connect, cwd, model }) {
       assert.equal(recovered.data[0].id, pending.queuedSubmission.id)
       model.enqueue(assistantMessage('Recovered queued fixture done.'))
       await app.request('thread/resume', { threadId: thread.id, excludeTurns: true })
-      assert.equal((await readQueue(app)).data[0].id, pending.queuedSubmission.id)
-      const started = await app.request('thread/queue/start', {
-        threadId: thread.id, queuedSubmissionId: pending.queuedSubmission.id,
-      })
+      pendingAfterResume = (await readQueue(app)).data.some(entry => entry.id === pending.queuedSubmission.id)
+      let started
+      if (pendingAfterResume) {
+        try {
+          started = await app.request('thread/queue/start', {
+            threadId: thread.id, queuedSubmissionId: pending.queuedSubmission.id,
+          })
+          explicitStart = true
+        } catch (error) {
+          // A socket server may claim this exact submission between list and start.
+          if (error.code !== -32600 || !/active|not found|pending/i.test(error.message)) throw error
+        }
+      }
       const recoveredEvent = await waitForUser(app, 'a1-queue-persisted')
-      assert.equal(recoveredEvent.params.turnId, started.turn.id)
+      if (started) assert.equal(recoveredEvent.params.turnId, started.turn.id)
       await completedTurn(app, thread.id, recoveredEvent.params.turnId)
       const history = await app.request('thread/turns/list', { threadId: thread.id, itemsView: 'full' })
       assert.equal(history.data.filter(turn => turn.items.some(item => item.clientId === 'a1-queue-persisted')).length, 1)
@@ -822,12 +953,13 @@ async function checkQueue({ app, close, connect, cwd, model }) {
       stopped.resolve()
     }
     return {
+      duplicateClientIdEntries: duplicateIds.size,
       acceptedBeforeFirstUserMessage: true,
       busyStartRejected: true,
       autoDrainsAfterActiveTurn: true,
       survivedRestart: true,
-      resumeAloneLeftQueuePending: true,
-      explicitQueueStartAfterResume: true,
+      resumeAloneLeftQueuePending: pendingAfterResume,
+      explicitQueueStartAfterResume: explicitStart,
       clientUserMessageIdFoundOnceInHistory: true,
     }
   } finally {

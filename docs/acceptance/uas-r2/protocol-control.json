@@ -1,0 +1,197 @@
+{
+  "cli": "codex-cli 0.172.0",
+  "network": "private loopback only",
+  "generatedExperimentalSchema": true,
+  "userAgent": "router-a1/0.172.0 (Linux Unknown; aarch64) unknown (router-a1; 0.1.0)",
+  "freshThread": {
+    "pathIssued": true,
+    "fileExists": false,
+    "initialHistory": {
+      "error": "thread <threadId> is not materialized yet; thread/turns/list is unavailable before first user message"
+    },
+    "coldEmptyResume": {
+      "error": "no rollout found for thread id <threadId>"
+    }
+  },
+  "initialToolInventory": [
+    "router_a1/lookup_fixture"
+  ],
+  "dynamicRoundTrip": "success and model-visible argument rejection",
+  "coldPeer": {
+    "distinctClient": true,
+    "sameThread": true,
+    "sandbox": "readOnly"
+  },
+  "resume": {
+    "sameThread": true,
+    "toolRoundTrip": true,
+    "inventory": [
+      "router_a1/lookup_fixture"
+    ]
+  },
+  "rejectedToolCalls": [
+    "exec_command",
+    "write_stdin",
+    "apply_patch",
+    "view_image",
+    "read_mcp_resource",
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "multi_agent_v1/spawn_agent",
+    "create_goal",
+    "request_user_input",
+    "request_permissions"
+  ],
+  "mcpServerCount": 0,
+  "pendingToolRestart": {
+    "oldCallReplayed": false,
+    "newTurnUsable": true
+  },
+  "restrictedInventory": [
+    "router_a1/lookup_fixture"
+  ],
+  "readOnlyControlInventory": [
+    "create_goal",
+    "exec_command",
+    "get_goal",
+    "multi_agent_v1/close_agent",
+    "multi_agent_v1/resume_agent",
+    "multi_agent_v1/send_input",
+    "multi_agent_v1/spawn_agent",
+    "multi_agent_v1/wait_agent",
+    "request_user_input",
+    "router_a1/lookup_fixture",
+    "update_goal",
+    "view_image",
+    "write_stdin"
+  ],
+  "sharedThreads": {
+    "concurrent": 3,
+    "distinctInputs": true,
+    "routerInventoryStable": true,
+    "workerSandboxes": [
+      "workspaceWrite",
+      "readOnly"
+    ],
+    "peerResume": "active writer rejected"
+  },
+  "queue": {
+    "duplicateClientIdEntries": 2,
+    "acceptedBeforeFirstUserMessage": true,
+    "busyStartRejected": true,
+    "autoDrainsAfterActiveTurn": true,
+    "survivedRestart": true,
+    "resumeAloneLeftQueuePending": true,
+    "explicitQueueStartAfterResume": true,
+    "clientUserMessageIdFoundOnceInHistory": true
+  },
+  "workerHub": {
+    "controls": {
+      "running": {
+        "acknowledgements": 3,
+        "historyItems": 3,
+        "receipts": 1,
+        "turnStatus": "completed"
+      },
+      "approval": {
+        "acknowledgements": 1,
+        "historyItems": 1,
+        "receipts": 1,
+        "turnStatus": "completed"
+      },
+      "input": {
+        "acknowledgements": 1,
+        "historyItems": 1,
+        "receipts": 1,
+        "turnStatus": "completed"
+      },
+      "interrupt": {
+        "acknowledgements": 1,
+        "historyItems": 0,
+        "receipts": 1,
+        "turnStatus": "interrupted"
+      },
+      "timingColumns": [
+        "admitToCommit",
+        "commitToRpc",
+        "rpcToAck",
+        "admitToAck"
+      ],
+      "milliseconds": [
+        [
+          10.69,
+          27.11,
+          2.42,
+          40.22
+        ],
+        [
+          11.03,
+          51.95,
+          0.86,
+          63.84
+        ],
+        [
+          12.42,
+          47.14,
+          0.85,
+          60.41
+        ]
+      ],
+      "quantiles": [
+        {
+          "p50": 11.03,
+          "p95": 12.42
+        },
+        {
+          "p50": 47.14,
+          "p95": 51.95
+        },
+        {
+          "p50": 0.86,
+          "p95": 2.42
+        },
+        {
+          "p50": 60.41,
+          "p95": 63.84
+        }
+      ]
+    },
+    "newWorker": true,
+    "verifiedSettings": true,
+    "queued": true,
+    "completed": true,
+    "historyCorrelated": true,
+    "workspaceWriteBounded": true
+  },
+  "hostIsolation": {
+    "hidden": [
+      "worker workspace",
+      "application database",
+      "worker socket path"
+    ],
+    "workspaceReadOnly": true,
+    "configReadOnly": true,
+    "privateStateWritable": true,
+    "dynamicRoundTrip": true,
+    "additionalFixtureToolAccepted": true,
+    "inventory": [
+      "codex_web_router/create_session",
+      "codex_web_router/dispatch_task",
+      "codex_web_router/get_session",
+      "codex_web_router/get_task_status",
+      "codex_web_router/interrupt_task",
+      "codex_web_router/list_projects",
+      "codex_web_router/list_sessions",
+      "codex_web_router/psm_get",
+      "codex_web_router/psm_remove",
+      "codex_web_router/psm_save",
+      "codex_web_router/psm_search",
+      "codex_web_router/psm_update",
+      "router_a1/lookup_fixture"
+    ]
+  },
+  "unexpectedRouterTools": [],
+  "onlyRouterTools": true,
+  "a1Passed": false,
+  "remainingGate": "Pass both the isolated host fixture and the compiled positive tool policy checks."
+}

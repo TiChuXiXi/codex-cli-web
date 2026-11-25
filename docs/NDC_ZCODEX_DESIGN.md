@@ -60,7 +60,9 @@ zcodex uninstall
 
 持久化内容包括 SQLite（Router/PSM/RCC）、微信绑定及加密密钥、访问凭据、配置、日志、任务/通知记录。npm 更新、普通卸载默认保留。`--purge` 明确列出会清除哪些内容，以及不会删除 Codex 自身历史或项目源码。配置文件和凭据使用平台适合的私有权限；默认监听 `127.0.0.1`、保持现有 token/白名单安全策略，绝不默认开放 LAN 或免登录。
 
-## 6. Codex CLI 与专用 Router 运行时
+## 6. Codex CLI 与 Router 运行时
+
+UAS-R3 后，发行目标为 Router 与 Worker 共同使用一份受保护的官方 Codex，两者各有资格记录、进程和连接。普通 npm 安装不编译 Rust。管理员在强隔离部署中一次性保护安装、服务身份和控制端点；现有定制启动器及已验证制品用于 C 的兼容和回退。以下专用运行时准备条款继续适用于 C。[发行计划修订](NDC_ZCODEX_IMPLEMENTATION_PLAN.md) · [UAS-R3](ROUTER_UNIFIED_APP_SERVER_R3.md)
 
 Codex CLI 是独立依赖：`init`/`doctor` 检测，不隐式安装/升级、改写用户 Codex Home 或执行登录。专用 Router App Server 的安装/准备流程必须先审查 `scripts/prepare-router-codex.mjs`、`scripts/router-launcher.sh` 和部署平台兼容性，判断 npm tarball 中是否包含准备脚本需要的全部源码/资源、是否依赖 Rust 构建工具、能否在无仓库环境使用。无法支持的平台应清楚标记 Router 不可用，而不是工作台整体假启动成功。可以引导用户明确执行准备步骤，但不得悄悄下载执行不可信二进制。
 

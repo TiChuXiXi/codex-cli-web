@@ -1,4 +1,4 @@
-import { apiUrl } from '../api'
+import {downloadWorkspaceFileById} from '../components/FileDownloadButton'
 import * as React from 'react'
 import {useDialogFocus} from '../components/DialogFocus'
 import {FileContextMenu} from './FileContextMenu'
@@ -130,13 +130,8 @@ export function FilesPane({
           else if(action==='delete'&&entry)setDeleting(entry)
           else if(action==='open'&&entry)onOpen(entry.path)
           else if(action==='download'&&entry&&workspace){
-            await api('workspace/downloadInfo',{workspaceId:workspace.workspaceId,path:entry.path})
-            const query=new URLSearchParams({workspaceId:workspace.workspaceId,path:entry.path})
-            const link=document.createElement('a')
-            link.href=apiUrl('workspace/download',query)
-            link.download=entry.name
-            document.body.appendChild(link);link.click();link.remove()
-            toast('已开始下载：'+entry.name,'success')
+            const name=await downloadWorkspaceFileById(api,workspace.workspaceId,entry.path)
+            toast('已开始下载：'+name,'success')
           }
           else if(action==='copy'){await navigator.clipboard.writeText(absolute);toast('已复制绝对路径','success')}
           else if(action==='relative'){await navigator.clipboard.writeText(path);toast('已复制相对路径','success')}

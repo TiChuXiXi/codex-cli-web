@@ -137,3 +137,18 @@ Web 中枢页显示当前模式。微信可发送「当前模式」「切换任�
 Web 和微信分别承接各自对话中的任务。查询状态或收到自动回执后，仍可继续刚才的业务问题。有未答待办时，可用「任务：…」单独补充业务，或用「回答：…」回答已展示的问题。审批仍须按对应卡片选择。
 
 「刚才发错了，停下」「取消指令 #编号」和任务卡的「纠正误派」会展示目标供确认。未提交的指令可直接取消，仍在原生队列的指令按队列身份撤回，进行中的回合按原 Thread 和 Turn 请求中断。任务面板展示原生中断结果或已结束回合的实际结果。若错误指令已进会话，其纠正说明随该会话下一次正常续接发送。停止结果超时可在原 Worker 核对后用任务卡关闭。
+
+## 升级官方 Worker 后的协议检查
+
+`zcodex doctor --json` 在实例运行时返回 `worker.version`、`worker.kind` 和 `worker.protocol`。顶层的 `codexVersion` 来自当前安装路径，连接共享 daemon 时可能与它实际运行的版本不同。queue、steer 分别表示已验收的队列和插话能力。仅 queue 通过时，忙碌回合的补充继续在 RCC 等待空闲。
+
+Linux arm64 的官方 0.172.0 已包含两种传输的实测记录。对于新的 Linux 构建，选用实际运行的官方 Codex 可执行文件，在有 user/network/PID namespace、`unshare` 和 `ip` 的机器上运行以下命令。daemon 选项创建临时 Unix socket 服务器。stdio 选项创建私有 stdio 服务器。两者均使用临时 HOME、临时项目和本地模型夹具。
+
+```sh
+zcodex verify-worker --codex "$(command -v codex)" --transport daemon > worker-protocol.new.json &&
+  mv worker-protocol.new.json worker-protocol.json
+```
+
+把应用 JSON 顶层的 `workerProtocolReport` 设为这个文件的绝对路径，保存到仅由工作台管理员维护的位置。选择与部署相同的传输。在维护窗口让工作台重连，使用 doctor 核对实际运行版本、传输以及 `source: "fixture"`。若完整检查失败而只需要队列，可追加 `--queue-only` 单独验收队列。旧报告和实际二进制、平台或传输不匹配时，工作台会关闭该报告控制的派发能力。失败且确认尚未送达的指令可以重新提交，unknown 指令仍须先在原 Worker 核对。
+
+工作台版本更新使用原有 `zcodex update` 流程。启用 Router 时继续使用经摘要核对的专用启动器。详细证据和跨平台限制见仓库中的 UAS 实施计划。

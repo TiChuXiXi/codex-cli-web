@@ -1,0 +1,180 @@
+{
+  "topology": "B",
+  "platform": "linux",
+  "arch": "arm64",
+  "node": "v24.19.0",
+  "sha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+  "version": "codex-cli 0.172.0",
+  "workerExeMatchesRouterLaunchSource": true,
+  "workers": [
+    {
+      "model": "gpt-5.4",
+      "effort": "low",
+      "cwd": "project"
+    },
+    {
+      "model": "gpt-6.2-sol",
+      "effort": "high",
+      "cwd": "other"
+    }
+  ],
+  "workerIdentity": "same uid",
+  "workerSettings": [
+    {
+      "sandbox": "readOnly",
+      "approval": "on-request"
+    },
+    {
+      "sandbox": "dangerFullAccess",
+      "approval": "never"
+    }
+  ],
+  "registrationRejected": [
+    "additional definition",
+    "changed schema"
+  ],
+  "rpcGuard": [
+    "extra override rejected",
+    "settings method rejected"
+  ],
+  "overlap": {
+    "router": true,
+    "workerApproval": true,
+    "fullWorkerHeld": true
+  },
+  "workerRoleRejection": "outsideRouterTurn",
+  "dispatch": {
+    "tasks": 1,
+    "workerHistoryMatches": 1,
+    "receiptsAfterRouter": 0,
+    "receiptsAfterWorker": 1
+  },
+  "gateway": [
+    {
+      "name": "list_projects",
+      "id": "query",
+      "success": true
+    },
+    {
+      "name": "get_session",
+      "id": "self-read",
+      "success": false,
+      "code": "codex-cli/router-operation"
+    },
+    {
+      "name": "list_projects",
+      "id": "extra-parameter",
+      "success": false,
+      "code": "invalidTool"
+    },
+    {
+      "name": "get_session",
+      "id": "foreign-read",
+      "success": false,
+      "code": "codex-cli/router-project"
+    },
+    {
+      "name": "dispatch_task",
+      "id": "self-dispatch",
+      "success": false,
+      "code": "codex-cli/router-operation"
+    },
+    {
+      "name": "dispatch_task",
+      "id": "authorized-dispatch",
+      "success": true
+    },
+    {
+      "name": "get_task_status",
+      "id": "receipt-read",
+      "success": true
+    },
+    {
+      "name": "dispatch_task",
+      "id": "receipt-mutation",
+      "success": false,
+      "code": "codex-cli/router-receipt-scope"
+    }
+  ],
+  "unregisteredCallsRejectedByRuntime": [
+    "extra",
+    "register",
+    "rpc-name",
+    "router-pwd"
+  ],
+  "routerInventory": [
+    "codex_web_router/create_session",
+    "codex_web_router/dispatch_task",
+    "codex_web_router/get_session",
+    "codex_web_router/get_task_status",
+    "codex_web_router/interrupt_task",
+    "codex_web_router/list_projects",
+    "codex_web_router/list_sessions",
+    "codex_web_router/psm_get",
+    "codex_web_router/psm_remove",
+    "codex_web_router/psm_save",
+    "codex_web_router/psm_search",
+    "codex_web_router/psm_update"
+  ],
+  "syntheticInventoryDriftRejected": true,
+  "fullWorkerModeCheck": {
+    "exitCode": 0,
+    "status": "completed"
+  },
+  "workerInput": {
+    "sameTaskAndTurn": true,
+    "answer": "One"
+  },
+  "receipt": {
+    "delivered": 1,
+    "mutatingCallRejected": true,
+    "workerNoteVisible": true,
+    "unregisteredCallRejected": true
+  },
+  "skillMarker": {
+    "worker": true,
+    "router": false
+  },
+  "routerMcpEntries": [],
+  "routerMcpMarkerInCatalog": false,
+  "workerMcpEntries": [
+    "r2_marker"
+  ],
+  "workerMcpMarkerInCatalog": true,
+  "psmSources": {
+    "router": false,
+    "worker": true
+  },
+  "mountHidden": [
+    "worker socket",
+    "worker home",
+    "router.sqlite"
+  ],
+  "workerHomeResume": "missing Router thread",
+  "staleGateway": "staleConnection",
+  "writerConflicts": 1,
+  "resume": {
+    "sameThread": true,
+    "sandbox": "readOnly",
+    "inventoryChecked": true,
+    "requestedApproval": "on-request",
+    "effectiveApproval": "on-request",
+    "requestedEffort": "low",
+    "effectiveEffort": "low"
+  },
+  "compaction": {
+    "status": "completed",
+    "items": [],
+    "routes": [
+      "POST /v1/responses"
+    ],
+    "denials": [],
+    "nextTurnChecked": true
+  },
+  "newThreadChecked": true,
+  "runtimeDrift": {
+    "extra": "update_plan",
+    "turn": "failed",
+    "forwardedRequests": 0
+  }
+}

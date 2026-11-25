@@ -168,3 +168,7 @@ CODEX_WEB_LIVE=1 npm run test:live
 ## Router
 
 Router 提供独立的 Codex 对话、候选确认和 Worker 调度。默认关闭。专用 App Server 的构建、隔离与启用方式见 [Router MVP](docs/ROUTER.md)。
+
+### 官方 Worker 升级
+
+运行 `zcodex doctor --json` 可核对当前 Worker 连接使用的版本、传输和派发能力。新的 Linux 构建可用 `zcodex verify-worker --codex /absolute/path/to/codex --transport stdio` 做无账号隔离验收，共享 daemon 部署使用 `--transport daemon`。报告安装及队列降级方式见 [Router 部署说明](docs/ROUTER.md)。当前 Router 继续使用专用运行时。

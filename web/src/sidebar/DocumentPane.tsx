@@ -1,6 +1,8 @@
 import * as React from 'react'
 import {Icon} from '../components/Icon'
 import {SelectMenu} from '../components/SelectMenu'
+import {downloadWorkspaceFile} from '../components/FileDownloadButton'
+import {toast} from '../components/Toast'
 import type { Api } from '../rpc'
 import { Markdown } from '../markdown'
 import { highlightCodeLines } from './codeHighlight'
@@ -86,6 +88,7 @@ function FileDocumentPane({
   const [loading, setLoading] = React.useState(false)
   const [mode, setMode] = React.useState<'code' | 'text' | 'preview'>(() => /\.(?:md|markdown|html?)$/i.test(path) ? 'preview' : 'code')
   const [copied, setCopied] = React.useState(false)
+  const [downloading, setDownloading] = React.useState(false)
   const [wrap, setWrap] = React.useState(false)
   const [zoom, setZoom] = React.useState(100)
   const ext = path.split('.').at(-1)?.toLowerCase() || ''
@@ -164,6 +167,26 @@ function FileDocumentPane({
         {image && !htmlPreview && (
           <SelectMenu label="图片缩放" value={String(zoom)} onChange={value => setZoom(Number(value))} options={[50,100,150,200].map(z => ({value:String(z),label:z+'%'}))} />
         )}
+        <button
+          type="button"
+          className="document-icon-button"
+          aria-label="下载文件"
+          title={downloading ? '正在准备下载…' : '下载文件'}
+          disabled={downloading}
+          onClick={async () => {
+            setDownloading(true)
+            try {
+              const name = await downloadWorkspaceFile(api, cwd, path)
+              toast('已开始下载：'+name, 'success')
+            } catch (e) {
+              toast('下载失败：'+(e instanceof Error ? e.message : String(e)), 'error')
+            } finally {
+              setDownloading(false)
+            }
+          }}
+        >
+          <Icon name={downloading ? 'loader' : 'download'} size={17}/>
+        </button>
         <button
           type="button"
           className="document-icon-button"

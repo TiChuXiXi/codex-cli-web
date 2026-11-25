@@ -15,6 +15,8 @@ export const DEFAULTS = {
   defaultExecutionMode: 'default',
   /** codex 可执行文件绝对路径；空 = 从 PATH 解析。 */
   codexPath: '',
+  /** 本机隔离 Worker 协议验收输出。每次连接核对运行中二进制。 */
+  workerProtocolReport: '',
   /** CODEX_HOME；空 = 环境变量或 ~/.codex。 */
   codexHome: '',
   /** 审批无人响应时的自动拒绝时间（毫秒）；0 = 永不自动拒绝。 */

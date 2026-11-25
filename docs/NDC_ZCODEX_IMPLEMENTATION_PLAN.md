@@ -4,6 +4,10 @@
 
 首发目标为 Linux x64、Linux arm64 和纯原生 Windows x64。**Windows 的专用 Router 及其依赖功能必须通过原生验收，WSL 方案不计入。** macOS 暂不列入首发范围。部署不要求 Electron、Tauri、Docker、PM2 或开机自启。
 
+## 2026-11-25 运行时发行目标修订
+
+新开发以 B 为目标。每个平台资格记录绑定同一份受保护的官方 Codex 原生程序、角色、传输和部署身份。候选 tarball 保留已登记的 C 启动与恢复资源。冻结新增定制 Rust 平台构建和下载链。工作台升级、Codex 官方安装升级和管理员部署身份配置分别执行。现有 C 制品、此前单平台验收及其适用范围继续保留；下文涉及专用构建、LPAC 代理和 `router/capabilities` 的历史进度属于 C。B 的正式放行按 R3 的逐平台矩阵。统一 `verify` 和 Web 验证入口仍在设计阶段。[R3 资格、安装及回退方案](ROUTER_UNIFIED_APP_SERVER_R3.md)
+
 ## 2026-11-21 本地候选进度
 
 Windows x64 已纳入首发。当前私有候选为 `zcodex@0.1.0-rc.1`，使用 npm 全局 shim 和独立前缀验证 Windows 原生、WSL/Linux x64 及 Linux arm64 的安装、后台启停、更新、恢复和卸载。Linux arm64 同版复验通过浏览器和真实 Worker，专用 Router 通过策略 v2 检查，真实回合及升级后的主线程恢复仍待模型出口可用后复验。公开发布前还需从干净机器验证签名 Router 制品和安装链。实测范围见[生命周期验收记录](acceptance/ndc-lifecycle.md)。
@@ -29,6 +33,7 @@ Windows x64 已纳入首发。当前私有候选为 `zcodex@0.1.0-rc.1`，使用
 | `status [--json]` | 输出 CLI/服务版本、运行状态、PID、实际地址、健康、状态目录、日志路径及 Worker/Router 摘要。区分停止、启动中、运行、降级、关闭中、冲突及身份待确认。 |
 | `logs [-f] [--lines N]` | 默认最近 100 行。轮转后继续跟随，服务停止后仍可查阅。 |
 | `doctor [--json]` | 只读检查 Node、平台、Codex 路径与版本、登录、Worker 传输、Router 策略与隔离、权限、端口、健康和可选 PTY。探针无法确认时给出原因与修复入口。 |
+| `verify`（B 计划） | 复用当前身份的只读诊断，分角色匹配实际二进制与资格；缺失项可运行隔离验证。既有 `verify-worker` 继续有效。 |
 | `open` | 打开已验证的本机 Web 地址。SSH、无 GUI 或打开失败时打印地址。URL 不携带凭据，文档说明如何安全读取首次登录凭据。 |
 | `update [--check] [--yes]` | `--check` 只查询工作台稳定 `latest`。实际升级锁定精确版本，同步返回结果，恢复升级前的运行或停止状态。Codex CLI、daemon 和独立 Router 组件沿用当前版本。 |
 | `uninstall [--purge] [--yes]` | 优雅停止后卸载当前前缀的包，默认保留数据。`--purge` 展示逐项清单并要求两次确认，非交互须同时提供 `--yes --confirm-purge <实例ID>`。 |
@@ -41,10 +46,10 @@ Windows x64 已纳入首发。当前私有候选为 `zcodex@0.1.0-rc.1`，使用
 |---|---|---|
 | P0 | `package.json`、`package-lock.json`、`scripts/build.mjs` | 添加 `zcodex` bin，保留 `codex-web-ui` 前台兼容入口和 `npm start`。同步候选名称、锁文件、许可证和允许清单，审计包来源和可选原生依赖。构建期生成 Web 资产。包版本驱动 CLI、服务握手和 Web 版本，前端 build ID 独立保留。开发清单保留 `private: true`，发行 CI 在临时副本显式生成可发布清单。 |
 | P0 | `bin/zcodex.mjs`、`bin/codex-web-ui.mjs`、`server/config.js`、新增 `server/lifecycle/` | 实现帮助、版本、`init`、`doctor`，共用配置解析、凭据路径和启动器登记逻辑。安装目录只读。原入口继续用于源码部署和前台诊断。 |
-| P0 | `scripts/test-package.mjs`、新增 `scripts/build-router-runtime.mjs`、`scripts/prepare-router-codex.mjs`、`scripts/router-launcher.sh` | 用干净环境中的全局安装替换原本地安装冒烟。锁定上游提交、Rust 工具链、制品摘要与许可证。开始实测 Windows LPAC、模型网络代理和原生 Worker 传输，验证 P1 的可行性。 |
+| P0 | `scripts/test-package.mjs`、`scripts/prepare-router-codex.mjs`、`scripts/router-launcher.sh` | B 用干净前缀分别验证官方原生文件、受保护的安装和平台隔离器，记录摘要、来源与许可证。对已有 C 资产执行恢复冒烟。 |
 | P1 | `server/lifecycle/`、`server/bootstrap.js`、`server/logger.js` | 完成后台监督、锁、私有控制通道、健康及就绪、启停、浏览器打开、日志脱敏和轮转。复用 `bootstrap()` 与 `/healthz`。 |
 | P1 | `server/router/app-server.js`、`server/router/service.js`、`server/router/dispatcher.js`、`server/channels/wechat/channel.js` | 复用 Router stdio 和能力协商，接入原生 Windows 启动器。收束 Router 回合、RCC、PSM 和微信任务后关闭数据库。覆盖重启对账、审批恢复与结果不明场景。 |
-| P1 | 新增 `native/windows/`，修改 `server/codex/transport/index.js`、`server/codex/transport/stdio.js`、`server/services/terminal.js` | 构建 Windows 沙箱启动器、自有进程监督和模型网络代理。验证 Codex `.exe`、npm shim、daemon 及 stdio。PTY 使用 Windows 原生 shell。 |
+| P1 | 新增 `native/windows/`，修改 `server/codex/transport/index.js`、`server/codex/transport/stdio.js`、`server/services/terminal.js` | 验证 Windows 服务隔离、自有进程监督及官方原生模型连接。验证 Codex `.exe`、npm shim、daemon 及 stdio。PTY 使用 Windows 原生 shell。 |
 | P2 | 新增 `server/lifecycle/maintenance.mjs`，修改 `server/router/store.js`、`server/router/psm-index.js`、`web/src/page/VersionsPanel.tsx` | 实现包外更新卸载助手、恢复记录、SQLite 版本预检与备份。设置页标明原操作面向 Codex CLI，展示工作台版本并提示使用 `zcodex update --check`。 |
 | P0–P2 | `.github/workflows/npm-release.yml`、`README.md`、`docs/ROUTER.md`、`docs/ACCEPTANCE.md`、`docs/DEVIATIONS.md`、`THIRD_PARTY_NOTICES.md` | 编写候选构建与审批流程、Bash/PowerShell 安装说明、运行依赖、状态接管、备份恢复及分平台验证结果。保留上游许可证和 notices。 |
 
@@ -64,9 +69,9 @@ Linux 使用 detached 启动、重定向 stdio 和 `unref`，强制结束使用�
 
 ### 专用 Router 发行与原生 Windows 隔离
 
-npm tarball 包含准备入口、平台映射、固定制品摘要和校验公钥。CI 用锁定源码生成平台预构建制品，作为独立签名发行资产。用户显式执行 `zcodex init --prepare-router` 下载或读取本地资产，验签、校验完整性后登记至数据目录。Linux 复用现有 `nsenter` 和 Bubblewrap 隔离，部署者提供受限网络命名空间及 Router 独立账号。
+B 的 tarball 提供工作台、资格验证入口及经过签收的平台启动资源。部署时解析独立安装的官方 Codex 原生文件，核验来源、祖先目录权限和实际运行摘要。官方升级后重新匹配 Router 与 Worker 两份行为记录。迁移期 `zcodex init --prepare-router` 继续支持登记已有 C 制品用于恢复。
 
-Windows 实施无网络能力的 LPAC、按实例授权的 ACL、有限句柄继承和 Job Object。Router 通过继承的私有管道使用受信模型网络代理。代理只允许已配置的模型服务 HTTPS 地址，拒绝宿主、私网和回环目的地。发行须证明固定版本专用构建能在此边界内真实调用模型，保持策略 v2 的 12 个工具，并隔离宿主 RPC、Worker/Codex Home、用户项目和工作台数据库。Linux 和 Windows 均须通过真实启动器隔离测试及 `router/capabilities` 握手。原生 Windows 链路未通过时，正式发行保持阻塞。[Microsoft LPAC](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer) · [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+Windows B 要求验证服务 SID、受限 Router、Worker 原账号、私有管道、进程树回收和经授权的原生模型出口。Linux B 要求验证服务身份、挂载、进程及出口。平台可采取不同机制，须分别证明实际边界。C 保持原有启动器和策略握手。原生 Windows 的 B 验收继续作为该平台正式发行门槛。[Windows LPAC](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)
 
 ### 数据目录和配置兼容
 
@@ -87,13 +92,13 @@ Windows 实施无网络能力的 LPAC、按实例授权的 ACL、有限句柄继
 | 环境 | 验收范围 |
 |---|---|
 | Linux x64、Linux arm64 | 分别从最终 tarball 全局安装，验证 CLI、Web 登录、Worker daemon/stdio、PTY、真实 Linux Router 启动器与隔离、RCC/PSM/微信恢复、升级和卸载。 |
-| 原生 Windows x64 | 在无 WSL 环境通过 PowerShell 和 `cmd.exe` 验证真实 npm shim，覆盖空格与中文路径、浏览器打开、Windows PTY、原生 Codex 传输、LPAC/网络代理/Job Object、文件占用、自更新和自卸载。专用 Router、RCC、PSM、微信及 RIP 须通过闭环。 |
+| 原生 Windows x64 | 在无 WSL 环境通过 PowerShell 和 `cmd.exe` 验证真实 npm shim，覆盖空格与中文路径、浏览器打开、Windows PTY、原生 Codex 传输、受限令牌/出站策略/Job Object、文件占用、自更新和自卸载。专用 Router、RCC、PSM、微信及 RIP 须通过闭环。 |
 | 三平台故障矩阵 | 并发启停、PID 复用、陈旧状态、伪健康响应、端口占用、启动或停机中崩溃、孤儿子进程、轮转与脱敏。验证运行中与已停机升级、npm 权限及网络/代理异常、替换中断、schema 不兼容、健康失败、备份恢复、purge 路径保护和缺少可选 PTY 时的降级。 |
 
-**真实 tarball 安装。** CI 执行 typecheck、单测、build、相关浏览器测试、`npm pack --dry-run`、`npm pack` 与 `test:package`。消费环境只接收最终 tarball、Node/npm、隔离的全局前缀和测试夹具。通过 `npm install -g <tarball>` 检查实际 shim、Web 静态资源及签名 Router 制品，无需仓库、开发依赖、前端或 Rust 构建工具。常规测试使用临时目录、隔离 registry 和协议夹具。真实模型、独立 Codex 账号及微信真机通过显式 live 开关与专用目标验收。
+**真实 tarball 安装。** CI 执行 typecheck、单测、build、相关浏览器测试、`npm pack --dry-run`、`npm pack` 与 `test:package`。消费环境只接收最终 tarball、Node/npm、隔离的全局前缀和测试夹具。通过 `npm install -g <tarball>` 检查实际 shim、Web 静态资源、B 的官方运行时资格和 C 的已登记恢复制品，无需仓库、开发依赖、前端或 Rust 构建工具。常规测试使用临时目录、隔离 registry 和协议夹具。真实模型、独立 Codex 账号及微信真机通过显式 live 开关与专用目标验收。
 
 **版本与审批。** 首个候选 `0.1.0-rc.1` 对应 Git tag `v0.1.0-rc.1` 与 npm `next`。稳定候选从 `v0.1.0` 构建并重新验证，发布候选附包内容清单、SHA-512 和跨平台验收记录。审批 job 提交同一制品。首次包名领取由维护者授权操作，后续采用 npm OIDC、stage-only 权限、受保护环境、维护者 2FA 审批与 provenance。发行故障可将 `latest` 指回已有且受支持的稳定制品，schema 变化需同时提供兼容及恢复说明。[npm staged publishing](https://docs.npmjs.com/staged-publishing/) · [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/)
 
-**正式发行门槛。** 实测原生 Windows Router 的 LPAC 访问边界、模型代理、Worker daemon 传输和异常退出后的进程树回收。验证 Windows 原生 npm shim 的替换文件占用与退出码、Linux arm64 运行时 ABI、RCC/微信停机顺序及重新对账、旧 SQLite 数据和未知回执恢复。验收记录逐平台标注结果，单列未执行的真实账号、版本写操作和完整视觉矩阵。任何必验平台未通过时保持候选状态。
+**正式发行门槛。** 实测原生 Windows Router 的身份与访问边界、已签收的模型出口、Worker daemon 传输和异常退出后的进程树回收。验证 Windows 原生 npm shim 的替换文件占用与退出码、Linux arm64 运行时 ABI、RCC/微信停机顺序及重新对账、旧 SQLite 数据和未知回执恢复。验收记录逐平台标注结果，单列未执行的真实账号、版本写操作和完整视觉矩阵。任何必验平台未通过时保持候选状态。
 
 实施按 P0 → P1 → P2 推进，各阶段独立验收。计划入库与推送仅记录实施方案，npm 发行须另行经过发布审批。

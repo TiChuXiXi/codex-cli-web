@@ -1,0 +1,22 @@
+[
+  {
+    "format": 1,
+    "version": "0.172.0",
+    "platform": "linux",
+    "arch": "arm64",
+    "transport": "daemon",
+    "sha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+    "queue": true,
+    "steer": true
+  },
+  {
+    "format": 1,
+    "version": "0.172.0",
+    "platform": "linux",
+    "arch": "arm64",
+    "transport": "stdio",
+    "sha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+    "queue": true,
+    "steer": true
+  }
+]

@@ -1,0 +1,103 @@
+{
+  "cli": "codex-cli 0.172.0",
+  "network": "private loopback only",
+  "queue": {
+    "duplicateClientIdEntries": 2,
+    "acceptedBeforeFirstUserMessage": true,
+    "busyStartRejected": true,
+    "autoDrainsAfterActiveTurn": true,
+    "survivedRestart": true,
+    "resumeAloneLeftQueuePending": true,
+    "explicitQueueStartAfterResume": true,
+    "clientUserMessageIdFoundOnceInHistory": true
+  },
+  "controls": {
+    "running": {
+      "acknowledgements": 3,
+      "historyItems": 3,
+      "receipts": 1,
+      "turnStatus": "completed"
+    },
+    "approval": {
+      "acknowledgements": 1,
+      "historyItems": 1,
+      "receipts": 1,
+      "turnStatus": "completed"
+    },
+    "input": {
+      "acknowledgements": 1,
+      "historyItems": 1,
+      "receipts": 1,
+      "turnStatus": "completed"
+    },
+    "interrupt": {
+      "acknowledgements": 1,
+      "historyItems": 0,
+      "receipts": 1,
+      "turnStatus": "interrupted"
+    },
+    "parallel": {
+      "holdMs": 30000,
+      "ackAfterHoldStartMs": [
+        30003.49,
+        106.99,
+        105.55
+      ]
+    },
+    "timingColumns": [
+      "admitToCommit",
+      "commitToRpc",
+      "rpcToAck",
+      "admitToAck"
+    ],
+    "milliseconds": [
+      [
+        9.9,
+        25.85,
+        1.05,
+        36.8
+      ],
+      [
+        9.63,
+        51.8,
+        0.73,
+        62.16
+      ],
+      [
+        13.05,
+        46.7,
+        0.91,
+        60.67
+      ]
+    ],
+    "quantiles": [
+      {
+        "p50": 9.9,
+        "p95": 13.05
+      },
+      {
+        "p50": 46.7,
+        "p95": 51.8
+      },
+      {
+        "p50": 0.91,
+        "p95": 1.05
+      },
+      {
+        "p50": 60.67,
+        "p95": 62.16
+      }
+    ]
+  },
+  "workerProtocol": {
+    "format": 1,
+    "version": "0.172.0",
+    "platform": "linux",
+    "arch": "arm64",
+    "transport": "stdio",
+    "sha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+    "queue": true,
+    "steer": true
+  },
+  "rccP0Passed": true
+}

@@ -1,0 +1,291 @@
+{
+  "platform": "linux",
+  "arch": "arm64",
+  "model": "gpt-6.1-sol",
+  "sha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+  "network": [
+    "lo"
+  ],
+  "actualAccount": false,
+  "inferenceProvider": "official built-in openai routed to local fixture",
+  "scenarios": [
+    {
+      "mode": "ws",
+      "catalogSha256": "b6cf79c149f3f4f6943634efbd0a8c17b47e9530bbeb30894c6293dd7e6d7b77",
+      "refresh": 1,
+      "authenticatedRequests": 1,
+      "websocketHandshakes": 1,
+      "remoteCatalogReads": 0,
+      "requests": [
+        {
+          "wire": "websocket",
+          "prewarm": true,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "websocket",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": true
+        },
+        {
+          "wire": "websocket",
+          "prewarm": false,
+          "trigger": true,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": true
+        },
+        {
+          "wire": "websocket",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        }
+      ],
+      "streamedBeforeCompletion": true,
+      "requestedRefresh": true,
+      "accountMode": "chatgpt",
+      "rotationStored": true
+    },
+    {
+      "mode": "sse",
+      "catalogSha256": "b6cf79c149f3f4f6943634efbd0a8c17b47e9530bbeb30894c6293dd7e6d7b77",
+      "refresh": 1,
+      "authenticatedRequests": 3,
+      "websocketHandshakes": 1,
+      "remoteCatalogReads": 0,
+      "requests": [
+        {
+          "wire": "sse",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "sse",
+          "prewarm": false,
+          "trigger": true,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "sse",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        }
+      ],
+      "streamedBeforeCompletion": true,
+      "requestedRefresh": true,
+      "accountMode": "chatgpt",
+      "rotationStored": true
+    },
+    {
+      "mode": "catalog-control",
+      "catalogSha256": "1e069b635c611f6d23b79f3b7ece261db93267dca4e1b09e3eddc2df0a9f7bb2",
+      "refresh": 1,
+      "authenticatedRequests": 1,
+      "websocketHandshakes": 1,
+      "remoteCatalogReads": 0,
+      "requests": [
+        {
+          "wire": "websocket",
+          "prewarm": true,
+          "trigger": false,
+          "toolDigest": "e1608ad8074c23e69c1efc6481c1479e4cee64e5f551b68b35d464406b1557c7",
+          "count": 14,
+          "extras": [
+            "clock/curr_time",
+            "clock/sleep"
+          ],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "websocket",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "e1608ad8074c23e69c1efc6481c1479e4cee64e5f551b68b35d464406b1557c7",
+          "count": 14,
+          "extras": [
+            "clock/curr_time",
+            "clock/sleep"
+          ],
+          "missing": [],
+          "previous": true
+        }
+      ],
+      "streamedBeforeCompletion": true,
+      "requestedRefresh": true,
+      "accountMode": "chatgpt",
+      "rotationStored": true
+    },
+    {
+      "mode": "auth-tool-control",
+      "catalogSha256": "b6cf79c149f3f4f6943634efbd0a8c17b47e9530bbeb30894c6293dd7e6d7b77",
+      "refresh": 1,
+      "authenticatedRequests": 1,
+      "websocketHandshakes": 1,
+      "remoteCatalogReads": 0,
+      "requests": [
+        {
+          "wire": "websocket",
+          "prewarm": true,
+          "trigger": false,
+          "toolDigest": "495c33e7f388f6b7ef92a2367c87f18777a7b45df1b945489fbc228de4187e27",
+          "count": 13,
+          "extras": [
+            "image_gen/imagegen"
+          ],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "websocket",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "495c33e7f388f6b7ef92a2367c87f18777a7b45df1b945489fbc228de4187e27",
+          "count": 13,
+          "extras": [
+            "image_gen/imagegen"
+          ],
+          "missing": [],
+          "previous": true
+        }
+      ],
+      "streamedBeforeCompletion": true,
+      "requestedRefresh": true,
+      "accountMode": "chatgpt",
+      "rotationStored": true
+    },
+    {
+      "mode": "guard-sse",
+      "catalogSha256": "b6cf79c149f3f4f6943634efbd0a8c17b47e9530bbeb30894c6293dd7e6d7b77",
+      "refresh": 1,
+      "authenticatedRequests": 3,
+      "websocketHandshakes": 0,
+      "remoteCatalogReads": 0,
+      "requests": [
+        {
+          "wire": "sse",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "sse",
+          "prewarm": false,
+          "trigger": true,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "sse",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        }
+      ],
+      "streamedBeforeCompletion": true,
+      "guard": {
+        "forwarded": 3,
+        "rejected": 0,
+        "upgradesDeclined": 1
+      },
+      "requestedRefresh": true,
+      "accountMode": "chatgpt",
+      "rotationStored": true
+    },
+    {
+      "mode": "guard-drift",
+      "catalogSha256": "1e069b635c611f6d23b79f3b7ece261db93267dca4e1b09e3eddc2df0a9f7bb2",
+      "refresh": 1,
+      "authenticatedRequests": 0,
+      "websocketHandshakes": 0,
+      "remoteCatalogReads": 0,
+      "requests": [],
+      "streamedBeforeCompletion": false,
+      "guard": {
+        "forwarded": 0,
+        "rejected": 6,
+        "upgradesDeclined": 1
+      },
+      "requestedRefresh": true,
+      "accountMode": "chatgpt",
+      "rotationStored": true
+    },
+    {
+      "mode": "expired-token",
+      "catalogSha256": "b6cf79c149f3f4f6943634efbd0a8c17b47e9530bbeb30894c6293dd7e6d7b77",
+      "refresh": 1,
+      "authenticatedRequests": 1,
+      "websocketHandshakes": 1,
+      "remoteCatalogReads": 0,
+      "requests": [
+        {
+          "wire": "websocket",
+          "prewarm": true,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": false
+        },
+        {
+          "wire": "websocket",
+          "prewarm": false,
+          "trigger": false,
+          "toolDigest": "5505003c7daf6ad808028ec906176ac4bc4210b69076b4644cd96efe20e46fad",
+          "count": 12,
+          "extras": [],
+          "missing": [],
+          "previous": true
+        }
+      ],
+      "streamedBeforeCompletion": true,
+      "restartBeforeInitialize": true,
+      "requestedRefresh": false,
+      "accountMode": "chatgpt",
+      "rotationStored": true
+    }
+  ]
+}

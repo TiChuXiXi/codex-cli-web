@@ -1,0 +1,88 @@
+{
+  "platform": "linux",
+  "machine": "aarch64",
+  "evidence": "DAC fixtures only",
+  "matrix": {
+    "worker": {
+      "workerHistory": {
+        "read": true,
+        "write": true
+      },
+      "controlState": {
+        "read": false,
+        "write": false
+      },
+      "routerCredential": {
+        "read": false,
+        "write": false
+      },
+      "binary": {
+        "read": true,
+        "write": false
+      },
+      "installDirectory": {
+        "read": true,
+        "write": false
+      },
+      "ipcParent": {
+        "read": false,
+        "write": false
+      }
+    },
+    "control": {
+      "workerHistory": {
+        "read": false,
+        "write": false
+      },
+      "controlState": {
+        "read": true,
+        "write": true
+      },
+      "routerCredential": {
+        "read": false,
+        "write": false
+      },
+      "binary": {
+        "read": true,
+        "write": false
+      },
+      "installDirectory": {
+        "read": true,
+        "write": false
+      },
+      "ipcParent": {
+        "read": false,
+        "write": false
+      }
+    },
+    "router": {
+      "workerHistory": {
+        "read": false,
+        "write": false
+      },
+      "controlState": {
+        "read": false,
+        "write": false
+      },
+      "routerCredential": {
+        "read": true,
+        "write": true
+      },
+      "binary": {
+        "read": true,
+        "write": false
+      },
+      "installDirectory": {
+        "read": true,
+        "write": false
+      },
+      "ipcParent": {
+        "read": false,
+        "write": false
+      }
+    }
+  },
+  "originalWorkerMarkerInodeOwnerModeDigestUnchanged": true,
+  "controlPeerUidVerified": true,
+  "routerSocketConnectDenied": true
+}

@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { JsonRpcClient, JsonRpcError, SKIP_RESPONSE } from './jsonrpc.js'
 import { openCodexTransport, resolveCodexHome } from './transport/index.js'
+import { workerProtocol } from './worker-protocol.js'
 
 const CLIENT_INFO = { name: 'codex-cli-web', title: 'Codex Web UI', version: '0.1.0' }
 const INITIALIZE_CAPABILITIES = { experimentalApi: true, requestAttestation: false }
@@ -201,6 +202,9 @@ export class CodexHub {
       { timeoutMs: 20000 },
     )
     rpc.notify('initialized')
+    const codexVersion = parseCodexVersion(initialized?.userAgent)
+    const protocol = await workerProtocol(rpc, codexVersion, opened.kind, this.config.workerProtocolReport)
+    if (this.#rpc !== rpc || this.#stopped) return
 
     this.#transport = opened.transport
     this.#rpc = rpc
@@ -208,7 +212,7 @@ export class CodexHub {
       phase: 'ready',
       kind: opened.kind,
       socketPath: opened.socketPath,
-      codexVersion: parseCodexVersion(initialized?.userAgent),
+      codexVersion, workerProtocol: protocol,
       error: null,
       connectedAt: Date.now(),
     })
@@ -236,6 +240,7 @@ export class CodexHub {
     this.#rpc?.close('连接已断开')
     this.#transport?.close()
     this.#rpc = null
+    this.#state.workerProtocol = null
     this.#transport = null
     this.#closed = null
     this.#owned.clear()
@@ -818,8 +823,8 @@ export class CodexHub {
         ? { type: 'localImage', path: attachment.path }
         : { type: 'mention', name: attachment.name || basename(attachment.path), path: attachment.path })
     }
-    input.push(...await this.skillInputs(params))
     const rpc = this.#requireRpc()
+    input.push(...await this.skillInputs(params))
     if (params.selectionContext) input.unshift({type:'text',text:params.selectionContext,text_elements:[]})
     const result = await rpc.request(
       'turn/steer',

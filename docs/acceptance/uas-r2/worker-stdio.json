@@ -1,0 +1,103 @@
+{
+  "cli": "codex-cli 0.172.0",
+  "network": "private loopback only",
+  "queue": {
+    "duplicateClientIdEntries": 2,
+    "acceptedBeforeFirstUserMessage": true,
+    "busyStartRejected": true,
+    "autoDrainsAfterActiveTurn": true,
+    "survivedRestart": true,
+    "resumeAloneLeftQueuePending": true,
+    "explicitQueueStartAfterResume": true,
+    "clientUserMessageIdFoundOnceInHistory": true
+  },
+  "controls": {
+    "running": {
+      "acknowledgements": 3,
+      "historyItems": 3,
+      "receipts": 1,
+      "turnStatus": "completed"
+    },
+    "approval": {
+      "acknowledgements": 1,
+      "historyItems": 1,
+      "receipts": 1,
+      "turnStatus": "completed"
+    },
+    "input": {
+      "acknowledgements": 1,
+      "historyItems": 1,
+      "receipts": 1,
+      "turnStatus": "completed"
+    },
+    "interrupt": {
+      "acknowledgements": 1,
+      "historyItems": 0,
+      "receipts": 1,
+      "turnStatus": "interrupted"
+    },
+    "parallel": {
+      "holdMs": 30000,
+      "ackAfterHoldStartMs": [
+        30002.63,
+        117.36,
+        116.92
+      ]
+    },
+    "timingColumns": [
+      "admitToCommit",
+      "commitToRpc",
+      "rpcToAck",
+      "admitToAck"
+    ],
+    "milliseconds": [
+      [
+        20.53,
+        66.57,
+        1.55,
+        88.65
+      ],
+      [
+        23.4,
+        63.02,
+        2.79,
+        89.21
+      ],
+      [
+        15.97,
+        116.07,
+        2.35,
+        134.39
+      ]
+    ],
+    "quantiles": [
+      {
+        "p50": 20.53,
+        "p95": 23.4
+      },
+      {
+        "p50": 66.57,
+        "p95": 116.07
+      },
+      {
+        "p50": 2.35,
+        "p95": 2.79
+      },
+      {
+        "p50": 89.21,
+        "p95": 134.39
+      }
+    ]
+  },
+  "workerProtocol": {
+    "format": 1,
+    "version": "0.172.0",
+    "platform": "linux",
+    "arch": "arm64",
+    "transport": "stdio",
+    "sha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+    "queue": true,
+    "steer": true
+  },
+  "rccP0Passed": true
+}

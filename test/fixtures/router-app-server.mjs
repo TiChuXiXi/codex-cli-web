@@ -115,8 +115,8 @@ export async function startResponsesFixture() {
   }
 }
 
-export async function connectAppServer({ command, args, env, cwd, prefix = [], experimentalApi = true }) {
-  const transport = new StdioTransport({ command, args: [...prefix, 'app-server', ...args], env, cwd })
+export async function connectAppServer({ command, args, env, cwd, prefix = [], experimentalApi = true,
+  clientName = 'router-a1', transport = new StdioTransport({ command, args: [...prefix, 'app-server', ...args], env, cwd }) }) {
   const events = []
   const rpc = new JsonRpcClient({ send: message => transport.send(message), logger: { warn() {} } })
   transport.onMessage(message => {
@@ -139,7 +139,7 @@ export async function connectAppServer({ command, args, env, cwd, prefix = [], e
   try {
     await transport.open()
     const info = await request('initialize', {
-      clientInfo: { name: 'router-a1', title: 'Router protocol fixture', version: '0.1.0' },
+      clientInfo: { name: clientName, title: 'Router protocol fixture', version: '0.1.0' },
       capabilities: { experimentalApi },
     })
     rpc.notify('initialized')

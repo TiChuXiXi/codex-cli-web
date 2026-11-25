@@ -2203,23 +2203,29 @@ test('an in-flight Worker Hub call does not delay later submissions to B or C', 
   await until(() => fx.router.getTask(a).delivery.ackAt)
 })
 
-test('a definite Turn-end rejection reuses the command on the same idle Thread', async t => {
-  const fx = await fixture(t)
-  const { turn } = await activeWorker(fx)
-  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
-  let calls = 0
-  fx.hub.steerTurn = async () => {
-    calls++
-    turn.status = 'completed'
-    fx.threads.get('worker-a').thread.status = { type: 'idle' }
-    throw Object.assign(new Error('no active turn to steer'), { code: -32600 })
-  }
-  const id = await enqueueControl(fx, 'rcc-turn-ended-01')
-  await until(() => fx.router.getTask(id).delivery.ackAt)
-  assert.equal(calls, 1)
-  assert.deepEqual(fx.submitted.filter(v => v.clientUserMessageId === id).map(v => [v.threadId, v.text]),
-    [['worker-a', '补充 rcc-turn-ended-01']])
-})
+for (const [label, code, message] of [
+  ['Turn ended', -32600, 'no active turn to steer'],
+  ['method missing', -32601, 'Method not found'],
+  ['unknown method variant', -32600, 'Invalid request: unknown variant `turn/steer`, expected one of ...'],
+]) {
+  test('a definite Steer rejection reuses the command on the same idle Thread: ' + label, async t => {
+    const fx = await fixture(t)
+    const { turn } = await activeWorker(fx)
+    fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.170.0' })
+    let calls = 0
+    fx.hub.steerTurn = async () => {
+      calls++
+      turn.status = 'completed'
+      fx.threads.get('worker-a').thread.status = { type: 'idle' }
+      throw Object.assign(new Error(message), { code })
+    }
+    const id = await enqueueControl(fx, 'rcc-turn-ended-01')
+    await until(() => fx.router.getTask(id).delivery.ackAt)
+    assert.equal(calls, 1)
+    assert.deepEqual(fx.submitted.filter(v => v.clientUserMessageId === id).map(v => [v.threadId, v.text]),
+      [['worker-a', '补充 rcc-turn-ended-01']])
+  })
+}
 
 test('unverified waiting scenarios defer across restart and drain in order on the original thread', async t => {
   const fx = await fixture(t)
@@ -2434,4 +2440,17 @@ test('phone questions move between projects and a same-batch follow-up stays wit
   assert.equal(fx.router.getTask(selected[0][0].id).status, 'submitted')
   assert.equal(fx.router.getTask(selected[1][0].id).status, 'submitted')
   assert.deepEqual(fx.submitted.filter(row => questions.includes(row.text)).map(row => row.threadId).sort(), ['worker-a', 'worker-b'])
+})
+
+test('an unverified Worker fails before native submission and a queue-only Worker accepts a fresh task', async t => {
+  const fx = await fixture(t)
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.999.0' })
+  const first = await enqueueControl(fx, 'unverified-worker-protocol')
+  await until(() => fx.router.getTask(first).status === 'failed')
+  assert.match(fx.router.getTask(first).error, /0\.999\.0.*workerProtocolReport/)
+  assert.equal(fx.submitted.length, 0)
+  fx.hub.status = () => ({ phase: 'ready', codexVersion: '0.999.0', workerProtocol: { queue: true, steer: false } })
+  const second = await enqueueControl(fx, 'verified-worker-queue')
+  await until(() => fx.submitted.some(item => item.clientUserMessageId === second))
+  assert.equal(fx.submitted.length, 1)
 })

@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-25",
+  "base": "d904d30 + existing working tree",
+  "platform": "linux",
+  "arch": "arm64",
+  "node": "v24.19.0",
+  "installedCli": "0.170.0",
+  "installedPath": "/root/.nvm/versions/node/v24.19.0/bin/codex",
+  "registry": "https://registry.npmjs.org",
+  "latestAtCheck": "0.172.0",
+  "package": "@openai/codex@0.172.0-linux-arm64",
+  "sha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+  "testResults": [
+    {
+      "command": "node scripts/test-uas-r2.mjs <native> A",
+      "exit": 0,
+      "evidence": "A.json"
+    },
+    {
+      "command": "node scripts/test-uas-r2.mjs <native> A-registry",
+      "exit": 0,
+      "evidence": "A-registry.json"
+    },
+    {
+      "command": "node scripts/test-uas-r2.mjs <native> B",
+      "exit": 0,
+      "evidence": "B.json"
+    },
+    {
+      "command": "node scripts/test-uas-r2.mjs <native> B-uid",
+      "exit": 0,
+      "evidence": "B-uid.json"
+    },
+    {
+      "command": "node scripts/test-router-protocol.mjs --uas",
+      "exit": 2,
+      "evidence": "protocol-control.json",
+      "meaning": "R1 baseline outputs retained; no custom compiled policy supplied"
+    },
+    {
+      "command": "node bin/zcodex.mjs verify-worker --codex <native> --transport stdio",
+      "exit": 0,
+      "evidence": "worker-stdio.json"
+    },
+    {
+      "command": "npm test",
+      "exit": 0,
+      "passed": 307,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "model": "local scripted Responses over loopback",
+  "realModel": false,
+  "production": false,
+  "platformsNotRun": [
+    "win32",
+    "linux-x64",
+    "WSL"
+  ]
+}

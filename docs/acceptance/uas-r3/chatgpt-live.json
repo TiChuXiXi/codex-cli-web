@@ -1,0 +1,92 @@
+{
+  "scope": "explicitly authorized current managed ChatGPT login; native stdio; ephemeral threads; sanitized observations only",
+  "platform": "linux",
+  "arch": "arm64",
+  "requestBudget": 6,
+  "submittedOperations": 6,
+  "tokenExpiryWindowObserved": "over 24h",
+  "naturalExpiryRefresh": "not observed",
+  "interactiveLogin": "not exercised; existing login reused",
+  "network": "existing host network and proxy settings; no zcodex inference proxy",
+  "runs": [
+    {
+      "cli": "0.170.0",
+      "runningSha256": "6a95492ca9d85ee76bd9fc5a4d8f72dd98a6130d1bb409bcfc50e61573106616",
+      "model": "gpt-5.4",
+      "ephemeral": true,
+      "accountMode": "chatgpt",
+      "instructionSources": 1,
+      "websocketRequestObserved": true,
+      "operations": [
+        {
+          "rpc": "turn/start",
+          "status": "failed",
+          "deltaCount": 0
+        }
+      ],
+      "failureDetail": "native reason not retained in initial run"
+    },
+    {
+      "cli": "0.170.0",
+      "runningSha256": "6a95492ca9d85ee76bd9fc5a4d8f72dd98a6130d1bb409bcfc50e61573106616",
+      "model": "gpt-6.1-sol",
+      "ephemeral": true,
+      "accountMode": "chatgpt",
+      "instructionSources": 1,
+      "websocketRequestObserved": true,
+      "operations": [
+        {
+          "rpc": "turn/start",
+          "status": "completed",
+          "deltaCount": 8,
+          "exactMarker": true
+        },
+        {
+          "rpc": "thread/compact/start",
+          "status": "completed",
+          "contextCompactionItem": true
+        },
+        {
+          "rpc": "turn/start",
+          "status": "completed",
+          "deltaCount": 8,
+          "recallExactMarker": true
+        }
+      ]
+    },
+    {
+      "cli": "0.172.0",
+      "startupOnly": true,
+      "operations": [],
+      "failureDetail": "read-only filesystem before initialize; own CLI scratch paths subsequently redirected"
+    },
+    {
+      "cli": "0.172.0",
+      "runningSha256": "28c24ad7fb3bf29c95cd66a12e72d2219f06170efefae8b02002ceb50e2866b9",
+      "model": "gpt-6.1-sol",
+      "ephemeral": true,
+      "accountMode": "chatgpt",
+      "instructionSources": 1,
+      "websocketRequestObserved": true,
+      "currentCredentialLocation": "existing home mounted read-only at original path; native temp, installation-id scratch, SQLite and logs private to probe",
+      "operations": [
+        {
+          "rpc": "turn/start",
+          "status": "completed",
+          "deltaCount": 8,
+          "exactMarker": true
+        },
+        {
+          "rpc": "thread/compact/start",
+          "status": "completed",
+          "contextCompactionItem": true
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Transport signal is a successful native WebSocket request for the run, not independent packet attribution for every turn.",
+    "Official native compaction and item observed; TLS content of the real request was not inspected.",
+    "Real account did not request an actual business tool, dispatch, read user history, or operate WeChat."
+  ]
+}

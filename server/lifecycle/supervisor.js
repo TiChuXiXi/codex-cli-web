@@ -33,7 +33,8 @@ function writeLog(line) {
 function state() {
   const worker = app.hub.status()
   return {pid:process.pid, version, origin:app.origin, instanceId:instance.id, boot, startedAt:record.startedAt,
-    worker:{phase:worker.phase, kind:worker.kind || null, approvals:worker.pendingApprovals},
+    worker:{phase:worker.phase, kind:worker.kind || null, approvals:worker.pendingApprovals,
+      version:worker.codexVersion, protocol:worker.phase === 'ready' ? worker.workerProtocol : null},
     router:app.router ? {phase:app.router.phase, policy:app.router.app?.policyVersion ?? null} : {phase:'disabled'}}
 }
 

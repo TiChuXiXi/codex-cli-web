@@ -3,13 +3,18 @@ import * as React from 'react'
 import type {Api} from '../rpc'
 import {Icon} from './Icon'
 
-export async function downloadWorkspaceFile(api:Api,cwd:string,path:string) {
-  const workspace=await api('workspace/open',{cwd})
-  const info=await api('workspace/downloadInfo',{workspaceId:workspace.workspaceId,path})
+export async function downloadWorkspaceFileById(api:Api,workspaceId:string,path:string) {
+  const info=await api<{name:string}>('workspace/downloadInfo',{workspaceId,path})
   const link=document.createElement('a')
-  link.href=apiUrl('workspace/download',new URLSearchParams({workspaceId:workspace.workspaceId,path}))
+  link.href=apiUrl('workspace/download',new URLSearchParams({workspaceId,path}))
   link.download=info.name
   document.body.appendChild(link);link.click();link.remove()
+  return info.name
+}
+
+export async function downloadWorkspaceFile(api:Api,cwd:string,path:string) {
+  const workspace=await api<{workspaceId:string}>('workspace/open',{cwd})
+  return downloadWorkspaceFileById(api,workspace.workspaceId,path)
 }
 export function FileDownloadButton({api,cwd,path,children,className=''}:{
  api:Api,cwd:string,path:string,children?:React.ReactNode,className?:string
